@@ -3,9 +3,10 @@
 Blendkit add-on is an open-source project and we welcome contributions from the community.
 
 1. Clone the repo: `git clone https://github.com/blenderkit/blenderkit --recursive` (recursive is needed as repository uses submodules [bk_client](https://github.com/BlenderKit/bk_client) and [bk_proxor](https://github.com/BlenderKit/bk_proxor)).
-2. Make sure Python is available: `python --version`, if not install Python.
-3. Make sure Go is available: `go version`, if not install Go.
-4. Build the add-on: `python dev.py build`, the .zip file is located in `./out` directory.
+2. Enable the repository git hooks: `git config core.hooksPath .githooks` (this activates the `post-checkout` hook that keeps submodules in sync when you switch branches).
+3. Make sure Python is available: `python --version`, if not install Python.
+4. Make sure Go is available: `go version`, if not install Go.
+5. Build the add-on: `python dev.py build`, the .zip file is located in `./out` directory.
 
 ## Building the add-on
 
