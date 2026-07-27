@@ -1966,7 +1966,9 @@ def update_filters():
     if ui_props.search_bookmarks and not utils.user_logged_in():
         ui_props.search_bookmarks = False
         bpy.ops.wm.blenderkit_login_dialog(
-            "INVOKE_DEFAULT", message="Please login to use bookmarks."
+            "INVOKE_DEFAULT",
+            message="Please login to use bookmarks.",
+            placement="bookmarks_prompt",
         )
         return False
     if ui_props.own_only and not utils.user_logged_in():
@@ -1974,6 +1976,7 @@ def update_filters():
         bpy.ops.wm.blenderkit_login_dialog(
             "INVOKE_DEFAULT",
             message="Please login to upload and filter your own assets.",
+            placement="own_assets_prompt",
         )
         return False
 

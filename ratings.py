@@ -79,11 +79,13 @@ def draw_ratings_menu(self, context, layout):
             ui_panels.draw_login_progress(layout)
         else:
             layout.operator_context = "EXEC_DEFAULT"
-            layout.operator(
+            op_login = layout.operator(
                 "wm.blenderkit_login",
                 text="Login to Rate and Comment assets",
                 icon="URL",
-            ).signup = False
+            )
+            op_login.signup = False
+            op_login.placement = "rating_prompt"
         return
 
     col = layout.column()

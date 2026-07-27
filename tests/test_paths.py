@@ -444,3 +444,27 @@ class TestRemoveAssetLibraryPath(_AssetLibraryTestBase):
         paths.remove_asset_library_path()
 
         self.assertEqual(len(libs), 1)
+
+
+class TestUrlWithUtm(unittest.TestCase):
+    def test_plain_url(self):
+        self.assertEqual(
+            paths.url_with_utm("https://x.com/plans/pricing", "premium_popup"),
+            "https://x.com/plans/pricing?utm_source=blender_addon&utm_medium=app&utm_content=premium_popup",
+        )
+
+    def test_existing_query(self):
+        self.assertEqual(
+            paths.url_with_utm("https://x.com/gallery?query=a", "author_gallery"),
+            "https://x.com/gallery?query=a&utm_source=blender_addon&utm_medium=app&utm_content=author_gallery",
+        )
+
+    def test_fragment_is_preserved_after_params(self):
+        self.assertEqual(
+            paths.url_with_utm("https://x.com/my-assets/abc/?edit#", "uploads_edit"),
+            "https://x.com/my-assets/abc/?edit&utm_source=blender_addon&utm_medium=app&utm_content=uploads_edit#",
+        )
+
+    def test_getters_are_tagged(self):
+        self.assertIn("utm_content=author_gallery", paths.get_author_gallery_url(7))
+        self.assertIn("utm_content=asset_web_view", paths.get_asset_gallery_url("abc"))

@@ -3940,6 +3940,7 @@ class BlenderKitAssetBarOperator(BL_UI_OT_draw_operator):
             bpy.ops.wm.blenderkit_login_dialog(
                 "INVOKE_DEFAULT",
                 message="Please login to bookmark your favorite assets.",
+                placement="bookmarks_prompt",
             )
             return
 
@@ -3965,7 +3966,7 @@ class BlenderKitAssetBarOperator(BL_UI_OT_draw_operator):
         # url = author.aboutMeUrl
 
         # Blendkit site profile >>
-        url = paths.get_author_gallery_url(author_id)
+        url = paths.get_author_gallery_url(author_id, placement="asset_bar_author")
         if url is None:
             bk_logger.warning("url is none")
             return
@@ -4117,7 +4118,7 @@ class BlenderKitAssetBarOperator(BL_UI_OT_draw_operator):
             if author is None:
                 return True
             utils.p("author:", author)
-            url = paths.get_author_gallery_url(author.id)
+            url = paths.get_author_gallery_url(author.id, placement="asset_bar_author")
             bpy.ops.wm.url_open(url=url)
             return True
 

@@ -206,6 +206,7 @@ def update_quality_ui(self, context: Context):
         bpy.ops.wm.blenderkit_login(  # type: ignore
             "INVOKE_DEFAULT",
             message="Please login/signup to rate assets. Clicking OK takes you to web login.",
+            placement="rating_prompt",
         )
         return
 
@@ -219,6 +220,7 @@ def update_ratings_work_hours_ui(self, context: Context):
         bpy.ops.wm.blenderkit_login(  # type: ignore
             "INVOKE_DEFAULT",
             message="Please login/signup to rate assets. Clicking OK takes you to web login.",
+            placement="rating_prompt",
         )
         return
     self.rating_work_hours = float(self.rating_work_hours_ui)

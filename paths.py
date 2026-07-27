@@ -59,6 +59,16 @@ WINDOWS_PATH_LIMIT = 250
 ASSET_LIBRARY_NAME = "Blendkit"
 
 
+def url_with_utm(url: str, placement: str) -> str:
+    """Tag an outbound web link so analytics can attribute it to the add-on surface that opened it."""
+    base, hash_sign, fragment = url.partition("#")
+    separator = "&" if "?" in base else "?"
+    return (
+        f"{base}{separator}utm_source=blender_addon&utm_medium=app"
+        f"&utm_content={placement}{hash_sign}{fragment}"
+    )
+
+
 def _normalize_path(path_value: str | None) -> str:
     """Return an absolute, normalized path for comparisons; blank string if invalid."""
     if not path_value:
@@ -89,12 +99,16 @@ def find_in_local(text=""):
     return fs
 
 
-def get_author_gallery_url(author_id: int):
-    return f"{global_vars.SERVER}/asset-gallery?query=author_id:{author_id}"
+def get_author_gallery_url(author_id: int, placement: str = "author_gallery"):
+    return url_with_utm(
+        f"{global_vars.SERVER}/asset-gallery?query=author_id:{author_id}", placement
+    )
 
 
-def get_asset_gallery_url(asset_id):
-    return f"{global_vars.SERVER}/asset-gallery-detail/{asset_id}/"
+def get_asset_gallery_url(asset_id, placement: str = "asset_web_view"):
+    return url_with_utm(
+        f"{global_vars.SERVER}/asset-gallery-detail/{asset_id}/", placement
+    )
 
 
 def default_global_dict():

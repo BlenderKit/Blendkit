@@ -53,6 +53,9 @@ class TestOAuthLoginURL(unittest.TestCase):
         self.assertEqual(query["code_challenge"], ["challenge"])
         self.assertEqual(query["code_challenge_method"], ["S256"])
         self.assertEqual(query["system_id"], ["000000000000123"])
+        self.assertEqual(query["utm_source"], ["blender_addon"])
+        self.assertEqual(query["utm_medium"], ["app"])
+        self.assertEqual(query["utm_content"], ["login"])
 
     def test_signup_wraps_authorize_url_with_system_id(self):
         with (
@@ -86,3 +89,29 @@ class TestOAuthLoginURL(unittest.TestCase):
         )
         self.assertEqual(parsed_authorize.path, "/o/authorize")
         self.assertEqual(authorize_query["system_id"], ["000000000000123"])
+        self.assertEqual(signup_query["utm_source"], ["blender_addon"])
+        self.assertEqual(signup_query["utm_content"], ["login"])
+        self.assertNotIn("utm_source", authorize_query)
+
+    def test_login_placement_is_tagged(self):
+        with (
+            mock.patch.object(global_vars, "SERVER", "https://example.com"),
+            mock.patch.object(bkit_oauth.client_lib, "get_port", return_value="12345"),
+            mock.patch.object(
+                bkit_oauth, "generate_pkce_pair", return_value=("verifier", "challenge")
+            ),
+            mock.patch.object(
+                bkit_oauth.secrets, "token_urlsafe", return_value="state-token"
+            ),
+            mock.patch.object(
+                bkit_oauth, "get_system_id", return_value="000000000000123"
+            ),
+            mock.patch.object(bkit_oauth.client_lib, "send_oauth_verification_data"),
+            mock.patch.object(
+                bkit_oauth, "open_new_tab", return_value=True
+            ) as open_new_tab,
+        ):
+            bkit_oauth.login(signup=False, placement="premium_popup")
+
+        query = parse_qs(urlsplit(open_new_tab.call_args.args[0]).query)
+        self.assertEqual(query["utm_content"], ["premium_popup"])

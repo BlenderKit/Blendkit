@@ -133,7 +133,7 @@ def draw_upload_common(layout, props, asset_type, context):
     op = layout.operator(
         "wm.url_open", text=f"Read {asset_type} upload instructions", icon="QUESTION"
     )
-    op.url = url
+    op.url = paths.url_with_utm(url, "upload_docs") if url else url
 
     row = layout.row(align=True)
     if props.upload_state != "":
@@ -202,7 +202,10 @@ def draw_upload_common(layout, props, asset_type, context):
         op = layout.operator(
             "wm.blenderkit_url", text="Edit Details", icon="GREASEPENCIL"
         )
-        op.url = f"{paths.BLENDKIT_USER_ASSETS_URL}/{props.asset_base_id}/?edit#"
+        op.url = paths.url_with_utm(
+            f"{paths.BLENDKIT_USER_ASSETS_URL}/{props.asset_base_id}/?edit#",
+            "uploads_edit",
+        )
 
         op = layout.operator(
             "object.blenderkit_upload", text="Reupload asset", icon="EXPORT"
@@ -780,7 +783,7 @@ def draw_panel_model_search(self, context):
     utils.label_multiline(layout, text=props.report, icon=icon)
     if props.report == "You need Full plan to get this item.":
         layout.operator("wm.url_open", text="Get Full plan", icon="URL").url = (
-            paths.BLENDKIT_PLANS_URL
+            paths.url_with_utm(paths.BLENDKIT_PLANS_URL, "premium_wall_panel")
         )
 
 
@@ -1048,7 +1051,9 @@ class VIEW3D_PT_blenderkit_profile(Panel):
                     if me.currentPlanName == "Free":
                         layout.operator(
                             "wm.url_open", text="Change plan", icon="URL"
-                        ).url = paths.BLENDKIT_PLANS_URL
+                        ).url = paths.url_with_utm(
+                            paths.BLENDKIT_PLANS_URL, "profile_change_plan"
+                        )
 
                 # STORAGE STATISTICS
                 if (
@@ -1069,7 +1074,7 @@ class VIEW3D_PT_blenderkit_profile(Panel):
                     row.label(text=size_str)
 
             layout.operator("wm.url_open", text="See my uploads", icon="URL").url = (
-                paths.BLENDKIT_USER_ASSETS_URL
+                paths.url_with_utm(paths.BLENDKIT_USER_ASSETS_URL, "profile_my_uploads")
             )
 
         draw_login_buttons(layout)
@@ -1538,12 +1543,14 @@ def draw_login_buttons(layout, invoke=False):
         else:
             layout.operator_context = "EXEC_DEFAULT"
         if not utils.user_logged_in():
-            layout.operator("wm.blenderkit_login", text="Login", icon="URL").signup = (
-                False
-            )
-            layout.operator(
+            op_login = layout.operator("wm.blenderkit_login", text="Login", icon="URL")
+            op_login.signup = False
+            op_login.placement = "login_panel"
+            op_signup = layout.operator(
                 "wm.blenderkit_login", text="Sign up", icon="URL"
-            ).signup = True
+            )
+            op_signup.signup = True
+            op_signup.placement = "login_panel"
 
         else:
             layout.operator("wm.blenderkit_logout", text="Logout", icon="URL")
@@ -2282,7 +2289,9 @@ class VIEW3D_PT_blenderkit_unified(Panel):
             op = layout.operator(
                 "wm.url_open", text="Go to Blendkit Website", icon="URL"
             )
-            op.url = paths.BLENDKIT_ADDON_UPLOAD_INSTRUCTIONS_URL
+            op.url = paths.url_with_utm(
+                paths.BLENDKIT_ADDON_UPLOAD_INSTRUCTIONS_URL, "upload_docs"
+            )
             return
 
         if ui_props.asset_type == "AUTHOR":
@@ -2631,8 +2640,9 @@ def draw_asset_context_menu(
         utils.user_is_owner(asset_data)
         and asset_data["verificationStatus"] != "validated"
     ):
-        op.url = (
-            f'{paths.BLENDKIT_USER_ASSETS_URL}/{asset_data["assetBaseId"]}/?preview#'
+        op.url = paths.url_with_utm(
+            f'{paths.BLENDKIT_USER_ASSETS_URL}/{asset_data["assetBaseId"]}/?preview#',
+            "uploads_preview",
         )
     else:
         op.url = paths.get_asset_gallery_url(asset_data["id"])
@@ -2777,8 +2787,9 @@ def draw_asset_context_menu(
                 text="Edit Metadata (browser)",
                 icon="GREASEPENCIL",
             )
-            op.url = (
-                f'{paths.BLENDKIT_USER_ASSETS_URL}/{asset_data["assetBaseId"]}/?edit#'
+            op.url = paths.url_with_utm(
+                f'{paths.BLENDKIT_USER_ASSETS_URL}/{asset_data["assetBaseId"]}/?edit#',
+                "uploads_edit",
             )
 
         row.operator_context = "INVOKE_DEFAULT"
@@ -3285,7 +3296,9 @@ class AssetPopupCard(bpy.types.Operator, ratings_utils.RatingProperties):
                     text,
                     icon_value=icon.icon_id,
                     tooltip=plans_tooltip,
-                    url=paths.BLENDKIT_PLANS_URL,
+                    url=paths.url_with_utm(
+                        paths.BLENDKIT_PLANS_URL, "asset_popup_access"
+                    ),
                 )
             else:
                 text = "Free"
@@ -3363,7 +3376,9 @@ class AssetPopupCard(bpy.types.Operator, ratings_utils.RatingProperties):
                     text,
                     icon_value=icon.icon_id,
                     tooltip=plans_tooltip,
-                    url=paths.BLENDKIT_PLANS_URL,
+                    url=paths.url_with_utm(
+                        paths.BLENDKIT_PLANS_URL, "asset_popup_access"
+                    ),
                 )
             else:
                 text = "Full plan"
@@ -3374,7 +3389,9 @@ class AssetPopupCard(bpy.types.Operator, ratings_utils.RatingProperties):
                     text,
                     icon_value=icon.icon_id,
                     tooltip=plans_tooltip,
-                    url=paths.BLENDKIT_PLANS_URL,
+                    url=paths.url_with_utm(
+                        paths.BLENDKIT_PLANS_URL, "asset_popup_access"
+                    ),
                 )
 
         if utils.profile_is_validator():
@@ -4237,9 +4254,11 @@ class UrlPopupDialog(bpy.types.Operator):
             )
 
             layout.operator_context = "EXEC_DEFAULT"
-            layout.operator(
+            op_login = layout.operator(
                 "wm.blenderkit_login", text="Welcome Home", icon="URL"
-            ).signup = False
+            )
+            op_login.signup = False
+            op_login.placement = "premium_popup"
         op.url = self.url
 
     def execute(self, context):
@@ -4264,6 +4283,12 @@ class LoginPopupDialog(bpy.types.Operator):
         name="Url", description="url", default="Login to Blendkit"
     )
 
+    placement: StringProperty(  # type: ignore[valid-type]
+        name="Placement",
+        description="Which add-on surface triggered the login, for web analytics",
+        default="login_dialog",
+    )
+
     def draw(self, context):
         set_overlay_panel_active()
         layout = self.layout
@@ -4271,9 +4296,11 @@ class LoginPopupDialog(bpy.types.Operator):
 
         layout.active_default = True
         layout.operator_context = "EXEC_DEFAULT"
-        layout.operator(
+        op_login = layout.operator(
             "wm.blenderkit_login", text=self.link_text, icon="URL"
-        ).signup = False
+        )
+        op_login.signup = False
+        op_login.placement = self.placement
 
     def execute(self, context):
         return {"FINISHED"}

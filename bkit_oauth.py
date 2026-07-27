@@ -35,6 +35,7 @@ from . import (
     client_tasks,
     datas,
     global_vars,
+    paths,
     reports,
     search_price,
     tasks_queue,
@@ -129,7 +130,7 @@ def logout() -> None:
     clean_login_data()
 
 
-def login(signup: bool) -> None:
+def login(signup: bool, placement: str = "login") -> None:
     """Logs user into the addon.
     Opens a browser with login page. Once user is logged it redirects browser to Client handling access code via URL querry parameter.
     Using the access_code Client then requests api_token and handles the results as a task with status finished/error.
@@ -151,6 +152,7 @@ def login(signup: bool) -> None:
         authorize_url = f"{global_vars.SERVER}/accounts/register/?next={authorize_url}"
     else:
         authorize_url = f"{global_vars.SERVER}{authorize_url}"
+    authorize_url = paths.url_with_utm(authorize_url, placement)
     ok = open_new_tab(authorize_url)
     bk_logger.info("Login page in browser opened (%s)", ok)
 
@@ -226,6 +228,13 @@ class LoginOnline(bpy.types.Operator):
         default="You were logged out from Blendkit.\n Clicking OK takes you to web login. ",
     )
 
+    placement: bpy.props.StringProperty(  # type: ignore
+        name="Placement",
+        description="Which add-on surface triggered the login, for web analytics",
+        default="login",
+        options={"SKIP_SAVE", "HIDDEN"},
+    )
+
     @classmethod
     def poll(cls, context):
         return True
@@ -242,7 +251,7 @@ class LoginOnline(bpy.types.Operator):
     def execute(self, context):
         preferences = bpy.context.preferences.addons[__package__].preferences
         preferences.login_attempt = True
-        login(self.signup)
+        login(self.signup, self.placement)
         return {"FINISHED"}
 
     def invoke(self, context, event):
