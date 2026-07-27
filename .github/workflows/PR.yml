@@ -22,6 +22,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
+      - name: Checkout bk_proxor submodule
+        run: git submodule update --init bk_proxor
       - name: Build add-on
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -51,6 +53,8 @@ jobs:
       matrix: ${{ fromJSON(needs.make-tests-matrix.outputs.matrix) }}
     steps:
       - uses: actions/checkout@v7
+      - name: Checkout bk_proxor submodule
+        run: git submodule update --init bk_proxor
       - name: Cache Blender
         id: blenderBinaryCache
         uses: actions/cache@v4
