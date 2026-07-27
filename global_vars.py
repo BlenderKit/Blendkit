@@ -27,7 +27,7 @@ except ImportError:
     # for release CI action
     import datas  # type: ignore
 
-CLIENT_VERSION = "v1.11.0"
+CLIENT_VERSION = "v1.12.0"
 CLIENT_ACCESSIBLE = False
 """Is Client accessible? Can add-on access it and call stuff which uses it?"""
 CLIENT_RUNNING = False
