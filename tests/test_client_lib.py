@@ -321,6 +321,23 @@ class TestUrlHelpers(unittest.TestCase):
         global_vars.CLIENT_VERSION = "v1.10.3"
         self.assertEqual(client_lib.get_api_version(), "v1.10")
 
+    def test_get_api_version_minor_pin_unchanged(self):
+        global_vars.CLIENT_VERSION = "v1.12"
+        self.assertEqual(client_lib.get_api_version(), "v1.12")
+
+    def test_get_resolved_client_version_falls_back_to_pin(self):
+        """Without a bundled client/RESOLVED_VERSION file, the resolver returns the pin."""
+        global_vars.CLIENT_VERSION = "v1.12"
+        saved_cache = client_lib._resolved_client_version
+        client_lib._resolved_client_version = None
+        try:
+            with mock.patch(
+                "builtins.open", side_effect=OSError("no RESOLVED_VERSION")
+            ):
+                self.assertEqual(client_lib.get_resolved_client_version(), "v1.12")
+        finally:
+            client_lib._resolved_client_version = saved_cache
+
     def test_get_base_url_combines_address_and_api_version(self):
         global_vars.CLIENT_PORTS = ["62485"]
         global_vars.CLIENT_VERSION = "v1.10.3"
@@ -515,10 +532,34 @@ class TestDecideClientBinaryName(unittest.TestCase):
         with (
             mock.patch.object(client_lib.platform, "system", return_value="Windows"),
             mock.patch.object(client_lib.platform, "machine", return_value="AMD64"),
+            mock.patch.object(client_lib, "_is_pre_windows_10", return_value=False),
         ):
             self.assertEqual(
                 client_lib.decide_client_binary_name(),
                 "bk_client-windows-x86_64.exe",
+            )
+
+    def test_windows_amd64_pre_win10_uses_legacy(self):
+        with (
+            mock.patch.object(client_lib.platform, "system", return_value="Windows"),
+            mock.patch.object(client_lib.platform, "machine", return_value="AMD64"),
+            mock.patch.object(client_lib, "_is_pre_windows_10", return_value=True),
+        ):
+            self.assertEqual(
+                client_lib.decide_client_binary_name(),
+                "bk_client-windows7-x86_64.exe",
+            )
+
+    def test_windows_arm64_pre_win10_stays_modern(self):
+        # No legacy ARM build exists; ARM Windows is Windows 10+ only anyway.
+        with (
+            mock.patch.object(client_lib.platform, "system", return_value="Windows"),
+            mock.patch.object(client_lib.platform, "machine", return_value="ARM64"),
+            mock.patch.object(client_lib, "_is_pre_windows_10", return_value=True),
+        ):
+            self.assertEqual(
+                client_lib.decide_client_binary_name(),
+                "bk_client-windows-arm64.exe",
             )
 
     def test_linux_aarch64(self):

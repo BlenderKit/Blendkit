@@ -18,14 +18,139 @@
 # type: ignore
 
 import argparse
+import json
 import os
+import re
 import shutil
 import subprocess
+import tempfile
+import urllib.request
+import zipfile
+
+CLIENT_REPO = "BlenderKit/bk_client"
 
 
-def blenderkit_client_build(abs_build_dir: str):
-    """Build Blendkit-Client using its dedicated build script.
-    Binaries are cross-compiled for all platforms in parallel.
+def read_client_version_pin() -> str:
+    """Read the pinned Client version from ``global_vars.CLIENT_VERSION``.
+
+    The pin is normally the MINOR series (e.g. ``v1.12``); a full ``vX.Y.Z`` is
+    also accepted. Parsed with a regex so we don't need to import the add-on
+    (which would require Blender's ``bpy``).
+    """
+    with open("global_vars.py", "r") as f:
+        match = re.search(r'^CLIENT_VERSION\s*=\s*"([^"]+)"', f.read(), re.MULTILINE)
+    if not match:
+        raise Exception("Could not find CLIENT_VERSION in global_vars.py")
+    return match.group(1)
+
+
+def _github_json(url: str):
+    """GET a GitHub API URL and return parsed JSON (honours GITHUB_TOKEN)."""
+    req = urllib.request.Request(
+        url,
+        headers={
+            "Accept": "application/vnd.github+json",
+            "User-Agent": "blenderkit-dev",
+        },
+    )
+    token = os.environ.get("GITHUB_TOKEN")
+    if token:
+        req.add_header("Authorization", f"Bearer {token}")
+    with urllib.request.urlopen(req) as resp:
+        return json.load(resp)
+
+
+def resolve_client_release_tag(pin: str) -> str:
+    """Resolve a version pin to an exact published release tag.
+
+    - ``vX.Y``   -> the latest published ``vX.Y.Z`` release (bk_client auto-bumps
+      the patch on each PR, so this tracks the newest patch of the series).
+    - ``vX.Y.Z`` -> that exact tag.
+    """
+    parts = pin.lstrip("v").split(".")
+    if len(parts) >= 3:
+        return f"v{'.'.join(parts[:3])}"
+
+    major, minor = parts[0], parts[1]
+    pattern = re.compile(rf"^v{re.escape(major)}\.{re.escape(minor)}\.(\d+)$")
+    releases = _github_json(
+        f"https://api.github.com/repos/{CLIENT_REPO}/releases?per_page=100"
+    )
+    matches = []
+    for rel in releases:
+        if rel.get("draft") or rel.get("prerelease"):
+            continue
+        m = pattern.match(rel.get("tag_name", ""))
+        if m:
+            matches.append((int(m.group(1)), rel["tag_name"]))
+    if not matches:
+        raise Exception(
+            f"No published {CLIENT_REPO} release found for series v{major}.{minor}.*"
+        )
+    matches.sort()
+    return matches[-1][1]
+
+
+def download_client_release(addon_build_dir: str, pin: str = None) -> str:
+    """Download the pinned bk_client release ZIP and unpack the platform binaries.
+
+    Binaries are placed into ``<addon_build_dir>/client/<tag>/`` so the runtime
+    (which reads ``client/RESOLVED_VERSION``) finds them. Returns the exact tag.
+    """
+    if pin is None:
+        pin = read_client_version_pin()
+    tag = resolve_client_release_tag(pin)
+    print(f"Client pin {pin} resolved to release {tag}")
+
+    url = f"https://github.com/{CLIENT_REPO}/releases/download/{tag}/bk_client.zip"
+    tmp_zip = os.path.join(tempfile.gettempdir(), f"bk_client-{tag}.zip")
+    print(f"Downloading {url}")
+    req = urllib.request.Request(url, headers={"User-Agent": "blenderkit-dev"})
+    with urllib.request.urlopen(req) as resp, open(tmp_zip, "wb") as out_file:
+        shutil.copyfileobj(resp, out_file)
+
+    target_dir = os.path.join(addon_build_dir, "client", tag)
+    os.makedirs(target_dir, exist_ok=True)
+    with zipfile.ZipFile(tmp_zip) as zf:
+        zip_version = None
+        try:
+            zip_version = "v" + zf.read("VERSION").decode().strip()
+        except KeyError:
+            pass
+        for name in zf.namelist():
+            base = os.path.basename(name)
+            if not base.startswith("bk_client-"):
+                continue  # only the platform binaries; skip tools/docs/manifest
+            data = zf.read(name)
+            out_path = os.path.join(target_dir, base)
+            with open(out_path, "wb") as fh:
+                fh.write(data)
+            os.chmod(out_path, 0o755)
+    os.remove(tmp_zip)
+
+    if zip_version and zip_version != tag:
+        print(f"WARNING: VERSION inside zip ({zip_version}) != release tag ({tag})")
+    print(f"Client {tag} binaries unpacked to {target_dir}")
+    return tag
+
+
+def write_resolved_client_version(addon_build_dir: str, tag: str):
+    """Bake the exact resolved Client version into the bundle for the runtime.
+
+    ``client_lib.get_resolved_client_version()`` reads this to locate the
+    ``client/<tag>/<binary>`` folder on user machines.
+    """
+    client_dir = os.path.join(addon_build_dir, "client")
+    os.makedirs(client_dir, exist_ok=True)
+    with open(os.path.join(client_dir, "RESOLVED_VERSION"), "w") as f:
+        f.write(f"{tag}\n")
+    print(f"Wrote client/RESOLVED_VERSION = {tag}")
+
+
+def blenderkit_client_build(abs_build_dir: str) -> str:
+    """Build Blendkit-Client locally from the bk_client submodule (dev only).
+    Binaries are cross-compiled for all platforms in parallel. Returns the
+    exact ``vX.Y.Z`` version that was built.
     """
     client_dir = os.path.join(abs_build_dir, "client")
     cp = subprocess.run(
@@ -46,6 +171,7 @@ def blenderkit_client_build(abs_build_dir: str):
     shutil.unpack_archive(client_zip, client_loc)
     # remove the zip file after extraction
     os.remove(client_zip)
+    return expected_client_version
 
 
 def verify_client_binaries(binaries_path: str):
@@ -159,26 +285,41 @@ def copy_client_binaries(binaries_path: str, addon_build_dir: str):
         print(f"Copied {source_file} to {target_file}")
 
     print(f"Blendkit-Client binaries copied from {binaries_path} to {target_dir}")
+    return expected_client_version
 
 
 def do_build(
-    install_at=None, include_tests=False, clean_dir=None, client_binaries_path=None
+    install_at=None,
+    include_tests=False,
+    clean_dir=None,
+    client_binaries_path=None,
+    client_source="download",
+    client_version=None,
 ):
     """Build addon by copying relevant addon directories and files to ./out/blenderkit directory.
     Create zip in ./out/blenderkit.zip.
     - install_at: string or list of paths where to install the addon, e.g. ["/path1/addons", "/path2/addons"]
     - include_tests: include test files into .zip file, so tests can be run with this .zip
     - clean_dir: if specified, clean that directory before building the add-on, e.g. clean client bin in blenderkit_data: "/Users/username/blenderkit_data/client/bin"
-    - client_binaries_path: if specified, use client (signed) binaries from that path instead of building new ones, e.g. "./client_builds/v1.0.0" containing client binaries for different platforms
+    - client_binaries_path: if specified, use client (signed) binaries from that local path instead of downloading, e.g. "./client_builds/v1.0.0" containing client binaries for different platforms
+    - client_source: how to obtain the Client binaries: "download" (default, from the pinned GitHub release ZIP) or "local" (build from the bk_client submodule).
+    - client_version: override the pinned Client version (vX.Y or vX.Y.Z) when downloading.
     """
     out_dir = os.path.abspath("out")
     addon_build_dir = os.path.join(out_dir, "blenderkit")
     shutil.rmtree(out_dir, True)
 
-    if client_binaries_path == None:
-        blenderkit_client_build(addon_build_dir)
+    if client_binaries_path is not None:
+        resolved_client_version = copy_client_binaries(
+            client_binaries_path, addon_build_dir
+        )
+    elif client_source == "local":
+        resolved_client_version = blenderkit_client_build(addon_build_dir)
     else:
-        copy_client_binaries(client_binaries_path, addon_build_dir)
+        resolved_client_version = download_client_release(
+            addon_build_dir, pin=client_version
+        )
+    write_resolved_client_version(addon_build_dir, resolved_client_version)
 
     ignore_files = [
         ".gitignore",
@@ -264,13 +405,21 @@ def run_tests(args):
         include_tests=True,
         clean_dir=args.clean_dir,
         client_binaries_path=args.client_build,
+        client_source=args.client_source,
+        client_version=args.client_version,
     )
     # Best effort here to keep it simple and detect automatically, other option would be to add it as a flag
     if "extensions/user_default" in args.install_at:
         extensions_format = True
     else:
         extensions_format = False
-    run_go_tests()
+    # The Client's Go unit tests only make sense when building from the local
+    # submodule; in download mode the Client is pre-built and tested by its own
+    # (bk_client) CI, so we skip compiling/testing Go here.
+    if args.client_source == "local" and args.client_build is None:
+        run_go_tests()
+    else:
+        print("=== Skipping Client Go unit tests (download mode) ===")
     run_python_tests(extensions_format, fast=args.fast)
 
 
@@ -324,66 +473,88 @@ def format_code():
 
 ### COMMAND LINE INTERFACE
 
-parser = argparse.ArgumentParser()
-parser.add_argument(
-    "command",
-    default="build",
-    choices=["format", "build", "test", "release"],
-    help="""
+
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument(
+        "command",
+        default="build",
+        choices=["format", "build", "test", "release"],
+        help="""
   FORMAT = isort imports, format code with Black and lint it with Ruff.
   TEST = build with test files and run tests
   BUILD = copy relevant files into ./out/blenderkit.
-  RELEASE = build the add-on .zip with already built client binaries.
+  RELEASE = build the add-on .zip (Client from the pinned GitHub release by default).
   """,
-)
-parser.add_argument(
-    "--install-at",
-    type=str,
-    action="append",  # This allows multiple --install-at arguments
-    default=None,
-    help="Specify path where the add-on should be installed. Flag can be used multiple times.",
-)
-parser.add_argument(
-    "--clean-dir",
-    type=str,
-    default=None,
-    help="Specify path to global_dir/client/bin or other dir which should be cleaned.",
-)
-parser.add_argument(
-    "--client-build",
-    type=str,
-    default=None,
-    help="Specify path client_builds/vX.Y.Z. Binaries in this directory will be used instead of building new ones.",
-)
-parser.add_argument(
-    "--fast",
-    type=bool,
-    default=False,
-    help="Run just fast tests. These are Go unittests and Python fast tests (skips those which do requests).",
-)
-args = parser.parse_args()
+    )
+    parser.add_argument(
+        "--install-at",
+        type=str,
+        action="append",  # This allows multiple --install-at arguments
+        default=None,
+        help="Specify path where the add-on should be installed. Flag can be used multiple times.",
+    )
+    parser.add_argument(
+        "--clean-dir",
+        type=str,
+        default=None,
+        help="Specify path to global_dir/client/bin or other dir which should be cleaned.",
+    )
+    parser.add_argument(
+        "--client-build",
+        type=str,
+        default=None,
+        help="Specify path client_builds/vX.Y.Z. Binaries in this directory will be used instead of downloading them.",
+    )
+    parser.add_argument(
+        "--client-source",
+        type=str,
+        choices=["download", "local"],
+        default="download",
+        help="Where to get the Client binaries: 'download' (default, pinned GitHub release ZIP) or 'local' (build from the bk_client submodule). Ignored when --client-build is given.",
+    )
+    parser.add_argument(
+        "--client-version",
+        type=str,
+        default=None,
+        help="Override the pinned Client version (vX.Y or vX.Y.Z) to download. Defaults to global_vars.CLIENT_VERSION.",
+    )
+    parser.add_argument(
+        "--fast",
+        type=bool,
+        default=False,
+        help="Run just fast tests. These are Go unittests and Python fast tests (skips those which do requests).",
+    )
+    args = parser.parse_args()
 
-if args.command == "build":
-    do_build(
-        args.install_at,
-        clean_dir=args.clean_dir,
-        client_binaries_path=args.client_build,
-    )
-elif args.command == "release":
-    if args.client_build is None:
-        print(
-            "Error: Client binaries path (containing signed binaries) is required for release"
+    if args.command == "build":
+        do_build(
+            args.install_at,
+            clean_dir=args.clean_dir,
+            client_binaries_path=args.client_build,
+            client_source=args.client_source,
+            client_version=args.client_version,
         )
-        exit(1)
-    verify_client_binaries(args.client_build)
-    do_build(
-        args.install_at,
-        clean_dir=args.clean_dir,
-        client_binaries_path=args.client_build,
-    )
-elif args.command == "test":
-    run_tests(args)
-elif args.command == "format":
-    format_code()
-else:
-    parser.print_help()
+    elif args.command == "release":
+        # The pinned GitHub release ZIP already ships code-signed binaries, so the
+        # default release path just downloads it. A local dir of signed binaries can
+        # still be supplied via --client-build (which is then verified).
+        if args.client_build is not None:
+            verify_client_binaries(args.client_build)
+        do_build(
+            args.install_at,
+            clean_dir=args.clean_dir,
+            client_binaries_path=args.client_build,
+            client_source=args.client_source,
+            client_version=args.client_version,
+        )
+    elif args.command == "test":
+        run_tests(args)
+    elif args.command == "format":
+        format_code()
+    else:
+        parser.print_help()
+
+
+if __name__ == "__main__":
+    main()
