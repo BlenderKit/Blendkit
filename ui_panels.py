@@ -3395,15 +3395,9 @@ class AssetPopupCard(bpy.types.Operator, ratings_utils.RatingProperties):
                 warning = (
                     f"{self.asset_data['sourceAppVersion']} - newer major version!"
                 )
-            elif difference == "major_older":
-                warning = f"{self.asset_data['sourceAppVersion']} - older major version, may be incompatible!"
             elif difference == "minor":
                 warning = (
                     f"{self.asset_data['sourceAppVersion']} - newer minor version!"
-                )
-            else:
-                warning = (
-                    f"{self.asset_data['sourceAppVersion']} - slightly newer version."
                 )
             box.alert = True
             self.draw_property(

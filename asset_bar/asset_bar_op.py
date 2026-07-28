@@ -3798,15 +3798,12 @@ class BlenderKitAssetBarOperator(BL_UI_OT_draw_operator):
                     asset_data
                 )
                 if has_warning:
-                    if difference in {"major_newer", "major_older"}:
+                    if difference == "major_newer":
                         self.version_warning.text = f"Made in Blender {asset_data['sourceAppVersion']}! Use at your own risk."
                         self.version_warning.text_color = self.warning_color
                     elif difference == "minor":
                         self.version_warning.text = f"Made in Blender {asset_data['sourceAppVersion']}. Caution advised."
                         self.version_warning.text_color = self.caution_color
-                    else:
-                        self.version_warning.text = f"Made in Blender {asset_data['sourceAppVersion']}. Some features may not work."
-                        self.version_warning.text_color = self.info_color
                 else:
                     self.version_warning.text = ""
 
