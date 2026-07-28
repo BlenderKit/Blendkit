@@ -28,7 +28,9 @@ if __package__:
 from . import keymap_utils
 
 
-def _kmi(type="R", ctrl=False, alt=False, shift=False, oskey=False, key_modifier="NONE"):
+def _kmi(
+    type="R", ctrl=False, alt=False, shift=False, oskey=False, key_modifier="NONE"
+):
     """Build a minimal stand-in for a bpy KeyMapItem."""
     return types.SimpleNamespace(
         type=type,
@@ -126,9 +128,7 @@ class TestDefaultKeymaps(unittest.TestCase):
     def test_registered_into_window_keymap(self):
         # Must be the built-in "Window" keymap, otherwise Blender won't surface
         # the shortcut in the default keymap tree.
-        self.assertTrue(
-            any(km.name == "Window" for km in keymap_utils.DEFAULT_KEYMAPS)
-        )
+        self.assertTrue(any(km.name == "Window" for km in keymap_utils.DEFAULT_KEYMAPS))
 
 
 if __name__ == "__main__":

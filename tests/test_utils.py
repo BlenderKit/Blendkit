@@ -387,4 +387,3 @@ class TestGetOutlinerElementUnderMouse(unittest.TestCase):
             )
             # The version guard must short-circuit before any operator call.
             mock_bpy.ops.outliner.select_box.assert_not_called()
-
