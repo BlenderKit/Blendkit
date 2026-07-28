@@ -28,7 +28,7 @@ import shutil
 import sys
 import tempfile
 import uuid
-from typing import Optional
+from typing import Optional, Union
 
 import bpy
 from mathutils import Vector
@@ -296,6 +296,80 @@ def get_active_model() -> Optional[bpy.types.Object]:
             ob = ob.parent
         return ob
     return None
+
+
+def get_outliner_element_under_mouse(
+    window: bpy.types.Window,
+    area: bpy.types.Area,
+    region: bpy.types.Region,
+    mouse_x: int,
+    mouse_y: int,
+    *,
+    restore_selection: bool = True,
+) -> Union[bpy.types.Object, bpy.types.Collection, None]:
+    """Return the Object or Collection under the mouse in an OUTLINER area.
+
+    Uses a 1px ``outliner.select_box`` probe (the same technique used for
+    outliner drag-and-drop) to resolve the hovered element via
+    ``context.selected_ids``.
+
+    ``mouse_x`` / ``mouse_y`` are region-relative coordinates.
+
+    When ``restore_selection`` is True (the default) the selection disturbed by
+    the probe is restored so the call leaves no visible side effects. Callers
+    that want to keep the probed element selected (e.g. to act on it and restore
+    the selection themselves later) can pass ``restore_selection=False``.
+
+    Returns None on unsupported Blender versions or when nothing is under the
+    cursor.
+    """
+    if area is None or region is None or area.type != "OUTLINER":
+        return None
+    if bpy.app.version <= (3, 1, 9):
+        # Older Blender doesn't expose selected_ids, so hover detection is impossible.
+        return None
+
+    context = bpy.context
+    view_layer = context.view_layer
+    orig_selected = context.selected_objects.copy()
+    orig_active = view_layer.objects.active
+    orig_active_collection = view_layer.active_layer_collection
+
+    element: Union[bpy.types.Object, bpy.types.Collection, None] = None
+    try:
+        with context.temp_override(window=window, area=area, region=region):
+            bpy.ops.outliner.select_box(
+                xmin=mouse_x - 1,
+                xmax=mouse_x + 1,
+                ymin=mouse_y - 1,
+                ymax=mouse_y + 1,
+                wait_for_input=False,
+                mode="SET",
+            )
+            if getattr(bpy.context, "selected_ids", None):
+                element = bpy.context.selected_ids[0]
+    except RuntimeError as e:
+        bk_logger.warning("Outliner hover detection failed: %s", e)
+
+    if not restore_selection:
+        return element
+
+    # Restore the selection state we disturbed with the probe.
+    try:
+        for ob in view_layer.objects:
+            ob.select_set(ob in orig_selected)
+        view_layer.objects.active = orig_active
+        if orig_active_collection is not None:
+            view_layer.active_layer_collection = orig_active_collection
+        # Clear the outliner's own highlight left by the probe.
+        with context.temp_override(window=window, area=area, region=region):
+            bpy.ops.outliner.select_box(
+                xmin=0, xmax=1, ymin=0, ymax=1, wait_for_input=False, mode="SET"
+            )
+    except (RuntimeError, ReferenceError) as e:
+        bk_logger.warning("Restoring selection after outliner hover failed: %s", e)
+
+    return element
 
 
 def get_active_HDR():

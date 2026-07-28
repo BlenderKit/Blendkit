@@ -1666,52 +1666,38 @@ class AssetDragOperator(bpy.types.Operator):
         self,
     ) -> Union[bpy.types.Object, bpy.types.Collection, None]:
         """Find and select the element under the mouse in the outliner.
-        Returns the selected object, collection, or None."""
+        Returns the selected object, collection, or None.
+
+        Reuses ``utils.get_outliner_element_under_mouse`` with
+        ``restore_selection=False`` so the probed element stays selected for the
+        drop. The original selection is captured here and restored later via
+        ``restore_original_selection()``.
+        """
         if not self.active_area or self.active_area.type != "OUTLINER":
             return None
 
-        context = bpy.context
-        view_layer = context.view_layer
-        selected_objects = context.selected_objects
-        active_object = context.active_object
+        view_layer = bpy.context.view_layer
 
-        orig_selected_objects = selected_objects.copy()
-        orig_active_object = active_object
-        orig_active_collection = view_layer.active_layer_collection
+        # Capture selection so restore_original_selection() can put it back after the drop.
+        self.orig_selected_objects = bpy.context.selected_objects.copy()
+        self.orig_active_object = bpy.context.active_object
+        self.orig_active_collection = view_layer.active_layer_collection
 
-        selected_element = None
-        if bpy.app.version > (3, 1, 9):
-            # doesn't make sense for lower versions, we wouldn't get the selected_ids anyway.
-            #  Simply drops into active_layer_collection in prehistoric Blender.
-            with bpy.context.temp_override(
-                window=self.active_window,
-                area=self.active_area,
-                region=self.active_region,
-            ):
-                bpy.ops.outliner.select_box(
-                    xmin=self.mouse_x - 1,
-                    xmax=self.mouse_x + 1,
-                    ymin=self.mouse_y - 1,
-                    ymax=self.mouse_y + 1,
-                    wait_for_input=False,
-                    mode="SET",
-                )
+        selected_element = utils.get_outliner_element_under_mouse(
+            self.active_window,
+            self.active_area,
+            self.active_region,
+            self.mouse_x,
+            self.mouse_y,
+            restore_selection=False,
+        )
 
-                # Get the newly selected element using selected_ids
-                if (
-                    hasattr(bpy.context, "selected_ids")
-                    and len(bpy.context.selected_ids) > 0
-                ):
-                    selected_element = bpy.context.selected_ids[0]
-
+        # Prehistoric Blender (<= 3.1.9) can't resolve selected_ids; drop into the
+        # active layer collection instead.
         if selected_element is None and hasattr(view_layer, "active_layer_collection"):
             alc = view_layer.active_layer_collection
             if alc is not None and hasattr(alc, "collection"):
                 selected_element = alc.collection
-
-        self.orig_selected_objects = orig_selected_objects
-        self.orig_active_object = orig_active_object
-        self.orig_active_collection = orig_active_collection
 
         return selected_element
 
