@@ -108,7 +108,7 @@ We use `go fmt` for formatting Go code in `./client`.
 We will use `ruff` for linting.
 
 We define versions in `devs/requirements.txt` so the local development environment is consistent with CI/CD (Github Actions).
-To install them in correct versions run: `pip3 install -U --user --r devs/requirements.py`.
+To install them in correct versions run: `pip3 install -U --user -r devs/requirements.txt`.
 
 Before committing your changes, please run:
 ```
