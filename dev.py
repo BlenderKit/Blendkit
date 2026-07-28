@@ -263,17 +263,22 @@ def copy_client_binaries(binaries_path: str, addon_build_dir: str):
         print(f"Client binaries path {binaries_path} is not a directory, exiting.")
         exit(1)
 
-    with open("client/VERSION", "r") as f:
-        expected_client_version = f"v{f.read().strip()}"
+    version_file = os.path.join(binaries_path, "VERSION")
+    with open(version_file, "r") as f:
+        prebuilt_client_version = f"v{f.read().strip()}"
 
-    client_version = os.path.basename(os.path.normpath(binaries_path))
-    if client_version != expected_client_version:
+    pinned_client_version = read_client_version_pin()
+    if prebuilt_client_version.startswith(pinned_client_version):
         print(
-            f"Client binaries version {client_version} does not match expected version {expected_client_version}, exiting."
+            f"Prebuilt bk_client binaries {prebuilt_client_version} fullfil pinned version {pinned_client_version}"
+        )
+    else:
+        print(
+            f"Prebuilt bk_client binaries {prebuilt_client_version} do not fullfil pinned version {pinned_client_version}!"
         )
         exit(1)
 
-    target_dir = os.path.join(addon_build_dir, "client", expected_client_version)
+    target_dir = os.path.join(addon_build_dir, "client", prebuilt_client_version)
     os.makedirs(target_dir)
 
     files = os.listdir(binaries_path)
@@ -285,7 +290,7 @@ def copy_client_binaries(binaries_path: str, addon_build_dir: str):
         print(f"Copied {source_file} to {target_file}")
 
     print(f"Blendkit-Client binaries copied from {binaries_path} to {target_dir}")
-    return expected_client_version
+    return prebuilt_client_version
 
 
 def do_build(
