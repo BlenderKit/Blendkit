@@ -1,5 +1,8 @@
 import unittest
 import datetime
+import types
+from unittest import mock
+
 import bpy
 
 # ``test.py`` imports this as ``<addon>.tests.<name>``; strip ``.tests`` so
@@ -231,3 +234,121 @@ class TestRoundTripThumbnailSettings(unittest.TestCase):
         self.assertEqual(target.thumbnail_resolution, 1024)
         self.assertEqual(target.thumbnail_samples, 50)
         self.assertEqual(target.thumbnail_material_color, (0.5, 0.6, 0.7))
+
+
+class TestAvailableRenderEngines(unittest.TestCase):
+    def setUp(self):
+        # Preserve and reset the module-level cache so tests don't leak state.
+        self._saved_cache = utils._RENDER_ENGINES_CACHE
+
+    def tearDown(self):
+        utils._RENDER_ENGINES_CACHE = self._saved_cache
+
+    def test_returns_cached_value_without_recomputing(self):
+        sentinel = [("FOO", "Foo", "Foo engine")]
+        utils._RENDER_ENGINES_CACHE = sentinel
+        # When the cache is populated the exact object is returned as-is,
+        # regardless of the current Blender state.
+        self.assertIs(utils.available_render_engines(None, None), sentinel)
+
+    def test_computes_and_caches_engine_list(self):
+        utils._RENDER_ENGINES_CACHE = None
+        result = utils.available_render_engines(None, None)
+        # A non-empty list of (id, name, description) triples.
+        self.assertIsInstance(result, list)
+        self.assertGreater(len(result), 0)
+        for item in result:
+            self.assertEqual(len(item), 3)
+        ids = [i[0] for i in result]
+        self.assertIn("CYCLES", ids)
+        # Cycles is moved to the front of the list.
+        self.assertEqual(ids[0], "CYCLES")
+        # A subsequent call returns the same cached object (no recompute).
+        self.assertIs(utils.available_render_engines(None, None), result)
+
+    def test_pre_51_returns_only_cycles(self):
+        utils._RENDER_ENGINES_CACHE = None
+        with mock.patch.object(utils, "bpy") as mock_bpy:
+            mock_bpy.app.version = (5, 0, 0)
+            result = utils.available_render_engines(None, None)
+        self.assertEqual(result, [("CYCLES", "Cycles", "Blender Cycles")])
+
+
+class TestFeatureFlagGuards(unittest.TestCase):
+    """The feature-flag helpers must not raise when the add-on preferences are
+    unavailable (e.g. during teardown) and must reflect the preference values."""
+
+    @staticmethod
+    def _addon_with(**prefs):
+        return types.SimpleNamespace(preferences=types.SimpleNamespace(**prefs))
+
+    def test_experimental_enabled_false_when_addon_missing(self):
+        with mock.patch.object(utils, "bpy") as mock_bpy:
+            mock_bpy.context.preferences.addons.get.return_value = None
+            self.assertFalse(utils.experimental_enabled())
+
+    def test_elevated_experimental_false_when_addon_missing(self):
+        with mock.patch.object(utils, "bpy") as mock_bpy:
+            mock_bpy.context.preferences.addons.get.return_value = None
+            self.assertFalse(utils.elevated_experimental_enabled())
+
+    def test_proxor_enabled_false_when_addon_missing(self):
+        with mock.patch.object(utils, "bpy") as mock_bpy:
+            mock_bpy.context.preferences.addons.get.return_value = None
+            self.assertFalse(utils.proxor_enabled())
+
+    def test_experimental_enabled_true_when_pref_set(self):
+        addon = self._addon_with(experimental_features=True)
+        with (
+            mock.patch.object(utils, "bpy") as mock_bpy,
+            mock.patch.object(utils, "profile_is_validator", return_value=False),
+        ):
+            mock_bpy.context.preferences.addons.get.return_value = addon
+            self.assertTrue(utils.experimental_enabled())
+
+    def test_experimental_enabled_true_for_validator(self):
+        addon = self._addon_with(experimental_features=False)
+        with (
+            mock.patch.object(utils, "bpy") as mock_bpy,
+            mock.patch.object(utils, "profile_is_validator", return_value=True),
+        ):
+            mock_bpy.context.preferences.addons.get.return_value = addon
+            self.assertTrue(utils.experimental_enabled())
+
+    def test_experimental_enabled_false_when_nothing_set(self):
+        addon = self._addon_with(experimental_features=False)
+        with (
+            mock.patch.object(utils, "bpy") as mock_bpy,
+            mock.patch.object(utils, "profile_is_validator", return_value=False),
+        ):
+            mock_bpy.context.preferences.addons.get.return_value = addon
+            self.assertFalse(utils.experimental_enabled())
+
+    def test_elevated_experimental_requires_both(self):
+        addon = self._addon_with(experimental_features=True)
+        with mock.patch.object(utils, "bpy") as mock_bpy:
+            mock_bpy.context.preferences.addons.get.return_value = addon
+            with mock.patch.object(utils, "profile_is_validator", return_value=True):
+                self.assertTrue(utils.elevated_experimental_enabled())
+            with mock.patch.object(utils, "profile_is_validator", return_value=False):
+                self.assertFalse(utils.elevated_experimental_enabled())
+
+    def test_elevated_experimental_false_without_experimental(self):
+        addon = self._addon_with(experimental_features=False)
+        with (
+            mock.patch.object(utils, "bpy") as mock_bpy,
+            mock.patch.object(utils, "profile_is_validator", return_value=True),
+        ):
+            mock_bpy.context.preferences.addons.get.return_value = addon
+            self.assertFalse(utils.elevated_experimental_enabled())
+
+    def test_proxor_enabled_reflects_pref(self):
+        with mock.patch.object(utils, "bpy") as mock_bpy:
+            mock_bpy.context.preferences.addons.get.return_value = self._addon_with(
+                proxor_enabled=True
+            )
+            self.assertTrue(utils.proxor_enabled())
+            mock_bpy.context.preferences.addons.get.return_value = self._addon_with(
+                proxor_enabled=False
+            )
+            self.assertFalse(utils.proxor_enabled())
