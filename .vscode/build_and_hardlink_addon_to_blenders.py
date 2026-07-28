@@ -16,6 +16,7 @@ import re
 import shutil
 import subprocess
 import sys
+import zipfile
 
 THIS_REPO = os.path.abspath(os.path.join(os.path.dirname(__file__), "..")).replace(
     "\\", "/"
@@ -154,26 +155,19 @@ if not was_linked:
     print("No Blender versions were linked. Exiting.")
     sys.exit(1)
 
-# build the client if needed
-was_built = False
+# Build the client via bk_client/dev.py. The build cross-compiles every
+# platform binary and packages them (plus tools/docs/icons/manifest/VERSION)
+# into a single bk_client.zip written to bk_client/out/v<version>/.
 build_script = os.path.join(THIS_REPO, "bk_client", "dev.py").replace("\\", "/")
 sub_folder = os.path.join(THIS_REPO, "bk_client").replace("\\", "/")
-build_cmds = [sys.executable, build_script, "build"]
+build_out_dir = os.path.join(sub_folder, "out").replace("\\", "/")
+build_cmds = [sys.executable, build_script, "build", "--out", build_out_dir]
 # run and wait
 subprocess.run(build_cmds, check=True, cwd=sub_folder)
 
-# copy source to client/
-# this folder is ingored and will not be synced to Blendkit addon repo
-# but will be used by the addon to run the client
-build_output_master_dir = os.path.join(
-    THIS_REPO, "out", "blenderkit", "client"
-).replace("\\", "/")
-was_built = False
-
-
 # find the latest build using regex
 highest_version = None
-for f in os.listdir(build_output_master_dir):
+for f in os.listdir(build_out_dir):
     if re.match(r"v\d+\.\d+\.\d+", f):
         # is the version the highest?
         version_numbers = list(map(int, f[1:].split(".")))
@@ -195,25 +189,56 @@ if highest_version is None:
 # prepare the highest version folder name
 highest_version_str = "v" + ".".join(map(str, highest_version))
 
-build_output_master_dir = os.path.join(
-    build_output_master_dir, highest_version_str
-).replace("\\", "/")
+# the build packages everything into a single bk_client.zip
+built_zip = os.path.join(build_out_dir, highest_version_str, "bk_client.zip").replace(
+    "\\", "/"
+)
+if not os.path.isfile(built_zip):
+    print(f"No client build zip found at {built_zip}.")
+    sys.exit(1)
 
+# extract the build to client/ (used by the addon to run the client) and to the
+# local user client bin. These folders are gitignored and will not be synced to
+# the Blendkit addon repo.
 client_dir = os.path.join(THIS_REPO, "client", highest_version_str).replace("\\", "/")
 # local user client bin
 local_client_bin = os.path.join(
     os.path.expanduser("~"), "blenderkit_data", "client", "bin", highest_version_str
 ).replace("\\", "/")
 
-print(f"Copying built client from {build_output_master_dir} to {client_dir}")
+print(f"Extracting built client {built_zip} to {client_dir}")
 
-# remove existing client build folder
+# remove existing client build folders
 _remove_existing(client_dir)
 if os.path.exists(local_client_bin):
     _remove_existing(local_client_bin)
 
-# copy the build
-shutil.copytree(build_output_master_dir, client_dir)
-shutil.copytree(build_output_master_dir, local_client_bin)
+# extract the build to both destinations
+os.makedirs(client_dir, exist_ok=True)
+os.makedirs(local_client_bin, exist_ok=True)
+with zipfile.ZipFile(built_zip) as zf:
+    zf.extractall(client_dir)
+with zipfile.ZipFile(built_zip) as zf:
+    zf.extractall(local_client_bin)
 
-print("Client build copied successfully.")
+# ensure the extracted binaries are executable (zip does not preserve the bit)
+for target_dir in (client_dir, local_client_bin):
+    for name in os.listdir(target_dir):
+        if name.startswith("bk_client"):
+            try:
+                os.chmod(os.path.join(target_dir, name), 0o755)
+            except OSError:
+                pass
+
+# Bake the exact resolved Client version into the bundle so the runtime finds
+# the client/<tag>/ folder. Without this file client_lib.get_resolved_client_version()
+# falls back to the minor pin (global_vars.CLIENT_VERSION, e.g. "v1.12") and
+# looks for client/v1.12/ instead of the actual client/v1.12.2/ patch folder.
+resolved_version_file = os.path.join(THIS_REPO, "client", "RESOLVED_VERSION").replace(
+    "\\", "/"
+)
+with open(resolved_version_file, "w") as f:
+    f.write(f"{highest_version_str}\n")
+print(f"Wrote client/RESOLVED_VERSION = {highest_version_str}")
+
+print("Client build extracted successfully.")
