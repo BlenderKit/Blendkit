@@ -186,14 +186,17 @@ def create_image_shader_info():
     shader_info.sampler(0, "FLOAT_2D", "image")
 
     shader_info.fragment_out(0, "VEC4", "fragColor")
-    shader_info.vertex_source("""
+    shader_info.vertex_source(
+        """
         void main()
         {
             uv = texCoord;
             gl_Position = ModelViewProjectionMatrix * vec4(pos.xy, 0.0, 1.0);
         }
-    """)
-    shader_info.fragment_source("""
+    """
+    )
+    shader_info.fragment_source(
+        """
         void main()
         {
             vec4 color = texture(image, uv);
@@ -206,7 +209,8 @@ def create_image_shader_info():
             color.a *= transparency;
             fragColor = color;
         }
-    """)
+    """
+    )
     return shader_info
 
 
@@ -625,16 +629,20 @@ def create_shader_info():
     shader_info.push_constant("MAT4", "ModelViewProjectionMatrix")
     shader_info.push_constant("VEC4", "color")
     shader_info.fragment_out(0, "VEC4", "fragColor")
-    shader_info.vertex_source("""
+    shader_info.vertex_source(
+        """
         void main() {
             gl_Position = ModelViewProjectionMatrix * vec4(pos, 1.0);
         }
-    """)
-    shader_info.fragment_source("""
+    """
+    )
+    shader_info.fragment_source(
+        """
         void main() {
             fragColor = color;
         }
-    """)
+    """
+    )
     return shader_info
 
 

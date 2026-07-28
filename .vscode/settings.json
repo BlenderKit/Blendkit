@@ -61,6 +61,15 @@
 
     // Pin the Black formatter extension to use the venv's black, not its bundled version.
     // This ensures format-on-save matches CI (black ~=25.9 from devs/requirements.txt).
+    //
+    // How this works: importStrategy "fromEnvironment" makes the extension run Black from the
+    // SELECTED Python interpreter's environment. Keep this repo's .venv selected as the
+    // interpreter (it has black ~=25.9) and format-on-save will match CI.
+    //
+    // WARNING: if you select an interpreter that has NO black installed (e.g. bk_proxor/.venv),
+    // the extension silently falls back to its OWN bundled Black, which may be a newer style-year
+    // (e.g. 26.x) that reformats differently than CI. If format-on-save ever disagrees with the
+    // Git black check, confirm the selected interpreter is this repo's .venv.
     "black-formatter.importStrategy": "fromEnvironment",
     "black-formatter.args": [],
 
