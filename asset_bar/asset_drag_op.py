@@ -536,7 +536,7 @@ def draw_callback_3d_progress(
                     asset_base_id = asset_data.get("assetBaseId", "")
                     proxor_data = (
                         _load_proxor_for_download(asset_base_id)
-                        if utils.experimental_enabled()
+                        if utils.proxor_enabled()
                         else None
                     )
                     if proxor_data is not None:
@@ -2147,7 +2147,7 @@ class AssetDragOperator(bpy.types.Operator):
         self.asset_data = dict(sr[self.asset_search_index])
 
         # Try to load proxor preview for model/printable assets
-        if utils.experimental_enabled() and self.asset_data.get("assetType") in (
+        if utils.proxor_enabled() and self.asset_data.get("assetType") in (
             "model",
             "printable",
         ):

@@ -219,9 +219,11 @@ def elevated_experimental_enabled() -> bool:
 
 
 def proxor_enabled() -> bool:
-    """Check if Proxor is enabled. Proxor is always be enabled for staff and validators."""
-    preferences = bpy.context.preferences.addons[__package__].preferences  # type: ignore
-    return preferences.proxor_enabled
+    """Check if Proxor is enabled in preferences."""
+    addon = bpy.context.preferences.addons.get(__package__)  # type: ignore
+    if addon is None:
+        return False
+    return bool(addon.preferences.proxor_enabled)  # type: ignore
 
 
 def get_process_flags():
