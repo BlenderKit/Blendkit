@@ -626,12 +626,14 @@ def mouse_raycast(
 
         snapped_rotation = snapped_normal.to_track_quat("Z", "Y").to_euler()
 
-        if props.randomize_rotation and snapped_normal.angle(up) < math.radians(10.0):
-            random_offset = (
-                props.offset_rotation_amount
-                + math.pi
-                + (random.random() - 0.5) * props.randomize_rotation_amount
-            )
+        if snapped_normal.angle(up) < math.radians(10.0):
+            # near-flat, up-facing surface: match the scene floor behavior,
+            # which applies a 180° flip so the model faces the same way.
+            random_offset = props.offset_rotation_amount + math.pi
+            if props.randomize_rotation:
+                random_offset += (
+                    random.random() - 0.5
+                ) * props.randomize_rotation_amount
         else:
             random_offset = (
                 props.offset_rotation_amount
