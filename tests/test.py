@@ -86,6 +86,7 @@ _test_modules = [
     "test_utils",
     "test_version_compare",
     "test_client_lib",
+    "test_bkit_oauth",
     "test_search",
     "test_asset_bar_op",
     "test_global_vars",

@@ -140,3 +140,9 @@ class TestLoginTelemetry(unittest.TestCase):
         report_event.assert_called_once_with(
             "login_started", {"placement": "premium_popup", "signup": True}
         )
+
+    def test_cancel_reports_cancelled_event(self):
+        with mock.patch.object(bkit_oauth.client_lib, "report_event") as report_event:
+            bpy.ops.wm.blenderkit_login_cancel()
+
+        report_event.assert_called_once_with("login_cancelled")
