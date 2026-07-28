@@ -153,6 +153,7 @@ def login(signup: bool, placement: str = "login") -> None:
     else:
         authorize_url = f"{global_vars.SERVER}{authorize_url}"
     authorize_url = paths.url_with_utm(authorize_url, placement)
+    client_lib.report_event("login_started", {"placement": placement, "signup": signup})
     ok = open_new_tab(authorize_url)
     bk_logger.info("Login page in browser opened (%s)", ok)
 
@@ -292,6 +293,7 @@ class CancelLoginOnline(bpy.types.Operator):
     def execute(self, context):
         preferences = bpy.context.preferences.addons[__package__].preferences
         preferences.login_attempt = False
+        client_lib.report_event("login_cancelled")
         return {"FINISHED"}
 
 

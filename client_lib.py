@@ -418,6 +418,25 @@ def report_usages(data: dict):
         )
 
 
+def report_event(event: str, data: Optional[dict] = None) -> None:
+    """Fire-and-forget telemetry event (e.g. login funnel) via Blendkit-Client.
+
+    The Client forwards it to the server with standard headers in the background
+    and surfaces nothing to the UI.
+    """
+    payload = ensure_minimal_data({"event": event, "data": data or {}})
+    try:
+        with requests.Session() as session:
+            session.post(
+                f"{get_base_url()}/report_event",
+                json=payload,
+                timeout=TIMEOUT,
+                proxies=NO_PROXIES,
+            )
+    except Exception as e:  # noqa: BLE001 - telemetry must never break the main flow
+        bk_logger.debug("report_event %s failed: %s", event, e)
+
+
 # RATINGS
 def get_rating(asset_id: str):
     data = ensure_minimal_data({"asset_id": asset_id})

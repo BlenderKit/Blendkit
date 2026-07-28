@@ -605,3 +605,33 @@ class TestClientLogPath(unittest.TestCase):
         ):
             log_path = client_lib.get_client_log_path()
         self.assertTrue(log_path.endswith("client-49452.log"))
+
+
+class TestReportEvent(unittest.TestCase):
+    def setUp(self):
+        self._saved_ports = global_vars.CLIENT_PORTS
+        self._saved_version = global_vars.CLIENT_VERSION
+        global_vars.CLIENT_PORTS = ["62485"]
+        global_vars.CLIENT_VERSION = "v1.12.0"
+
+    def tearDown(self):
+        global_vars.CLIENT_PORTS = self._saved_ports
+        global_vars.CLIENT_VERSION = self._saved_version
+
+    def test_posts_event_to_client(self):
+        with mock.patch.object(client_lib.requests, "Session") as session_cls:
+            session = session_cls.return_value.__enter__.return_value
+            client_lib.report_event("login_started", {"placement": "login_panel"})
+        url = session.post.call_args.args[0]
+        payload = session.post.call_args.kwargs["json"]
+        self.assertEqual(url, "http://127.0.0.1:62485/v1.12/report_event")
+        self.assertEqual(payload["event"], "login_started")
+        self.assertEqual(payload["data"], {"placement": "login_panel"})
+        self.assertIn("app_id", payload)
+        self.assertIn("addon_version", payload)
+
+    def test_never_raises(self):
+        with mock.patch.object(
+            client_lib.requests, "Session", side_effect=OSError("no client")
+        ):
+            client_lib.report_event("login_cancelled")

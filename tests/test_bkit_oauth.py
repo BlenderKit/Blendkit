@@ -115,3 +115,28 @@ class TestOAuthLoginURL(unittest.TestCase):
 
         query = parse_qs(urlsplit(open_new_tab.call_args.args[0]).query)
         self.assertEqual(query["utm_content"], ["premium_popup"])
+
+
+class TestLoginTelemetry(unittest.TestCase):
+    def test_login_reports_started_event_with_placement(self):
+        with (
+            mock.patch.object(global_vars, "SERVER", "https://example.com"),
+            mock.patch.object(bkit_oauth.client_lib, "get_port", return_value="12345"),
+            mock.patch.object(
+                bkit_oauth, "generate_pkce_pair", return_value=("verifier", "challenge")
+            ),
+            mock.patch.object(
+                bkit_oauth.secrets, "token_urlsafe", return_value="state-token"
+            ),
+            mock.patch.object(
+                bkit_oauth, "get_system_id", return_value="000000000000123"
+            ),
+            mock.patch.object(bkit_oauth.client_lib, "send_oauth_verification_data"),
+            mock.patch.object(bkit_oauth, "open_new_tab", return_value=True),
+            mock.patch.object(bkit_oauth.client_lib, "report_event") as report_event,
+        ):
+            bkit_oauth.login(signup=True, placement="premium_popup")
+
+        report_event.assert_called_once_with(
+            "login_started", {"placement": "premium_popup", "signup": True}
+        )
