@@ -55,6 +55,7 @@ bk_logger = logging.getLogger(__name__)
 def handle_login_task(task: client_tasks.Task):
     """Handles incoming task of type Login. Writes tokens if it finished successfully, logouts the user on error."""
     if task.status == "finished":
+        client_lib.report_event("login_completed")
         tasks_queue.add_task(
             (
                 write_tokens,
@@ -66,6 +67,7 @@ def handle_login_task(task: client_tasks.Task):
             )
         )
     elif task.status == "error":
+        client_lib.report_event("login_failed", {"message": str(task.message)[:256]})
         logout()
         reports.add_report(task.message, type="ERROR", details=task.message_detailed)
 

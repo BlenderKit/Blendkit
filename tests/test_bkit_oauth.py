@@ -146,3 +146,47 @@ class TestLoginTelemetry(unittest.TestCase):
             bpy.ops.wm.blenderkit_login_cancel()
 
         report_event.assert_called_once_with("login_cancelled")
+
+    def test_finished_login_task_reports_completed(self):
+        task = mock.Mock()
+        task.status = "finished"
+        task.result = {"access_token": "at", "refresh_token": "rt"}
+        with (
+            mock.patch.object(bkit_oauth.tasks_queue, "add_task") as add_task,
+            mock.patch.object(bkit_oauth.client_lib, "report_event") as report_event,
+        ):
+            bkit_oauth.handle_login_task(task)
+
+        report_event.assert_called_once_with("login_completed")
+        add_task.assert_called_once()
+
+    def test_error_login_task_reports_failed_with_message(self):
+        task = mock.Mock()
+        task.status = "error"
+        task.message = "Server is down"
+        task.message_detailed = "details"
+        with (
+            mock.patch.object(bkit_oauth, "logout") as logout,
+            mock.patch.object(bkit_oauth.reports, "add_report"),
+            mock.patch.object(bkit_oauth.client_lib, "report_event") as report_event,
+        ):
+            bkit_oauth.handle_login_task(task)
+
+        report_event.assert_called_once_with(
+            "login_failed", {"message": "Server is down"}
+        )
+        logout.assert_called_once()
+
+    def test_token_refresh_does_not_report_login_completed(self):
+        """write_tokens is shared with token refresh - the event must live in
+        handle_login_task only, or every refresh would count as a login."""
+        with (
+            mock.patch.object(bkit_oauth, "bpy") as bpy_mock,
+            mock.patch.object(bkit_oauth.search_price, "clear_price_cache"),
+            mock.patch.object(bkit_oauth.client_lib, "report_event") as report_event,
+        ):
+            # below the 4.2 extensions branch, which needs a real repo setup
+            bpy_mock.app.version = (3, 6, 0)
+            bkit_oauth.write_tokens("at", "rt", {"expires_in": 3600})
+
+        report_event.assert_not_called()
