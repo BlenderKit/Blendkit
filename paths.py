@@ -99,6 +99,17 @@ def find_in_local(text=""):
     return fs
 
 
+def get_unlock_asset_url(asset_id, placement: str) -> str:
+    """Purchase/unlock page for a locked asset.
+
+    Keeps ``from_addon=True`` - the server page renders add-on-specific content
+    from it (see get_blenderkit/views.py) - and adds UTM tags for attribution.
+    """
+    return url_with_utm(
+        f"{global_vars.SERVER}/get-blenderkit/{asset_id}/?from_addon=True", placement
+    )
+
+
 def get_author_gallery_url(author_id: int, placement: str = "author_gallery"):
     return url_with_utm(
         f"{global_vars.SERVER}/asset-gallery?query=author_id:{author_id}", placement

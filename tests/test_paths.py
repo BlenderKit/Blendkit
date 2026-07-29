@@ -468,3 +468,9 @@ class TestUrlWithUtm(unittest.TestCase):
     def test_getters_are_tagged(self):
         self.assertIn("utm_content=author_gallery", paths.get_author_gallery_url(7))
         self.assertIn("utm_content=asset_web_view", paths.get_asset_gallery_url("abc"))
+
+    def test_unlock_url_keeps_from_addon_and_tags(self):
+        url = paths.get_unlock_asset_url("abc-123", "asset_unlock_panel")
+        self.assertIn("/get-blenderkit/abc-123/?from_addon=True&", url)
+        self.assertIn("utm_source=blender_addon", url)
+        self.assertIn("utm_content=asset_unlock_panel", url)

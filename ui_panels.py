@@ -3119,7 +3119,9 @@ class AssetPopupCard(bpy.types.Operator, ratings_utils.RatingProperties):
             box,
             "License",
             text,
-            url=f"{global_vars.SERVER}/docs/licenses/",
+            url=paths.url_with_utm(
+                f"{global_vars.SERVER}/docs/licenses/", "license_docs"
+            ),
             tooltip="All Blendkit assets are available for commercial use. \n"
             "Click to read more about Blendkit licenses on the website",
         )
@@ -3152,7 +3154,9 @@ class AssetPopupCard(bpy.types.Operator, ratings_utils.RatingProperties):
                 "Verification",
                 self.asset_data["verificationStatus"],
                 icon_value=icon.icon_id,
-                url=f"{global_vars.SERVER}/docs/validation-status/",
+                url=paths.url_with_utm(
+                    f"{global_vars.SERVER}/docs/validation-status/", "validation_docs"
+                ),
                 tooltip=verification_status_tooltips.get(
                     self.asset_data["verificationStatus"], "unknown status"
                 ),
@@ -3516,7 +3520,7 @@ class AssetPopupCard(bpy.types.Operator, ratings_utils.RatingProperties):
             row.label(text="Please introduce yourself to the community!")
 
             op = col.operator("wm.blenderkit_url", text="Edit your profile")
-            op.url = f"{global_vars.SERVER}/profile"  # type: ignore[attr-defined]
+            op.url = paths.url_with_utm(f"{global_vars.SERVER}/profile", "profile_edit")  # type: ignore[attr-defined]
             op.tooltip = "Edit your profile on Blendkit webpage"  # type: ignore[attr-defined]
 
         pcoll = icons.icon_collections["main"]
@@ -3730,7 +3734,9 @@ class AssetPopupCard(bpy.types.Operator, ratings_utils.RatingProperties):
             op = layout.operator(
                 "wm.blenderkit_url", text="Unlock this asset", icon="UNLOCKED"
             )
-            op.url = f'{global_vars.SERVER}/get-blenderkit/{self.asset_data["id"]}/?from_addon=True'
+            op.url = paths.get_unlock_asset_url(
+                self.asset_data["id"], "asset_unlock_panel"
+            )
 
     def draw_menu_desc_author(self, context, layout, width=330):
         box = layout.column()

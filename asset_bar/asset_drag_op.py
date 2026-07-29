@@ -2186,7 +2186,9 @@ class AssetDragOperator(bpy.types.Operator):
         ):
             message = "This addon is not purchased yet."
             link_text = "Purchase add-on online"
-            url = f'{global_vars.SERVER}/get-blenderkit/{self.asset_data["id"]}/?from_addon=True'
+            url = paths.get_unlock_asset_url(
+                self.asset_data["id"], "addon_purchase_drag"
+            )
             bpy.ops.wm.blenderkit_url_dialog(
                 "INVOKE_REGION_WIN", url=url, message=message, link_text=link_text
             )
@@ -2198,7 +2200,7 @@ class AssetDragOperator(bpy.types.Operator):
 
             message = "This asset is included in Full Plan.\nSupport asset creators & open-source by subscribing."
             link_text = "Unlock All Assets"
-            url = f"{global_vars.SERVER}/get-blenderkit/{self.asset_data['id']}/?from_addon=True"
+            url = paths.get_unlock_asset_url(self.asset_data["id"], "asset_unlock_drag")
             bpy.ops.wm.blenderkit_url_dialog(
                 "INVOKE_REGION_WIN", url=url, message=message, link_text=link_text
             )
