@@ -105,12 +105,6 @@ class TestUtilsRemoveUrlProtocol(unittest.TestCase):
 
 
 class TestAssetFromNewerBlenderVersion(unittest.TestCase):
-    def test_older_major_asset(self):
-        asset = {"assetType": "model", "sourceAppVersion": "3.6.0"}
-        has_warning, level = utils.asset_from_newer_blender_version(asset, (4, 0, 0))
-        self.assertTrue(has_warning)
-        self.assertEqual(level, "major_older")
-
     def test_older_minor_asset(self):
         asset = {"assetType": "model", "sourceAppVersion": "4.0.0"}
         has_warning, level = utils.asset_from_newer_blender_version(asset, (4, 1, 0))
@@ -148,12 +142,6 @@ class TestAssetFromNewerBlenderVersion(unittest.TestCase):
         asset = {"assetType": "model", "sourceAppVersion": "4"}
         has_warning, level = utils.asset_from_newer_blender_version(asset, (4, 0, 0))
         self.assertFalse(has_warning)
-
-    def test_two_major_versions_older(self):
-        asset = {"assetType": "model", "sourceAppVersion": "2.93.0"}
-        has_warning, level = utils.asset_from_newer_blender_version(asset, (4, 2, 0))
-        self.assertTrue(has_warning)
-        self.assertEqual(level, "major_older")
 
 
 class TestAssetVersionAsTuple(unittest.TestCase):

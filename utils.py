@@ -219,9 +219,11 @@ def elevated_experimental_enabled() -> bool:
 
 
 def proxor_enabled() -> bool:
-    """Check if Proxor is enabled. Proxor is always be enabled for staff and validators."""
-    preferences = bpy.context.preferences.addons[__package__].preferences  # type: ignore
-    return preferences.proxor_enabled
+    """Check if Proxor is enabled in preferences."""
+    addon = bpy.context.preferences.addons.get(__package__)  # type: ignore
+    if addon is None:
+        return False
+    return bool(addon.preferences.proxor_enabled)  # type: ignore
 
 
 def get_process_flags():
@@ -1584,7 +1586,6 @@ def asset_from_newer_blender_version(asset_data, blender_version=None):
 
     Returns (needs_warning: bool, difference: str) where difference is one of:
     - "major_newer": asset from a newer major version (high risk)
-    - "major_older": asset from an older major version (possible incompatibility)
     - "minor": asset from a newer minor version within same major
     - "patch": asset from a newer patch version within same major.minor
     - "": no compatibility concern
@@ -1604,7 +1605,7 @@ def asset_from_newer_blender_version(asset_data, blender_version=None):
     if blender_version[0] < int(asset_ver[0]):
         return True, "major_newer"
     elif blender_version[0] > int(asset_ver[0]):
-        return True, "major_older"
+        return False, ""
 
     if blender_version[1] < int(asset_ver[1]):
         return True, "minor"

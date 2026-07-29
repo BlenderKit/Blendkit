@@ -1080,6 +1080,7 @@ def draw_proxor_download(
         ProxorLiteDrawBuilder,
         _get_mvp,
         default_draw_context,
+        draw_arrow_batch,
     )
 
     vis = progress if progress is not None else 100
@@ -1179,5 +1180,10 @@ def draw_proxor_download(
             pts["batch"].draw(shader)
             gpu.state.depth_test_set("NONE")
             gpu.state.blend_set("NONE")
+
+        # Draw floor-level forward arrow (matches the default green bbox arrow)
+        arrow = draw_data.get("arrow")
+        if arrow:
+            draw_arrow_batch(arrow, float(getattr(ctx, "arrow_width", 2.0)))
     finally:
         gpu.matrix.pop()

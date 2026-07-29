@@ -25,6 +25,7 @@ import os
 import platform
 import shutil
 import subprocess
+import sys
 import tempfile
 import threading
 from os import path
@@ -73,9 +74,13 @@ def get_api_version() -> str:
     """Get version of API Client is expected to use. To keep stuff simple the API version is derrived from Client's version.
     From Client version vX.Y.Z we remove the .Z part to effectively get the vX.Y version of the API. For nonbreaking changes
     we increase the patch version of the Client. If the change breaks the API, then increase of minor/major version is expected.
+    ``global_vars.CLIENT_VERSION`` is normally already the minor pin (vX.Y), but
+    we stay tolerant of a full vX.Y.Z value too.
     """
     splitted = global_vars.CLIENT_VERSION.split(".")
-    return ".".join(splitted[:-1])
+    if len(splitted) >= 3:
+        return ".".join(splitted[:2])
+    return global_vars.CLIENT_VERSION
 
 
 def get_base_url() -> str:
@@ -792,9 +797,13 @@ def decide_client_binary_name() -> str:
     """Decide the name of the Blendkit-Client binary based on the current operating system and architecture.
     We unify the OS and CPU architecture naming to make it more accessible for general public.
     Darwin is renamed to MacOS. The CPU architecture is aligned to x86_64 or arm64.
+    On pre-Windows-10 machines (Windows 7/8/8.1) the dedicated legacy binary is
+    used, because the standard binary is built with a modern Go toolchain that
+    requires Windows 10+.
     Possible return values:
     - bk_client-windows-x86_64.exe
     - bk_client-windows-arm64.exe
+    - bk_client-windows7-x86_64.exe
     - bk_client-linux-x86_64
     - bk_client-linux-arm64
     - bk_client-macos-x86_64
@@ -811,9 +820,27 @@ def decide_client_binary_name() -> str:
         architecture = "arm64"
 
     if os_name == "windows":
+        if architecture == "x86_64" and _is_pre_windows_10():
+            return "bk_client-windows7-x86_64.exe"
         return f"bk_client-{os_name}-{architecture}.exe".lower()
 
     return f"bk_client-{os_name}-{architecture}".lower()
+
+
+def _is_pre_windows_10() -> bool:
+    """True on Windows 7/8/8.1 (anything older than Windows 10).
+
+    Used to select the legacy Client binary, since the standard build requires
+    Windows 10+. Non-Windows platforms always return False.
+    """
+    if platform.system().lower() != "windows":
+        return False
+    try:
+        winver = sys.getwindowsversion()  # type: ignore[attr-defined]
+    except (AttributeError, OSError):
+        return False
+    # Windows 10/11 report major version 10; Windows 7/8/8.1 report major 6.
+    return (winver.major, winver.minor) < (10, 0)
 
 
 def get_client_directory() -> str:
@@ -869,6 +896,32 @@ def get_client_log_path() -> str:
     return path.abspath(path.join(log_dir, log_name))
 
 
+_resolved_client_version = None
+
+
+def get_resolved_client_version() -> str:
+    """Exact vX.Y.Z of the bundled Blendkit-Client binary.
+
+    Read once from ``client/RESOLVED_VERSION`` in the add-on directory, which is
+    written at build time from the exact GitHub release that was downloaded
+    (bk_client auto-bumps the patch on each PR). Falls back to
+    ``global_vars.CLIENT_VERSION`` (the minor pin) when the file is missing -
+    e.g. a plain source checkout that has not been built yet.
+    """
+    global _resolved_client_version
+    if _resolved_client_version:
+        return _resolved_client_version
+    addon_dir = path.dirname(__file__)
+    version_file = path.join(addon_dir, "client", "RESOLVED_VERSION")
+    try:
+        with open(version_file) as f:
+            resolved = f.read().strip()
+    except OSError:
+        resolved = ""
+    _resolved_client_version = resolved or global_vars.CLIENT_VERSION
+    return _resolved_client_version
+
+
 def get_preinstalled_client_path() -> str:
     """Get the path to the preinstalled Blendkit-Client binary - located in add-on directory.
     This is the binary that is shipped with the add-on. It is copied to global_dir/client/vX.Y.Z on first run.
@@ -876,7 +929,7 @@ def get_preinstalled_client_path() -> str:
     addon_dir = path.dirname(__file__)
     binary_name = decide_client_binary_name()
     binary_path = path.join(
-        addon_dir, "client", global_vars.CLIENT_VERSION, binary_name
+        addon_dir, "client", get_resolved_client_version(), binary_name
     )
     return path.abspath(binary_path)
 
@@ -890,7 +943,7 @@ def get_client_binary_path():
     from the add-on directory.
     Returns: (str, str) - path to the Client binary, version of the Client binary
     """
-    ver_string = global_vars.CLIENT_VERSION
+    ver_string = get_resolved_client_version()
     if _use_inplace_client:
         return get_preinstalled_client_path(), ver_string
     client_dir = get_client_directory()

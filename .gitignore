@@ -3,6 +3,7 @@ out
 # ignore built binaries
 client/v*.*.*
 client/client.exe
+client/RESOLVED_VERSION
 bk_client/client/bk_client-settings.json
 
 pyproject.toml

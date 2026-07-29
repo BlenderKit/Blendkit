@@ -2,7 +2,6 @@ import unittest
 
 import bpy
 
-
 # ``test.py`` imports this as ``<addon>.tests.<name>``; strip ``.tests`` so
 # ``__package__`` is the add-on's own module - needed by the relative import
 # and any ``bpy...addons[__package__]`` lookups below. Scanning ``addons`` for
@@ -15,13 +14,23 @@ from . import global_vars
 
 class TestVersions(unittest.TestCase):
     def test_client_version(self):
-        """Client version in ./bk_client/client/VERSION and in global_vars.CLIENT_VERSION must be the same."""
-        with open("bk_client/client/VERSION") as f:
-            client_version = f.read().strip()
+        """global_vars.CLIENT_VERSION pins the MINOR series (vX.Y) of the Client.
+
+        bk_client auto-bumps the patch on each PR, so we only require the pinned
+        minor to match the minor of ./bk_client/client/VERSION. The submodule may
+        be absent (download-only checkouts) - then there is nothing to compare.
+        """
+        try:
+            with open("bk_client/client/VERSION") as f:
+                client_version = f.read().strip()
+        except OSError:
+            self.skipTest("bk_client submodule VERSION not available")
+
+        submodule_minor = "v" + ".".join(client_version.split(".")[:2])
         self.assertEqual(
             global_vars.CLIENT_VERSION,
-            f"v{client_version}",
-            "global_vars.CLIENT_VERSION does not match the content of client/VERSION",
+            submodule_minor,
+            "global_vars.CLIENT_VERSION minor series does not match client/VERSION",
         )
 
 

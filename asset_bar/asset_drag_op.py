@@ -536,7 +536,7 @@ def draw_callback_3d_progress(
                     asset_base_id = asset_data.get("assetBaseId", "")
                     proxor_data = (
                         _load_proxor_for_download(asset_base_id)
-                        if utils.experimental_enabled()
+                        if utils.proxor_enabled()
                         else None
                     )
                     if proxor_data is not None:
@@ -626,12 +626,14 @@ def mouse_raycast(
 
         snapped_rotation = snapped_normal.to_track_quat("Z", "Y").to_euler()
 
-        if props.randomize_rotation and snapped_normal.angle(up) < math.radians(10.0):
-            random_offset = (
-                props.offset_rotation_amount
-                + math.pi
-                + (random.random() - 0.5) * props.randomize_rotation_amount
-            )
+        if snapped_normal.angle(up) < math.radians(10.0):
+            # near-flat, up-facing surface: match the scene floor behavior,
+            # which applies a 180° flip so the model faces the same way.
+            random_offset = props.offset_rotation_amount + math.pi
+            if props.randomize_rotation:
+                random_offset += (
+                    random.random() - 0.5
+                ) * props.randomize_rotation_amount
         else:
             random_offset = (
                 props.offset_rotation_amount
@@ -2147,7 +2149,7 @@ class AssetDragOperator(bpy.types.Operator):
         self.asset_data = dict(sr[self.asset_search_index])
 
         # Try to load proxor preview for model/printable assets
-        if utils.experimental_enabled() and self.asset_data.get("assetType") in (
+        if utils.proxor_enabled() and self.asset_data.get("assetType") in (
             "model",
             "printable",
         ):

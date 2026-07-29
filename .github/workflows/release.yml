@@ -44,13 +44,11 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Set up Go
-        uses: actions/setup-go@v5
-        with:
-          go-version-file: './client/go.mod'
-          cache-dependency-path: './client/go.sum'
-        id: go
+      - name: Checkout bk_proxor submodule
+        run: git submodule update --init bk_proxor
       - name: Build add-on
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: python dev.py build
       - name: Rename add-on
         run: mv out/blenderkit.zip out/blenderkit-v${{inputs.version}}.zip
@@ -83,12 +81,8 @@ jobs:
       matrix: ${{ fromJSON(needs.make-tests-matrix.outputs.matrix) }}
     steps:
       - uses: actions/checkout@v4
-      - name: Set up Go
-        uses: actions/setup-go@v5
-        with:
-          go-version-file: './client/go.mod'
-          cache-dependency-path: './client/go.sum'
-        id: go
+      - name: Checkout bk_proxor submodule
+        run: git submodule update --init bk_proxor
       - name: Cache Blender
         id: blenderBinaryCache
         uses: actions/cache@v4
@@ -106,4 +100,6 @@ jobs:
       - name: Add Blender to PATH
         run: ln -s /home/runner/blender/blender /home/runner/.local/bin/blender
       - name: TEST
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: python dev.py test --install-at /home/runner/.config/blender/${{matrix.version_x_y}}/scripts/addons
