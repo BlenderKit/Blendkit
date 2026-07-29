@@ -506,6 +506,14 @@ class TestStableSystemID(unittest.TestCase):
         with open(self._id_filepath()) as f:
             self.assertEqual(f.read(), "000000000000042")
 
+    def test_binary_corrupt_file_is_replaced(self):
+        with open(self._id_filepath(), "wb") as f:
+            f.write(b"\xff\xfe\x00garbage")
+        with mock.patch.object(paths.uuid, "getnode", return_value=42):
+            self.assertEqual(paths.get_stable_system_id(), "000000000000042")
+        with open(self._id_filepath()) as f:
+            self.assertEqual(f.read(), "000000000000042")
+
     def test_unwritable_dir_still_returns_id(self):
         with (
             mock.patch.object(paths.uuid, "getnode", return_value=7),

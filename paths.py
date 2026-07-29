@@ -114,7 +114,7 @@ def get_stable_system_id() -> str:
         if re.fullmatch(r"\d{15}", stored):
             _stable_system_id = stored
             return stored
-    except OSError:
+    except (OSError, UnicodeDecodeError):
         pass
 
     value = f"{uuid.getnode():015d}"
