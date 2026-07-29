@@ -33,6 +33,7 @@ from .. import (
     bg_blender,
     client_lib,
     colors,
+    unlock_options,
     download,
     global_vars,
     image_utils,
@@ -2198,11 +2199,16 @@ class AssetDragOperator(bpy.types.Operator):
 
         if not self.asset_data.get("canDownload"):
 
-            message = "This asset is included in Full Plan.\nSupport asset creators & open-source by subscribing."
-            link_text = "Unlock All Assets"
-            url = paths.get_unlock_asset_url(self.asset_data["id"], "asset_unlock_drag")
+            variant = unlock_options.get_unlock_variant()
+            url = paths.get_unlock_asset_url(
+                self.asset_data["id"], "asset_unlock_drag", variant.identifier
+            )
             bpy.ops.wm.blenderkit_url_dialog(
-                "INVOKE_REGION_WIN", url=url, message=message, link_text=link_text
+                "INVOKE_REGION_WIN",
+                url=url,
+                header=variant.header,
+                message=variant.message,
+                link_text=variant.button_text,
             )
             ui_props.dragging = False
             cls.active_operator_id = None
