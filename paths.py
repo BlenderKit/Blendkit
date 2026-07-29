@@ -26,6 +26,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import uuid
 from functools import lru_cache
 
 import bpy
@@ -67,6 +68,67 @@ def url_with_utm(url: str, placement: str) -> str:
         f"{base}{separator}utm_source=blender_addon&utm_medium=app"
         f"&utm_content={placement}{hash_sign}{fragment}"
     )
+
+
+_stable_system_id: str | None = None
+
+
+def get_system_id_filepath() -> str:
+    """Where the machine ID lives; the Client reads the same file (see get_stable_system_id)."""
+    return os.path.join(default_global_dict(), "system_id")
+
+
+def get_stable_system_id() -> str:
+    """Machine ID for telemetry: 15 digits, persisted in the global data directory.
+
+    It removes the churn that made one machine look like many: ``uuid.getnode()``
+    changes with MAC randomization, virtual interfaces and its own random
+    fallback, so the value is stored once and reused. The first run stores the
+    current ``uuid.getnode()``, so machines keep the ID they already reported.
+
+    Deliberately kept dumb - a bare 15-digit file, no fingerprinting:
+
+    - Deleting ``blenderkit_data`` (a documented troubleshooting step) or editing
+      the file only resets the ID to ``uuid.getnode()``, so a machine with a
+      stable MAC lands back on the same ID; one whose MAC drifted gets a new one.
+      Anything that is not 15 digits is ignored and rewritten.
+    - Copying the file to another machine (VM images, synced home directories)
+      makes both report one ID. Measured on production this is negligible -
+      5 of 26,917 machines a day serve 5+ accounts, none serve 20+ - and the
+      obvious guard (a hostname marker) would re-introduce churn on the machines
+      this exists for, since hostnames change with the network on macOS.
+    - Blendkit-Client reads this same file, so both agree on the ID (the add-on
+      also passes it via ``--system_id`` when it spawns the Client).
+
+    Falls back to ``uuid.getnode()`` without persisting when the directory is not
+    writable.
+    """
+    global _stable_system_id
+    if _stable_system_id is not None:
+        return _stable_system_id
+
+    id_filepath = get_system_id_filepath()
+    try:
+        with open(id_filepath) as f:
+            stored = f.read().strip()
+        if re.fullmatch(r"\d{15}", stored):
+            _stable_system_id = stored
+            return stored
+    except (OSError, UnicodeDecodeError):
+        pass
+
+    value = f"{uuid.getnode():015d}"
+    try:
+        os.makedirs(default_global_dict(), exist_ok=True)
+        tmp_filepath = f"{id_filepath}.{os.getpid()}.tmp"
+        with open(tmp_filepath, "w") as f:
+            f.write(value)
+        os.replace(tmp_filepath, id_filepath)
+    except OSError as e:
+        bk_logger.warning("Could not persist system_id to %s: %s", id_filepath, e)
+
+    _stable_system_id = value
+    return value
 
 
 def _normalize_path(path_value: str | None) -> str:

@@ -736,6 +736,13 @@ def check_blenderkit_client_return_code() -> tuple[int, str]:
     return exit_code, message
 
 
+def _get_stable_system_id_safe() -> str:
+    """Stable system_id for the Client; local import avoids circular paths<->client_lib import."""
+    from . import paths
+
+    return paths.get_stable_system_id()
+
+
 def start_blenderkit_client():
     """Start Blendkit-client in separate process.
     1. Check if binary is available at global_dir/client/vX.Y.Z/bk_client-<os>-<arch>(.exe)
@@ -799,6 +806,8 @@ def start_blenderkit_client():
                     "Blender",
                     "--pid",
                     str(os.getpid()),
+                    "--system_id",
+                    _get_stable_system_id_safe(),
                 ],
                 stdout=log,
                 stderr=log,

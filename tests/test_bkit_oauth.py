@@ -15,8 +15,10 @@ from . import bkit_oauth, global_vars
 
 
 class TestOAuthLoginURL(unittest.TestCase):
-    def test_get_system_id_zero_pads_uuid_node(self):
-        with mock.patch.object(bkit_oauth.uuid, "getnode", return_value=123):
+    def test_get_system_id_delegates_to_stable_id(self):
+        with mock.patch.object(
+            bkit_oauth.paths, "get_stable_system_id", return_value="000000000000123"
+        ):
             self.assertEqual(bkit_oauth.get_system_id(), "000000000000123")
 
     def test_login_adds_system_id_to_authorize_url(self):
