@@ -468,3 +468,60 @@ class TestUrlWithUtm(unittest.TestCase):
     def test_getters_are_tagged(self):
         self.assertIn("utm_content=author_gallery", paths.get_author_gallery_url(7))
         self.assertIn("utm_content=asset_web_view", paths.get_asset_gallery_url("abc"))
+
+
+class TestStableSystemID(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        patcher = mock.patch.object(
+            paths, "default_global_dict", return_value=self.tmp.name
+        )
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        paths._stable_system_id = None
+        self.addCleanup(setattr, paths, "_stable_system_id", None)
+
+    def _id_filepath(self):
+        return os.path.join(self.tmp.name, "system_id")
+
+    def test_first_run_persists_current_node_id(self):
+        with mock.patch.object(paths.uuid, "getnode", return_value=123):
+            value = paths.get_stable_system_id()
+        self.assertEqual(value, "000000000000123")
+        with open(self._id_filepath()) as f:
+            self.assertEqual(f.read(), "000000000000123")
+
+    def test_persisted_id_survives_node_id_change(self):
+        with open(self._id_filepath(), "w") as f:
+            f.write("000000000000123")
+        with mock.patch.object(paths.uuid, "getnode", return_value=999):
+            self.assertEqual(paths.get_stable_system_id(), "000000000000123")
+
+    def test_corrupt_file_is_replaced(self):
+        with open(self._id_filepath(), "w") as f:
+            f.write("not-a-system-id")
+        with mock.patch.object(paths.uuid, "getnode", return_value=42):
+            self.assertEqual(paths.get_stable_system_id(), "000000000000042")
+        with open(self._id_filepath()) as f:
+            self.assertEqual(f.read(), "000000000000042")
+
+    def test_unwritable_dir_still_returns_id(self):
+        with (
+            mock.patch.object(paths.uuid, "getnode", return_value=7),
+            mock.patch.object(paths.os, "makedirs", side_effect=OSError("read-only")),
+        ):
+            self.assertEqual(paths.get_stable_system_id(), "000000000000007")
+        self.assertFalse(os.path.exists(self._id_filepath()))
+
+    def test_cached_after_first_call(self):
+        with mock.patch.object(paths.uuid, "getnode", return_value=5):
+            first = paths.get_stable_system_id()
+        os.remove(self._id_filepath())
+        self.assertEqual(paths.get_stable_system_id(), first)
+
+    def test_filepath_is_in_global_dir(self):
+        """The Client reads this exact path, so it must stay in the global data dir."""
+        self.assertEqual(
+            paths.get_system_id_filepath(), os.path.join(self.tmp.name, "system_id")
+        )

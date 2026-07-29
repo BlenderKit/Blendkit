@@ -23,7 +23,6 @@ import random
 import secrets
 import string
 import time
-import uuid
 from urllib.parse import quote as urlquote
 from webbrowser import open_new_tab
 
@@ -174,7 +173,7 @@ def generate_pkce_pair() -> tuple[str, str]:
 
 
 def get_system_id() -> str:
-    return f"{uuid.getnode():015d}"
+    return paths.get_stable_system_id()
 
 
 def write_tokens(auth_token, refresh_token, oauth_response):
