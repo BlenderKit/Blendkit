@@ -78,6 +78,7 @@ if "bpy" in locals():
     colors = reload(colors)
     client_lib = reload(client_lib)
     client_tasks = reload(client_tasks)
+    clipboard_x11 = reload(clipboard_x11)
     disclaimer_op = reload(disclaimer_op)
     warning_dialog = reload(warning_dialog)
     download = reload(download)
@@ -143,6 +144,7 @@ else:
     from . import client_lib
     from . import client_tasks
     from . import client_thread
+    from . import clipboard_x11
     from . import disclaimer_op
     from . import warning_dialog
     from . import download

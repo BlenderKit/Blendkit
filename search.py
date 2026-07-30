@@ -38,6 +38,7 @@ from . import (
     categories,
     client_lib,
     client_tasks,
+    clipboard_x11,
     datas,
     download,
     global_vars,
@@ -514,11 +515,18 @@ def check_clipboard():
     https://www.blendkit.com/get-blendkit/54ff5c85-2c73-49e9-ba80-aec18616a408/
     """
     global last_clipboard
-    try:  # could be problematic on Linux
-        current_clipboard = str(bpy.context.window_manager.clipboard)
-    except Exception as e:
-        bk_logger.warning("Failed to get clipboard: %s", e)
-        return
+    if clipboard_x11.is_available():
+        # X11: bounded, non-blocking read so a dead selection owner cannot hang
+        # Blender's main thread (issue #2244). None = unreadable this tick, skip.
+        current_clipboard = clipboard_x11.get_clipboard_text()
+        if current_clipboard is None:
+            return
+    else:
+        try:  # could be problematic on Linux
+            current_clipboard = str(bpy.context.window_manager.clipboard)
+        except Exception as e:
+            bk_logger.warning("Failed to get clipboard: %s", e)
+            return
 
     if current_clipboard == last_clipboard:
         return
