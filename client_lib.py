@@ -205,7 +205,9 @@ def get_reports(app_id: int):
             reorder_ports(port)
             return report
         except Exception as e:
-            bk_logger.info("Failed to get Blendkit-Client reports: %s", e)
+            bk_logger.debug(
+                "Failed to get Blendkit-Client reports on port %s: %s", port, e
+            )
             last_exception = e
     if last_exception is not None:
         raise last_exception
@@ -744,6 +746,7 @@ def start_blenderkit_client():
     # in-place mode which redirects the log to the system temp dir.
     log_path = get_client_log_path()
     try:
+        os.makedirs(path.dirname(log_path), exist_ok=True)
         log_file = open(log_path, "wb")
     except (PermissionError, OSError) as e:
         bk_logger.warning(
@@ -754,6 +757,7 @@ def start_blenderkit_client():
         _use_inplace_client = True
         log_path = get_client_log_path()
         try:
+            os.makedirs(path.dirname(log_path), exist_ok=True)
             log_file = open(log_path, "wb")
         except (PermissionError, OSError) as e2:
             bk_logger.error(
