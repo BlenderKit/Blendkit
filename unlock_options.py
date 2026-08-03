@@ -66,14 +66,23 @@ class UnlockVariant:
 # Locally defined copy options for the unlock popup.
 _HARDCODED_VARIANTS: tuple[UnlockVariant, ...] = (
     UnlockVariant(
-        identifier="control",
+        identifier="support",
         header="This asset is included in Full Plan.",
-        message="Unlock all assets and support creators & open-source\n"
+        message="Unlock all assets\n"\
+            "and support creators & open-source\n"
         "by subscribing.",
         button_text="Get Full Plan",
     ),
     UnlockVariant(
-        identifier="support_creators",
+            identifier="now",
+            header="This asset is included in Full Plan.",
+            message="Unlock all assets\n"\
+                "Support creators & open-source\n"
+            "Subscribe now.",
+            button_text="Get Full Plan",
+        ),
+    UnlockVariant(
+        identifier="join",
         header="Unlock this asset with the Full Plan.",
         message="Join thousands of artists.\n"
         "Your subscription funds the creators\n"
