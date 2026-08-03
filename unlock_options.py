@@ -68,19 +68,19 @@ _HARDCODED_VARIANTS: tuple[UnlockVariant, ...] = (
     UnlockVariant(
         identifier="support",
         header="This asset is included in Full Plan.",
-        message="Unlock all assets\n"\
-            "and support creators & open-source\n"
+        message="Unlock all assets\n"
+        "and support creators & open-source\n"
         "by subscribing.",
         button_text="Get Full Plan",
     ),
     UnlockVariant(
-            identifier="now",
-            header="This asset is included in Full Plan.",
-            message="Unlock all assets\n"\
-                "Support creators & open-source\n"
-            "Subscribe now",
-            button_text="Get Full Plan",
-        ),
+        identifier="now",
+        header="This asset is included in Full Plan.",
+        message="Unlock all assets\n"
+        "Support creators & open-source\n"
+        "Subscribe now",
+        button_text="Get Full Plan",
+    ),
     UnlockVariant(
         identifier="join",
         header="Unlock this asset with the Full Plan.",
