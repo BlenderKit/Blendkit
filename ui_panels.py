@@ -3731,11 +3731,12 @@ class AssetPopupCard(bpy.types.Operator, ratings_utils.RatingProperties):
                 emboss=True,
             )
         else:
+            variant = unlock_options.get_unlock_variant()
             op = layout.operator(
-                "wm.blenderkit_url", text="Unlock this asset", icon="UNLOCKED"
+                "wm.blenderkit_url", text=variant.button_text, icon="UNLOCKED"
             )
             op.url = paths.get_unlock_asset_url(
-                self.asset_data["id"], "asset_unlock_panel"
+                self.asset_data["id"], "asset_unlock_panel", variant.identifier
             )
 
     def draw_menu_desc_author(self, context, layout, width=330):
@@ -4229,6 +4230,8 @@ class UrlPopupDialog(bpy.types.Operator):
         name="Url", description="url", default="Go to website"
     )
 
+    header: StringProperty(name="Header", description="header", default="")  # type: ignore[valid-type]
+
     message: StringProperty(name="Text", description="text", default="")  # type: ignore[valid-type]
 
     width: IntProperty(name="width", description="width", default=300)  # type: ignore[valid-type]
@@ -4237,8 +4240,10 @@ class UrlPopupDialog(bpy.types.Operator):
         set_overlay_panel_active()
         layout = self.layout
         row = layout.row()
-        utils.label_multiline(layout, text=self.message, width=300)
+        if self.header:
+            row.label(text=self.header)
         row.operator("view3d.close_popup_button", text="", icon="CANCEL")
+        utils.label_multiline(layout, text=self.message, width=300, align="CENTER")
 
         layout.active_default = True
         op = layout.operator("wm.url_open", text=self.link_text, icon="QUESTION")
@@ -4247,16 +4252,14 @@ class UrlPopupDialog(bpy.types.Operator):
                 text = "purchased"
             else:
                 text = "subscribed"
-            utils.label_multiline(
-                layout,
-                text=f"Already {text}? Log in to access your account.",
-                width=300,
-            )
 
-            layout.operator_context = "EXEC_DEFAULT"
-            op_login = layout.operator(
-                "wm.blenderkit_login", text="Welcome Home", icon="URL"
-            )
+            layout.separator()
+            login_row = layout.row(align=True)
+            login_row.active_default = False
+            login_row.operator_context = "EXEC_DEFAULT"
+            split = login_row.split(factor=0.6)
+            split.label(text=f"Already {text}?")
+            op_login = split.operator("wm.blenderkit_login", text="Log in", icon="USER")
             op_login.signup = False
             op_login.placement = "premium_popup"
         op.url = self.url

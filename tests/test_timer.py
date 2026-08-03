@@ -169,12 +169,16 @@ class TestHandleFailedReports(unittest.TestCase):
     def setUp(self):
         self._saved_failed = global_vars.CLIENT_FAILED_REPORTS
         self._saved_accessible = global_vars.CLIENT_ACCESSIBLE
+        self._saved_proc = global_vars.client_process
         global_vars.CLIENT_FAILED_REPORTS = 0
         global_vars.CLIENT_ACCESSIBLE = True
+        # No spawned Client by default so the dead-process fast path stays inert.
+        global_vars.client_process = None
 
     def tearDown(self):
         global_vars.CLIENT_FAILED_REPORTS = self._saved_failed
         global_vars.CLIENT_ACCESSIBLE = self._saved_accessible
+        global_vars.client_process = self._saved_proc
 
     def test_sets_client_inaccessible_and_increments(self):
         with mock.patch.object(timer, "_maybe_start_client", return_value=True):
@@ -224,6 +228,34 @@ class TestHandleFailedReports(unittest.TestCase):
         finally:
             global_vars.CLIENT_RUNNING = saved_running
         self.assertEqual(delay, 30.0)
+
+    def test_dead_client_switches_port_immediately(self):
+        # The spawned Client exited (poll() returns a code) - within the startup
+        # window we must not keep polling the dead port; reorder and restart now.
+        global_vars.CLIENT_FAILED_REPORTS = 1  # becomes 2 inside
+        global_vars.client_process = mock.Mock(poll=mock.Mock(return_value=41))
+        with (
+            mock.patch.object(
+                timer.client_lib,
+                "check_blenderkit_client_return_code",
+                return_value=(41, "Other networking problem."),
+            ),
+            mock.patch.object(timer.client_lib, "reorder_ports") as reorder,
+            mock.patch.object(timer, "_maybe_start_client", return_value=True) as start,
+        ):
+            delay = timer.handle_failed_reports(Exception("boom"))
+        reorder.assert_called_once()
+        start.assert_called_once_with(force=True)
+        self.assertEqual(delay, 0.1)
+
+    def test_alive_client_uses_normal_backoff(self):
+        # A still-booting Client (poll() is None) must NOT trigger the fast path.
+        global_vars.CLIENT_FAILED_REPORTS = 4  # becomes 5 inside
+        global_vars.client_process = mock.Mock(poll=mock.Mock(return_value=None))
+        with mock.patch.object(timer, "_maybe_start_client") as start:
+            delay = timer.handle_failed_reports(Exception("boom"))
+        start.assert_not_called()
+        self.assertAlmostEqual(delay, 0.5)
 
 
 class TestCancelAllTasks(unittest.TestCase):

@@ -352,3 +352,38 @@ class TestFeatureFlagGuards(unittest.TestCase):
                 proxor_enabled=False
             )
             self.assertFalse(utils.proxor_enabled())
+
+
+class TestGetOutlinerElementUnderMouse(unittest.TestCase):
+    """The outliner hover probe must bail out cheaply (without touching
+    ``bpy.ops``) when it's not called on a supported outliner context."""
+
+    def test_none_area_returns_none(self):
+        region = types.SimpleNamespace()
+        self.assertIsNone(
+            utils.get_outliner_element_under_mouse(None, None, region, 1, 1)
+        )
+
+    def test_none_region_returns_none(self):
+        area = types.SimpleNamespace(type="OUTLINER")
+        self.assertIsNone(
+            utils.get_outliner_element_under_mouse(None, area, None, 1, 1)
+        )
+
+    def test_non_outliner_area_returns_none(self):
+        area = types.SimpleNamespace(type="VIEW_3D")
+        region = types.SimpleNamespace()
+        self.assertIsNone(
+            utils.get_outliner_element_under_mouse(None, area, region, 1, 1)
+        )
+
+    def test_unsupported_blender_version_returns_none(self):
+        area = types.SimpleNamespace(type="OUTLINER")
+        region = types.SimpleNamespace()
+        with mock.patch.object(utils, "bpy") as mock_bpy:
+            mock_bpy.app.version = (3, 1, 9)
+            self.assertIsNone(
+                utils.get_outliner_element_under_mouse(None, area, region, 1, 1)
+            )
+            # The version guard must short-circuit before any operator call.
+            mock_bpy.ops.outliner.select_box.assert_not_called()
