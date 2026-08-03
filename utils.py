@@ -1756,6 +1756,8 @@ def label_multiline(
     max_lines: int = 10,
     split_last: float = 0,
     use_urls: bool = False,
+    align: str = "LEFT",
+    emboss: str = "NONE",
 ):
     """
      draw a ui label, but try to split it in multiple lines.
@@ -1798,6 +1800,8 @@ def label_multiline(
                 i = threshold
             l1 = line[:i]
             row = layout.row()
+            row.alignment = align
+            row.emboss = emboss
             line_with_urls(row, l1, urls, icon=icon, use_urls=use_urls)
             rows.append(row)
             icon = "NONE"
@@ -1808,12 +1812,15 @@ def label_multiline(
         if line_index > max_lines:
             break
         row = layout.row()
+        row.alignment = align
+        row.emboss = emboss
         if split_last > 0:
             row = row.split(factor=split_last)
         line_with_urls(row, line, urls, icon=icon, use_urls=use_urls)
 
         rows.append(row)
         icon = "NONE"
+
     return rows
 
 

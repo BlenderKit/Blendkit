@@ -4243,7 +4243,7 @@ class UrlPopupDialog(bpy.types.Operator):
         if self.header:
             row.label(text=self.header)
         row.operator("view3d.close_popup_button", text="", icon="CANCEL")
-        utils.label_multiline(layout, text=self.message, width=300)
+        utils.label_multiline(layout, text=self.message, width=300, align="CENTER")
 
         layout.active_default = True
         op = layout.operator("wm.url_open", text=self.link_text, icon="QUESTION")

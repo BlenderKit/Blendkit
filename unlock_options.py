@@ -68,19 +68,16 @@ _HARDCODED_VARIANTS: tuple[UnlockVariant, ...] = (
     UnlockVariant(
         identifier="control",
         header="This asset is included in Full Plan.",
-        message="Support asset creators & open-source by subscribing.",
+        message="Support asset creators & open-source\n"\
+            "by subscribing.",
         button_text="Unlock All Assets",
-    ),
-    UnlockVariant(
-        identifier="whole_library",
-        header="This asset is in the Full Plan.",
-        message="One subscription unlocks the whole library - 70% goes to the creators.",
-        button_text="Unlock all assets",
     ),
     UnlockVariant(
         identifier="support_creators",
         header="Unlock this asset with the Full Plan.",
-        message="Join thousands of artists. Your subscription funds the creators and keeps Blendkit open-source.",
+        message="Join thousands of artists.\n"
+        "Your subscription funds the creators\n"
+        "and keeps Blendkit open-source.",
         button_text="Get Full Plan",
     ),
 )
