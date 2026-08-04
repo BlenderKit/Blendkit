@@ -89,6 +89,7 @@ _test_modules = [
     "test_search",
     "test_asset_bar_op",
     "test_global_vars",
+    "test_clipboard_x11",
     "test_manifest_toml",
     "test_ui_panels",
     "test_registration",
