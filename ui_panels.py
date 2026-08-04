@@ -2941,6 +2941,49 @@ THUMBNAIL_MODE_ITEMS = [
 ]
 
 
+def _comment_sort_key(comment):
+    """Sortable key for a comment. Locally-posted comments use "just now" as
+    their date - treat those as the newest so they sort after real dates."""
+    date = comment.get("submitDate") or ""
+    if date == "just now" or date == "":
+        return "9999"
+    return date
+
+
+def order_comments_for_display(comments):
+    """Reorder comment threads according to the user's preference.
+
+    Comments arrive as a flat list where each top-level comment (level 0) is
+    followed by its replies. Replies are kept attached to their parent - only
+    the top-level threads are reordered by date.
+    """
+    order = bpy.context.preferences.addons[__package__].preferences.comments_order
+    return _order_comments(comments, order)
+
+
+def _order_comments(comments, order):
+    """Pure reordering of a flat comment list. See order_comments_for_display."""
+    if not comments:
+        return comments
+    if order == "default":
+        return comments
+
+    threads = []
+    for comment in comments:
+        if comment.get("level", 0) == 0 or not threads:
+            threads.append([comment])
+        else:
+            threads[-1].append(comment)
+    threads.sort(
+        key=lambda thread: _comment_sort_key(thread[0]), reverse=(order == "newest")
+    )
+
+    ordered = []
+    for thread in threads:
+        ordered.extend(thread)
+    return ordered
+
+
 class AssetPopupCard(bpy.types.Operator, ratings_utils.RatingProperties):
     """
     This is the popup card that appears when you click on an asset in the asset bar.
@@ -3916,6 +3959,7 @@ class AssetPopupCard(bpy.types.Operator, ratings_utils.RatingProperties):
             text=comment["comment"],
             width=width * (1 - 0.05 * comment["level"]),
             use_urls=True,
+            max_lines=1000000,
         )
 
         if utils.profile_is_validator():
@@ -3979,7 +4023,7 @@ class AssetPopupCard(bpy.types.Operator, ratings_utils.RatingProperties):
         comments = global_vars.DATA.get("asset comments", {})
         self.comments = comments.get(self.asset_data["assetBaseId"], [])
         if self.comments is not None:
-            for comment in self.comments:
+            for comment in order_comments_for_display(self.comments):
                 self.draw_comment(context, layout, comment, width=self.width)
                 if ui_props.reply_id == comment["id"]:
                     self.draw_comment_response(context, layout, comment["id"])

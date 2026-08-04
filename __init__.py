@@ -2539,6 +2539,18 @@ In this case you should also set path to your system CA bundle containing proxy'
         description="Width of the search field in the assetbar in 3D view. 0 means automatic width",
     )
 
+    comments_order: EnumProperty(
+        name="Comments Order",
+        description="Order in which comments are shown in the asset detail popup",
+        items=(
+            ("default", "Default", "Keep the server order (based on ratings)"),
+            ("oldest", "Oldest first", "Show oldest comments at the top"),
+            ("newest", "Newest first", "Show newest comments at the top"),
+        ),
+        default="default",
+        update=utils.save_prefs,
+    )
+
     proxor_enabled: BoolProperty(
         name="Enable Proxor",
         description="Enable Proxor, proxy visualization of assets in the 3D view while placing. Loads with mini delay after the default green placeholder.",
@@ -2755,6 +2767,7 @@ In this case you should also set path to your system CA bundle containing proxy'
         gui_settings.prop(self, "search_in_header")
         gui_settings.prop(self, "sidebar_panels")
         gui_settings.prop(self, "show_VIEW3D_MT_blenderkit_model_properties")
+        gui_settings.prop(self, "comments_order")
         gui_settings.prop(self, "tips_on_start")
         gui_settings.prop(self, "announcements_on_start")
         gui_settings.prop(self, "assetbar_follows_cursor")

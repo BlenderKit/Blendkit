@@ -767,6 +767,7 @@ def get_preferences_as_dict():
         "assetbar_follows_cursor": user_preferences.assetbar_follows_cursor,
         "proxor_enabled": user_preferences.proxor_enabled,
         "rating_nudge_enabled": user_preferences.rating_nudge_enabled,
+        "comments_order": user_preferences.comments_order,
         # NETWORK
         "client_port": user_preferences.client_port,
         "ip_version": user_preferences.ip_version,

@@ -159,3 +159,84 @@ class TestCopyEnvironmentInfo(unittest.TestCase):
         clipboard = bpy.context.window_manager.clipboard
         self.assertIn("Blendkit version:", clipboard)
         self.assertIn("Blender version:", clipboard)
+
+
+def _comment(cid, date, level=0):
+    return {"id": cid, "submitDate": date, "level": level, "comment": f"c{cid}"}
+
+
+class TestOrderComments(unittest.TestCase):
+    """Cover the pure comment reordering logic (comments_order preference)."""
+
+    def _ids(self, comments):
+        return [c["id"] for c in comments]
+
+    def test_default_keeps_server_order(self):
+        comments = [
+            _comment(1, "2026-01-03T10:00:00+00:00"),
+            _comment(2, "2026-01-01T10:00:00+00:00"),
+            _comment(3, "2026-01-02T10:00:00+00:00"),
+        ]
+        result = ui_panels._order_comments(comments, "default")
+        self.assertEqual(self._ids(result), [1, 2, 3])
+
+    def test_oldest_first(self):
+        comments = [
+            _comment(1, "2026-01-03T10:00:00+00:00"),
+            _comment(2, "2026-01-01T10:00:00+00:00"),
+            _comment(3, "2026-01-02T10:00:00+00:00"),
+        ]
+        result = ui_panels._order_comments(comments, "oldest")
+        self.assertEqual(self._ids(result), [2, 3, 1])
+
+    def test_newest_first(self):
+        comments = [
+            _comment(1, "2026-01-03T10:00:00+00:00"),
+            _comment(2, "2026-01-01T10:00:00+00:00"),
+            _comment(3, "2026-01-02T10:00:00+00:00"),
+        ]
+        result = ui_panels._order_comments(comments, "newest")
+        self.assertEqual(self._ids(result), [1, 3, 2])
+
+    def test_replies_stay_attached_to_parent(self):
+        # Flat list: two top-level threads, each followed by its replies.
+        comments = [
+            _comment(1, "2026-01-03T10:00:00+00:00"),
+            _comment(11, "2026-01-03T11:00:00+00:00", level=1),
+            _comment(2, "2026-01-01T10:00:00+00:00"),
+            _comment(21, "2026-01-01T11:00:00+00:00", level=1),
+        ]
+        result = ui_panels._order_comments(comments, "oldest")
+        self.assertEqual(self._ids(result), [2, 21, 1, 11])
+
+    def test_just_now_sorts_as_newest(self):
+        comments = [
+            _comment(1, "2026-01-01T10:00:00+00:00"),
+            _comment(2, "just now"),
+            _comment(3, "2026-01-02T10:00:00+00:00"),
+        ]
+        oldest = ui_panels._order_comments(comments, "oldest")
+        self.assertEqual(self._ids(oldest), [1, 3, 2])
+        newest = ui_panels._order_comments(comments, "newest")
+        self.assertEqual(self._ids(newest), [2, 3, 1])
+
+    def test_empty_and_none(self):
+        self.assertEqual(ui_panels._order_comments([], "newest"), [])
+        self.assertIsNone(ui_panels._order_comments(None, "newest"))
+
+
+class TestCommentsOrderPreference(unittest.TestCase):
+    def test_preference_registered_with_expected_options(self):
+        prefs = bpy.context.preferences.addons[__package__].preferences
+        prop = prefs.bl_rna.properties["comments_order"]
+        self.assertEqual(
+            {item.identifier for item in prop.enum_items},
+            {"default", "oldest", "newest"},
+        )
+        self.assertEqual(prop.default, "default")
+
+    def test_included_in_preferences_dict(self):
+        from . import utils
+
+        prefs_dict = utils.get_preferences_as_dict()
+        self.assertIn("comments_order", prefs_dict)

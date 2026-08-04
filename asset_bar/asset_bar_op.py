@@ -28,6 +28,7 @@ from typing import Any, Dict, Optional, Union
 
 import bpy
 import gpu
+import blf
 from bpy.props import BoolProperty, StringProperty
 
 from .. import (
@@ -53,6 +54,7 @@ from ..bl_ui_widgets.bl_ui_widget import (
     BL_UI_Widget,
     batched_region_redraw,
     region_redraw,
+    set_font_size,
 )
 
 
@@ -77,6 +79,53 @@ THUMBNAIL_TYPES = [
 active_area_pointer = 0
 
 ROUNDING_RADIUS = 20
+
+
+def _format_comment_timestamp(submit_date):
+    """Format an ISO comment date as [DD.MM.YYYY-HH:MM]. Returns "" if unknown."""
+    if not submit_date or submit_date == "just now":
+        return ""
+    try:
+        from datetime import datetime
+
+        dt = datetime.fromisoformat(submit_date.replace("Z", "+00:00"))
+    except (ValueError, TypeError):
+        return ""
+    return dt.strftime("%d.%m.%Y-%H:%M")
+
+
+def _wrap_text_to_width(text, width_px, text_size):
+    """Split text into lines that fit within width_px pixels at text_size."""
+    if text == "":
+        return [""]
+    font_id = 1
+    set_font_size(font_id, text_size)
+
+    def fits(candidate):
+        return blf.dimensions(font_id, candidate)[0] <= width_px
+
+    lines = []
+    current = ""
+    for word in text.split(" "):
+        candidate = word if current == "" else f"{current} {word}"
+        if fits(candidate) or current == "":
+            # break a single word that is too long on its own
+            while current == "" and not fits(word) and len(word) > 1:
+                cut = len(word)
+                while cut > 1 and not fits(word[:cut]):
+                    cut -= 1
+                lines.append(word[:cut])
+                word = word[cut:]
+                candidate = word
+            current = candidate
+        else:
+            lines.append(current)
+            current = word
+    if current:
+        lines.append(current)
+    return lines
+
+
 ASSETBAR_MAX_VISIBLE_ASSETS = 200
 ASSETBAR_RESIZE_CURSOR = "MOVE_Y"
 ASSETBAR_RESIZE_CLICK_THRESHOLD_PX = 5
@@ -1832,19 +1881,24 @@ class BlenderKitAssetBarOperator(BL_UI_OT_draw_operator):
         if comments is None:
             comment_text = "Loading comments..."
         elif comments:
-            comment_text = ""
+            wrap_width = max(100, int(self.tooltip_width - 2 * self.tooltip_margin))
+            text_size = getattr(self, "comments_text_size", self.author_text_size)
+            lines_out = []
             # iterate comments from last to first
             for comment in reversed(comments):
-                comment_text += f"{comment['userName']}:\n"
-                # strip urls and stuff
-                comment_lines = comment["comment"].split("\n")
-                for line in comment_lines:
+                timestamp = _format_comment_timestamp(comment.get("submitDate"))
+                header = comment["userName"]
+                if timestamp:
+                    header = f"{header} [{timestamp}]"
+                lines_out.append(f"{header}:")
+                # strip urls and stuff, then wrap to the tooltip width
+                for line in comment["comment"].split("\n"):
                     urls, text = utils.has_url(line)
                     if urls:
-                        comment_text += f"{text}{urls[0][0]}\n"
-                    else:
-                        comment_text += f"{text}\n"
-                comment_text += "\n"
+                        text = f"{text}{urls[0][0]}"
+                    lines_out.extend(_wrap_text_to_width(text, wrap_width, text_size))
+                lines_out.append("")
+            comment_text = "\n".join(lines_out)
 
         self.comments.text = comment_text
 
