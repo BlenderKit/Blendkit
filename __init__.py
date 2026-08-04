@@ -2296,7 +2296,10 @@ class BlenderKitAddonPreferences(AddonPreferences):
     # USE OF CLIPBOARD SCAN
     use_clipboard_scan: BoolProperty(
         name="Use Clipboard Scan",
-        description="Use the info from Blendkit website clipboard for visual search",
+        description="Use the info from Blendkit website clipboard for visual search.\n"
+        "On Linux/X11 this periodically reads the system clipboard, which can rarely\n"
+        "stall if another application left the clipboard in a bad state - disable this\n"
+        "option if you experience freezes",
         default=True,
         update=utils.save_prefs,
     )

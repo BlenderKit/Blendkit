@@ -27,8 +27,10 @@ blocked read freezes the whole UI.
 This module reads the clipboard on our own short-lived X11 connection using the
 system ``libX11`` via ``ctypes`` (no shipped binaries, no third-party
 dependency) and bounds the wait with ``select()`` so it can never hang. It is
-Linux/X11 only; on every other platform ``is_available()`` returns ``False`` and
-callers should keep using ``window_manager.clipboard``.
+used only on a genuine X11 session: ``is_available()`` returns ``False`` on
+non-Linux platforms and on Wayland sessions (where ``WAYLAND_DISPLAY`` is set,
+including XWayland shims that also set ``DISPLAY``), and callers should keep
+using ``window_manager.clipboard`` there.
 """
 
 import ctypes
@@ -79,7 +81,16 @@ def _load_xlib():
     if _xlib is not None:
         return _xlib or None
 
-    if not sys.platform.startswith("linux") or not os.environ.get("DISPLAY"):
+    # Wayland sessions (incl. XWayland shims like xwayland-satellite, which set
+    # DISPLAY) keep the real clipboard on the Wayland side, so the X11 CLIPBOARD
+    # selection is empty/unrelated there. Defer to window_manager.clipboard,
+    # which reads the correct clipboard and doesn't hit the X11 dead-owner hang
+    # under a compositor.
+    if (
+        not sys.platform.startswith("linux")
+        or not os.environ.get("DISPLAY")
+        or os.environ.get("WAYLAND_DISPLAY")
+    ):
         _xlib = False
         return None
 
