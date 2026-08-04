@@ -2,7 +2,7 @@ schema_version = "1.0.0"
 
 id = "blenderkit"
 type = "add-on"
-version = "3.21.0-260628" # X.Y.Z-YYYYMMDD, must have a dash instead of a dot
+version = "3.21.1-260804" # X.Y.Z-YYYYMMDD, must have a dash instead of a dot
 
 name = "Blendkit Online Asset Library"
 tagline = "Drag & drop of assets from the community driven library"
