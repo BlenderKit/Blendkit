@@ -474,3 +474,11 @@ class TestUrlWithUtm(unittest.TestCase):
         self.assertIn("/get-blenderkit/abc-123/?from_addon=True&", url)
         self.assertIn("utm_source=blender_addon", url)
         self.assertIn("utm_content=asset_unlock_panel", url)
+
+    def test_unlock_url_forwards_ab_variant(self):
+        url = paths.get_unlock_asset_url(
+            "abc-123", "asset_unlock_panel", "whole_library"
+        )
+        self.assertIn("ab_variant=whole_library", url)
+        self.assertIn("from_addon=True", url)
+        self.assertIn("utm_content=asset_unlock_panel", url)

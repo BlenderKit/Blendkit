@@ -61,6 +61,10 @@ DEFAULT_KEYMAP_ITEMS: list[KeyMapItemDef] = [
         value="PRESS",
         properties={"keep_running": False, "do_search": False},
     ),
+    # NOTE: 'R' collides with Blender's default Rotate shortcut in the 3D viewport,
+    # so this binding effectively only fires in editors where 'R' is unbound (e.g. the
+    # Outliner). We keep it as the shipped default; users who want to rate from the
+    # viewport can rebind it to a free key in Preferences > Keymap.
     KeyMapItemDef(
         idname="wm.blenderkit_menu_rating_upload",
         type="R",
@@ -122,13 +126,6 @@ def register_keymaps(custom_keymaps: list[KeyMapDef] | None = None) -> None:
     keymaps = list(custom_keymaps) if custom_keymaps is not None else DEFAULT_KEYMAPS
 
     for km_def in keymaps:
-        # If the user already has a custom binding in their keyconfig, don't recreate it.
-        if kc_user and _find_in_keyconfig(kc_user, km_def.items[0].idname):
-            bk_logger.debug(
-                f"User keyconfig already has binding for {km_def.items[0].idname}; leaving user override intact"
-            )
-            continue
-
         km = kc_addon.keymaps.find(
             km_def.name, space_type=km_def.space_type, region_type=km_def.region_type
         )
@@ -143,6 +140,14 @@ def register_keymaps(custom_keymaps: list[KeyMapDef] | None = None) -> None:
             )
 
         for item_def in km_def.items:
+            # If the user already has this binding in their keyconfig, don't recreate
+            # it - re-adding the add-on default would clobber their per-item edits,
+            # including a shortcut they intentionally disabled (see issue #2230).
+            if kc_user and _find_in_keyconfig(kc_user, item_def.idname):
+                bk_logger.debug(
+                    f"User keyconfig already has binding for {item_def.idname}; leaving user override intact"
+                )
+                continue
             if _keymap_has_item(km, item_def.idname):
                 bk_logger.debug(
                     f"Keymap {km_def.name} in {kc_addon.name} already has item {item_def.idname}, skipping"

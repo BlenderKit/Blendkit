@@ -205,7 +205,9 @@ def get_reports(app_id: int):
             reorder_ports(port)
             return report
         except Exception as e:
-            bk_logger.info("Failed to get Blendkit-Client reports: %s", e)
+            bk_logger.debug(
+                "Failed to get Blendkit-Client reports on port %s: %s", port, e
+            )
             last_exception = e
     if last_exception is not None:
         raise last_exception
@@ -719,24 +721,32 @@ def check_blenderkit_client_return_code() -> tuple[int, str]:
 
 def start_blenderkit_client():
     """Start Blendkit-client in separate process.
-    1. Check if binary is available at global_dir/client/vX.Y.Z/bk_client-<os>-<arch>(.exe)
-    2. Copy the binary from add-on directory to global_dir/client/vX.Y.Z/, or fall back
-       to running the binary in-place from the add-on directory if the global_dir is not writable.
-    3. Start the Blendkit-Client process which serves as bridge between Blendkit add-on and Blendkit server.
+
+    Order of operations is deliberate so we never disturb an already-running
+    Client instance:
+    1. The caller (timer._maybe_start_client) has already verified that no live
+       Client process exists - we only get here when a (re)start is warranted.
+    2. Check we can actually run: open the log file, falling back to in-place
+       mode when global_dir is not writable (e.g. UWP virtualized location).
+    3. Only then copy the binary into its install location. Doing the copy last
+       means we touch the filesystem only once we are truly about to spawn;
+       ensure_client_binary_installed() is a no-op when the binary is already
+       present, so a running instance's binary is never overwritten.
+    4. Start the Blendkit-Client process which serves as bridge between Blendkit
+       add-on and Blendkit server.
     """
     global _use_inplace_client
-    ensure_client_binary_installed()
-    log_path = get_client_log_path()
-    client_binary_path, client_version = get_client_binary_path()
 
     creation_flags = 0
     if platform.system() == "Windows":
         creation_flags = subprocess.CREATE_NO_WINDOW
 
-    # Open the log file. If even that fails (global_dir/client exists but is
-    # not writable - e.g. UWP virtualized location), switch to in-place mode
-    # which redirects the log to the system temp dir.
+    # 2. Check we can run: open the log file. If it fails (global_dir/client
+    # exists but is not writable - e.g. UWP virtualized location), switch to
+    # in-place mode which redirects the log to the system temp dir.
+    log_path = get_client_log_path()
     try:
+        os.makedirs(path.dirname(log_path), exist_ok=True)
         log_file = open(log_path, "wb")
     except (PermissionError, OSError) as e:
         bk_logger.warning(
@@ -746,8 +756,8 @@ def start_blenderkit_client():
         )
         _use_inplace_client = True
         log_path = get_client_log_path()
-        client_binary_path, client_version = get_client_binary_path()
         try:
+            os.makedirs(path.dirname(log_path), exist_ok=True)
             log_file = open(log_path, "wb")
         except (PermissionError, OSError) as e2:
             bk_logger.error(
@@ -756,6 +766,11 @@ def start_blenderkit_client():
                 e2,
             )
             raise
+
+    # 3. Copy the binary to its install location last, once we know we are about
+    # to spawn. No-op when already installed, so a running instance is safe.
+    ensure_client_binary_installed()
+    client_binary_path, client_version = get_client_binary_path()
 
     try:
         with log_file as log:

@@ -21,6 +21,7 @@ import logging
 import bpy
 from bpy.props import BoolProperty, StringProperty
 from bpy.types import Gizmo, GizmoGroup, Operator
+from bpy_extras import view3d_utils
 from mathutils import Matrix
 
 from . import (
@@ -41,6 +42,58 @@ bk_logger = logging.getLogger(__name__)
 # Set by rating_nudge._show_rating_popup() right before invoking FastRateMenu with
 # from_nudge=True, so the operator rates this specific (not necessarily selected) asset.
 nudge_asset_data = None
+
+
+def _asset_under_cursor(context, event):
+    """Raycast/probe from the mouse and return (object, asset_data).
+
+    In the 3D viewport this raycasts into the scene; in the Outliner it probes
+    the element under the mouse. Walks up the parent chain from the hit object so
+    hierarchies and collection-instance empties resolve to the object that
+    carries asset_data. Returns (None, None) when the cursor is not over a
+    rateable asset.
+    """
+    region = context.region
+    rv3d = context.region_data
+    space = context.space_data
+    if region is None or space is None:
+        return None, None
+
+    hit = None
+    if space.type == "OUTLINER":
+        element = utils.get_outliner_element_under_mouse(
+            context.window,
+            context.area,
+            region,
+            event.mouse_region_x,
+            event.mouse_region_y,
+        )
+        if isinstance(element, bpy.types.Object):
+            hit = element
+        elif isinstance(element, bpy.types.Collection):
+            # Rate the collection-instance empty that references this collection.
+            for ob in context.view_layer.objects:
+                if ob.instance_collection is element:
+                    hit = ob
+                    break
+    elif space.type == "VIEW_3D" and rv3d is not None:
+        coord = (event.mouse_region_x, event.mouse_region_y)
+        view_vector = view3d_utils.region_2d_to_vector_3d(region, rv3d, coord)
+        ray_origin = view3d_utils.region_2d_to_origin_3d(region, rv3d, coord)
+        depsgraph = context.evaluated_depsgraph_get()
+        has_hit, _loc, _normal, _index, obj, _matrix = context.scene.ray_cast(
+            depsgraph, ray_origin, view_vector
+        )
+        if has_hit and obj is not None:
+            hit = obj.original
+
+    ob = hit
+    while ob is not None:
+        ad = utils.get_asset_data_from_ob(ob)
+        if ad:
+            return ob, ad
+        ob = ob.parent
+    return None, None
 
 
 def get_assets_for_rating():
@@ -175,6 +228,13 @@ class FastRateMenu(Operator, ratings_utils.RatingProperties):
         draw_ratings_menu(self, context, layout)
         layout.template_icon(icon_value=self.img.preview.icon_id, scale=12)
 
+    def invoke(self, context, event):
+        # When triggered from the 3D viewport (e.g. via the shortcut), prefer the
+        # asset under the mouse cursor so the user can rate any visible asset -
+        # not just the active object (which is usually the last imported one).
+        self._hovered_ob, self._hovered_asset_data = _asset_under_cursor(context, event)
+        return self.execute(context)
+
     def execute(self, context):
         ui_props = bpy.context.window_manager.blenderkitUI
         # get asset id
@@ -189,14 +249,18 @@ class FastRateMenu(Operator, ratings_utils.RatingProperties):
             self.asset_id = self.asset_data["id"]
             self.asset_type = self.asset_data["assetType"]
         else:
-            if bpy.context.view_layer.objects.active is not None:
+            # Prefer the asset under the mouse cursor (captured in invoke), then
+            # fall back to the active object's asset data.
+            ob = getattr(self, "_hovered_ob", None)
+            ad = getattr(self, "_hovered_asset_data", None)
+            if ob is None:
                 ob = utils.get_active_model()
                 ad = utils.get_asset_data_from_ob(ob)
-                if ad:
-                    self.asset_data = ad
-                    self.asset_id = self.asset_data["id"]
-                    self.asset_type = self.asset_data["assetType"]
-                self.asset = ob
+            if ad:
+                self.asset_data = ad
+                self.asset_id = self.asset_data["id"]
+                self.asset_type = self.asset_data["assetType"]
+            self.asset = ob
         if self.asset_id == "":
             return {"CANCELLED"}
 

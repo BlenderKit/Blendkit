@@ -73,13 +73,18 @@ CLIENT_RESTART_MIN_INTERVAL = 5.0
 _last_client_start_attempt = 0.0
 
 
-def _maybe_start_client() -> bool:
+def _maybe_start_client(force: bool = False) -> bool:
     """Start the Blendkit-Client, but only when a (re)start is actually warranted.
 
     Guards against the respawn loop by refusing to spawn when either:
       * a Client subprocess we launched is still alive (merely slow to answer -
         a duplicate would fail to bind the port and die), or
       * we already attempted a start very recently (rate limit / circuit breaker).
+
+    Args:
+        force: skip the rate limiter. Used when the Client we launched has
+            already exited (unusable port) and we want to restart on a different
+            port immediately instead of waiting out the circuit-breaker interval.
 
     Returns:
         True if a Client is running or a start was attempted; False only when a
@@ -94,7 +99,7 @@ def _maybe_start_client() -> bool:
         return True
 
     now = time.monotonic()
-    if now - _last_client_start_attempt < CLIENT_RESTART_MIN_INTERVAL:
+    if not force and now - _last_client_start_attempt < CLIENT_RESTART_MIN_INTERVAL:
         bk_logger.debug(
             "Skipping Blendkit-Client restart; last attempt %.1fs ago (< %.1fs)",
             now - _last_client_start_attempt,
@@ -140,10 +145,36 @@ def handle_failed_reports(exception: Exception) -> float:
             )
         if not _maybe_start_client():
             return 5.0  # retry after 5s, user needs to fix permissions first
-    else:
-        bk_logger.warning(
+    elif global_vars.CLIENT_FAILED_REPORTS <= 10:
+        # Failures 2..10 are the normal startup window while the Client boots;
+        # keep them at debug so a slightly slow start does not look like an
+        # error. Genuine problems are reported below once the window is passed.
+        bk_logger.debug(
             f"Request for BKClient reports failed: {str(exception).strip()} {type(exception)}"
         )
+
+    # Fast path: the Client we launched has already exited - it could not bind
+    # the port (reserved range, already in use, or access denied). Polling the
+    # dead port through the whole ~6s backoff window wastes several seconds, so
+    # switch to the next port and restart right away. Gated to the startup
+    # window so a port that keeps failing cannot cause an unbounded respawn
+    # loop; past the window the slow, rate-limited path below takes over.
+    proc = global_vars.client_process
+    if (
+        2 <= global_vars.CLIENT_FAILED_REPORTS <= 10
+        and proc is not None
+        and proc.poll() is not None
+    ):
+        return_code, meaning = client_lib.check_blenderkit_client_return_code()
+        bk_logger.warning(
+            "Blendkit-Client exited (code %s: %s); switching to next port",
+            return_code,
+            meaning,
+        )
+        client_lib.reorder_ports()
+        if not _maybe_start_client(force=True):
+            return 5.0  # permission error - user must fix first
+        return 0.1  # re-check the freshly started Client on the new port soon
 
     if global_vars.CLIENT_FAILED_REPORTS <= 10:  # try 10 times
         return 0.1 * global_vars.CLIENT_FAILED_REPORTS
