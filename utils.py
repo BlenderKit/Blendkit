@@ -1811,6 +1811,10 @@ def has_url(text):
 def line_with_urls(row, text, urls, icon="NONE", use_urls=False):
     used_urls = []
     if use_urls:
+        # emboss the url buttons so users can tell they are clickable - the
+        # surrounding row is drawn with emboss="NONE" for plain-text lines.
+        if len(urls) > 0:
+            row.emboss = "NORMAL"
         for i, url in enumerate(urls):
             op = row.operator("wm.blenderkit_url", text=url[0])
             op.url = url[1]
