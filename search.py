@@ -607,11 +607,7 @@ def parse_author_result(r) -> dict:
     adata = r.get("author")
     if adata and isinstance(adata, dict) and len(adata) > 1:
         # Full author data available — parse it like regular assets do
-        adata = dict(adata)  # copy so pop() doesn't mutate the original
-        social_networks = datas.parse_social_networks(
-            adata.pop("socialNetworks", None) or []
-        )
-        author = datas.UserProfile(**adata, socialNetworks=social_networks)
+        author = datas.UserProfile.from_dict(adata)
         generate_author_profile(author)
         r["author"]["id"] = str(r["author"]["id"])
     else:
@@ -661,8 +657,7 @@ def parse_result(r) -> dict:
         return parse_author_result(r)
 
     adata = r["author"]
-    social_networks = datas.parse_social_networks(adata.pop("socialNetworks", []))
-    author = datas.UserProfile(**adata, socialNetworks=social_networks)
+    author = datas.UserProfile.from_dict(adata)
     generate_author_profile(author)
 
     r["available_resolutions"] = []
@@ -1302,12 +1297,8 @@ def handle_get_user_profile(task: client_tasks.Task):
         return
 
     can_edit_all_assets = task.result.get("canEditAllAssets", False)
-    social_networks = datas.parse_social_networks(user_data.pop("socialNetworks", []))
-
-    user = datas.MineProfile(
-        socialNetworks=social_networks,
-        canEditAllAssets=can_edit_all_assets,
-        **user_data,
+    user = datas.MineProfile.from_dict(
+        {**user_data, "canEditAllAssets": can_edit_all_assets}
     )
     user.tooltip = generate_author_textblock(
         user.firstName, user.lastName, user.aboutMe

@@ -1,5 +1,5 @@
 import dataclasses
-from typing import Optional
+from typing import ClassVar, Optional
 
 
 def asdict(data_class) -> dict:
@@ -98,26 +98,62 @@ def parse_social_networks(networks: list[dict]) -> list[SocialNetwork]:
     return social_networks
 
 
-@dataclasses.dataclass
-class UserProfile:
-    """This is public information about profiles of others."""
+def _parse_social_networks_lenient(value):
+    """Parse raw socialNetworks dicts, but pass already-parsed lists through."""
+    if value and isinstance(value[0], dict):
+        return parse_social_networks(value)
+    return value
 
-    aboutMe: str
-    aboutMeUrl: str
-    avatar128: str
-    firstName: str
-    fullName: str
-    gravatarHash: str
-    id: int
-    lastName: str
+
+class FromDictMixin:
+    """Gives a dataclass a lenient ``from_dict`` constructor.
+
+    Unknown keys in the source dict are ignored so the addon keeps working when
+    the server adds new fields (older addons must not crash). Subclasses may set
+    ``_FIELD_PARSERS`` (name -> callable) to transform raw values, e.g. to build
+    nested dataclasses, before construction. Requires all fields to have
+    defaults so that omitted server fields don't raise either.
+    """
+
+    _FIELD_PARSERS: ClassVar[dict] = {}
+
+    @classmethod
+    def from_dict(cls, data: dict):
+        field_names = {f.name for f in dataclasses.fields(cls)}  # type: ignore[arg-type]
+        known = {k: v for k, v in data.items() if k in field_names}
+        for name, parser in cls._FIELD_PARSERS.items():
+            if name in known:
+                known[name] = parser(known[name])
+        return cls(**known)
+
+
+@dataclasses.dataclass
+class UserProfile(FromDictMixin):
+    """This is public information about profiles of others.
+
+    All fields have defaults so that the addon keeps working when the server
+    adds or omits fields; use ``from_dict`` to build from raw API data safely.
+    """
+
+    aboutMe: str = ""
+    aboutMeUrl: str = ""
+    avatar128: str = ""
+    firstName: str = ""
+    fullName: str = ""
+    gravatarHash: str = ""
+    id: int = -1
+    lastName: str = ""
     socialNetworks: list[SocialNetwork] = dataclasses.field(default_factory=list)
     avatar256: str = ""
+    avatar512: str = ""
     gravatarImg: str = ""  # filled later from getGravatar task
     tooltip: str = ""  # generated later from Name and AboutMe etc.
 
+    _FIELD_PARSERS = {"socialNetworks": _parse_social_networks_lenient}
+
 
 @dataclasses.dataclass
-class MineProfile:
+class MineProfile(FromDictMixin):
     """
     This is private information about current user's profile. Fields can be also None.
     Because API can just return null just for fun (https://github.com/BlenderKit/BlenderKit/issues/1545#event-17220997340).
@@ -147,12 +183,14 @@ class MineProfile:
     tooltip: str = ""  # generated later from Name and AboutMe etc.
     canEditAllAssets: bool = False  # whether User is validator
 
+    _FIELD_PARSERS = {"socialNetworks": _parse_social_networks_lenient}
+
     def __bool__(self):
         return self.id != -1
 
 
 @dataclasses.dataclass
-class AssetRating:
+class AssetRating(FromDictMixin):
     bookmarks: Optional[int] = None  # name kept as comes from API
     quality: Optional[int] = None
     quality_fetched: bool = False
