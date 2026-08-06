@@ -102,6 +102,7 @@ _test_modules = [
     "test_ratings",
     "test_keymap_utils",
     "test_override_extension_draw",
+    "test_datas",
 ]
 
 for _modname in _test_modules:
