@@ -97,14 +97,21 @@ def get_large_thumbnail_image(asset_data):
     """Get thumbnail image from asset data"""
     ui_props = bpy.context.window_manager.blenderkitUI
     iname = utils.previmg_name(ui_props.active_index, fullsize=True)
-    directory = paths.get_temp_dir(f"{ui_props.asset_type.lower()}_search")
-    tpath = os.path.join(directory, asset_data["thumbnail"])
-    # if asset_data['assetType'] == 'hdr':
-    #     tpath = os.path.join(directory, asset_data['thumbnail'])
+    # Use the asset's own type, not the currently active UI asset type: these can
+    # differ (e.g. the rating nudge popup rates an asset outside the current search).
+    asset_type = asset_data.get("assetType") or ui_props.asset_type
+    directory = paths.get_temp_dir(f"{asset_type.lower()}_search")
+    thumbnail = asset_data.get("thumbnail")
+    tpath = os.path.join(directory, thumbnail) if thumbnail else "" # type: ignore
     image_ready = global_vars.DATA["images available"].get(tpath)
-    if image_ready is False or not asset_data["thumbnail"]:
+    # "images available" is only populated while thumbnails download in the current
+    # session; fall back to the cached file on disk so previously downloaded thumbnails
+    # (e.g. for a rating nudge) still show instead of a permanent "loading" placeholder.
+    if image_ready is None and tpath and os.path.exists(tpath):
+        image_ready = True
+    if image_ready is False or not thumbnail:
         tpath = paths.get_addon_thumbnail_path("thumbnail_not_available.jpg")
-    if image_ready is None:
+    elif image_ready is None:
         tpath = paths.get_addon_thumbnail_path("thumbnail_notready.jpg")
 
     img = utils.get_hidden_image(tpath, iname, colorspace="")
