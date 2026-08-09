@@ -93,23 +93,33 @@ def draw_text_block(
         ui_bgl.draw_text(l, x, ytext, font_size, color)
 
 
-def get_large_thumbnail_image(asset_data):
-    """Get thumbnail image from asset data"""
+def get_large_thumbnail_path(asset_data) -> str:
+    """Cache path of the large thumbnail file in the search temp dir (may not exist yet)."""
+    thumbnail = asset_data.get("thumbnail")
+    if not thumbnail:
+        return ""
     ui_props = bpy.context.window_manager.blenderkitUI
-    iname = utils.previmg_name(ui_props.active_index, fullsize=True)
     # Use the asset's own type, not the currently active UI asset type: these can
     # differ (e.g. the rating nudge popup rates an asset outside the current search).
     asset_type = asset_data.get("assetType") or ui_props.asset_type
     directory = paths.get_temp_dir(f"{asset_type.lower()}_search")
-    thumbnail = asset_data.get("thumbnail")
-    tpath = os.path.join(directory, thumbnail) if thumbnail else "" # type: ignore
+    if not directory:
+        return ""
+    return os.path.join(directory, thumbnail)
+
+
+def get_large_thumbnail_image(asset_data):
+    """Get thumbnail image from asset data"""
+    ui_props = bpy.context.window_manager.blenderkitUI
+    iname = utils.previmg_name(ui_props.active_index, fullsize=True)
+    tpath = get_large_thumbnail_path(asset_data)
     image_ready = global_vars.DATA["images available"].get(tpath)
     # "images available" is only populated while thumbnails download in the current
     # session; fall back to the cached file on disk so previously downloaded thumbnails
     # (e.g. for a rating nudge) still show instead of a permanent "loading" placeholder.
     if image_ready is None and tpath and os.path.exists(tpath):
         image_ready = True
-    if image_ready is False or not thumbnail:
+    if image_ready is False or not tpath:
         tpath = paths.get_addon_thumbnail_path("thumbnail_not_available.jpg")
     elif image_ready is None:
         tpath = paths.get_addon_thumbnail_path("thumbnail_notready.jpg")

@@ -38,7 +38,7 @@ import time
 
 import bpy
 
-from . import global_vars, paths, tasks_queue, utils
+from . import client_lib, global_vars, paths, tasks_queue, utils
 
 
 bk_logger = logging.getLogger(__name__)
@@ -236,6 +236,36 @@ def _enqueue_popup(asset_data: dict):
     )
 
 
+def _ensure_thumbnail_downloaded(asset_data: dict) -> bool:
+    """Ensure the large thumbnail file for asset_data exists in the search temp dir.
+
+    The nudge asset is outside the current search and its large thumbnail may never
+    have been fetched (only small asset-bar thumbnails download automatically), so we
+    download it synchronously via the Client. Returns True if the file is present.
+    """
+    from . import search, ui
+
+    tpath = ui.get_large_thumbnail_path(asset_data)
+    if not tpath:
+        return False
+    if os.path.exists(tpath):
+        global_vars.DATA["images available"][tpath] = True
+        return True
+    url = search.get_large_thumbnail_url(asset_data)
+    if not url:
+        return False
+    try:
+        api_key = bpy.context.preferences.addons[__package__].preferences.api_key
+        client_lib.blocking_file_download(url, tpath, api_key)
+    except Exception:
+        bk_logger.exception("Failed to download rating nudge thumbnail")
+        return False
+    ready = os.path.exists(tpath)
+    if ready:
+        global_vars.DATA["images available"][tpath] = True
+    return ready
+
+
 def _show_rating_popup(asset_data: dict):
     """Open the rating popup for a specific asset with the nudge message."""
     from . import ratings
@@ -244,6 +274,10 @@ def _show_rating_popup(asset_data: dict):
     if not fake_context.get("region"):
         # No VIEW_3D area available; skip silently, try again on a later download.
         return
+
+    # The nudge asset is outside the current search, so its large thumbnail may not
+    # be cached yet - fetch it now so the popup doesn't show a "Loading..." placeholder.
+    _ensure_thumbnail_downloaded(asset_data)
 
     ratings.nudge_asset_data = asset_data
     try:

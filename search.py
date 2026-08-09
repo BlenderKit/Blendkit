@@ -634,6 +634,26 @@ def parse_author_result(r) -> dict:
     return asset_data
 
 
+def get_large_thumbnail_url(asset_data) -> str:
+    """URL of the large/middle thumbnail, honoring WEBP support and the HDR special case.
+
+    This is the same selection parse_result() uses to derive asset_data['thumbnail'],
+    so downloading from it yields exactly the cached filename other code expects.
+    """
+    use_webp = True
+    if bpy.app.version < (3, 4, 0) or asset_data.get("webpGeneratedTimestamp", 0) == 0:
+        use_webp = False  # WEBP was optimized in Blender 3.4.0
+    if asset_data.get("assetType") == "hdr":
+        key = (
+            "thumbnailLargeUrlNonsquaredWebp"
+            if use_webp
+            else "thumbnailLargeUrlNonsquared"
+        )
+    else:
+        key = "thumbnailMiddleUrlWebp" if use_webp else "thumbnailMiddleUrl"
+    return asset_data.get(key) or ""
+
+
 # TODO: type annotate and check this crazy function!
 # Are we sure it behaves correctly on network issues, malfunctioning search etc?
 def parse_result(r) -> dict:
@@ -665,18 +685,8 @@ def parse_result(r) -> dict:
     if bpy.app.version < (3, 4, 0) or r.get("webpGeneratedTimestamp", 0) == 0:
         use_webp = False  # WEBP was optimized in Blender 3.4.0
 
-    # BIG THUMB - HDR CASE
-    if r["assetType"] == "hdr":
-        if use_webp:
-            thumb_url = r.get("thumbnailLargeUrlNonsquaredWebp")
-        else:
-            thumb_url = r.get("thumbnailLargeUrlNonsquared")
-    # BIG THUMB - NON HDR CASE
-    else:
-        if use_webp:
-            thumb_url = r.get("thumbnailMiddleUrlWebp")
-        else:
-            thumb_url = r.get("thumbnailMiddleUrl")
+    # BIG THUMB
+    thumb_url = get_large_thumbnail_url(r)
 
     # SMALL THUMB
     if use_webp:
