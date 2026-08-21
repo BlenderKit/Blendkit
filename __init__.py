@@ -775,6 +775,12 @@ class BlenderKitUIProps(PropertyGroup):
     new_comment: StringProperty(
         name="New comment", description="Write your comment", default=""
     )
+    new_comment_is_validation: BoolProperty(
+        name="Validation comment",
+        description="Mark the new thread as part of the validation process "
+        "(visible to validators only)",
+        default=False,
+    )
     reply_id: IntProperty(
         name="Reply Id", description="Active comment id to reply to", default=0
     )

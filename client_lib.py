@@ -343,12 +343,17 @@ def get_comments(asset_id, api_key=""):
         )
 
 
-def create_comment(asset_id, comment_text, api_key, reply_to_id=0):
-    """Create a new comment."""
+def create_comment(asset_id, comment_text, api_key, reply_to_id=0, is_validation=False):
+    """Create a new comment.
+
+    is_validation marks a new thread as part of the validation process;
+    only honored by the server for validators.
+    """
     data = {
         "asset_id": asset_id,
         "comment_text": comment_text,
         "reply_to_id": reply_to_id,
+        "is_validation": is_validation,
     }
     data = ensure_minimal_data(data)
     with requests.Session() as session:
