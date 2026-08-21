@@ -1308,7 +1308,7 @@ class PostComment(bpy.types.Operator):
             is_validation,
         )
         ui_props.new_comment = ""
-        ui_props.new_comment_is_validation = False
+        ui_props.new_comment_is_validation = True
         return {"FINISHED"}
 
 

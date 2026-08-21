@@ -779,7 +779,9 @@ class BlenderKitUIProps(PropertyGroup):
         name="Validation comment",
         description="Mark the new thread as part of the validation process "
         "(visible to validators only)",
-        default=False,
+        # Checked by default: the vast majority of validator-started threads
+        # are validation; a casual public comment is the exception.
+        default=True,
     )
     reply_id: IntProperty(
         name="Reply Id", description="Active comment id to reply to", default=0
