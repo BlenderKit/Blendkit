@@ -1,6 +1,8 @@
 import platform
 import sys
 import unittest
+from types import SimpleNamespace
+from unittest.mock import patch
 from urllib.parse import unquote
 
 import bpy
@@ -287,3 +289,69 @@ class TestPostCommentIsValidation(unittest.TestCase):
         global_vars.BKIT_PROFILE = datas.MineProfile(id=1, canEditAllAssets=False)
         bpy.ops.wm.blenderkit_post_comment(asset_id="test-asset", comment_id=0)
         self.assertFalse(self.calls[0][4])
+
+
+class _RecordingLayout:
+    """Records prop/operator calls; mimics the tiny UILayout subset that
+    draw_comment_response uses."""
+
+    def __init__(self, log=None):
+        self.log = [] if log is None else log
+        self.active = True
+
+    def separator(self):
+        pass
+
+    def row(self, **kwargs):
+        return _RecordingLayout(self.log)
+
+    def split(self, **kwargs):
+        return _RecordingLayout(self.log)
+
+    def label(self, **kwargs):
+        pass
+
+    def prop(self, data, prop_name, **kwargs):
+        self.log.append(("prop", prop_name))
+
+    def operator(self, idname, **kwargs):
+        self.log.append(("operator", idname))
+        return SimpleNamespace()
+
+
+class TestDrawCommentResponseValidationCheckbox(unittest.TestCase):
+    """The validation checkbox draws only for validators starting a thread."""
+
+    def setUp(self):
+        self._orig_profile = global_vars.BKIT_PROFILE
+
+    def tearDown(self):
+        global_vars.BKIT_PROFILE = self._orig_profile
+
+    def draw(self, comment_id):
+        layout = _RecordingLayout()
+        fake_popup = SimpleNamespace(asset_data={"assetBaseId": "abc"})
+        # nested "with": Blender 3.0 runs Python 3.9, which has no
+        # parenthesized context managers yet
+        with patch.object(ui_panels.utils, "user_logged_in", lambda: True):
+            with patch.object(
+                ui_panels.icons,
+                "icon_collections",
+                {"main": {"post_comment": SimpleNamespace(icon_id=0)}},
+            ):
+                ui_panels.AssetPopupCard.draw_comment_response(
+                    fake_popup, bpy.context, layout, comment_id
+                )
+        return layout.log
+
+    def test_validator_sees_checkbox_on_new_thread(self):
+        global_vars.BKIT_PROFILE = datas.MineProfile(id=1, canEditAllAssets=True)
+        self.assertIn(("prop", "new_comment_is_validation"), self.draw(0))
+
+    def test_no_checkbox_on_replies(self):
+        global_vars.BKIT_PROFILE = datas.MineProfile(id=1, canEditAllAssets=True)
+        self.assertNotIn(("prop", "new_comment_is_validation"), self.draw(42))
+
+    def test_no_checkbox_for_non_validators(self):
+        global_vars.BKIT_PROFILE = datas.MineProfile(id=1, canEditAllAssets=False)
+        self.assertNotIn(("prop", "new_comment_is_validation"), self.draw(0))
