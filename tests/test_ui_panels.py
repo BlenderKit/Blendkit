@@ -12,7 +12,7 @@ import bpy
 # "blenderkit" is unreliable when several blenderkit* add-ons are enabled.
 if __package__:
     __package__ = __package__.rsplit(".tests", 1)[0]
-from . import global_vars, ui_panels
+from . import datas, global_vars, ui_panels
 
 
 class TestGetEnvironmentInfoString(unittest.TestCase):
@@ -240,3 +240,50 @@ class TestCommentsOrderPreference(unittest.TestCase):
 
         prefs_dict = utils.get_preferences_as_dict()
         self.assertIn("comments_order", prefs_dict)
+
+
+class TestPostCommentIsValidation(unittest.TestCase):
+    """The post-comment operator forwards is_validation only for validators
+    starting a new thread; replies inherit the thread type server-side."""
+
+    def setUp(self):
+        self.ui_props = bpy.context.window_manager.blenderkitUI
+        self._orig_profile = global_vars.BKIT_PROFILE
+        self._orig_comment = self.ui_props.new_comment
+        self._orig_is_validation = self.ui_props.new_comment_is_validation
+        global_vars.BKIT_PROFILE = datas.MineProfile(
+            id=1, firstName="Vera", lastName="Validator", canEditAllAssets=True
+        )
+        self.ui_props.new_comment = "needs fixes"
+        self.ui_props.new_comment_is_validation = True
+        self._orig_create_comment = ui_panels.client_lib.create_comment
+        self.calls = []
+        ui_panels.client_lib.create_comment = lambda *args: self.calls.append(args)
+
+    def tearDown(self):
+        ui_panels.client_lib.create_comment = self._orig_create_comment
+        global_vars.BKIT_PROFILE = self._orig_profile
+        self.ui_props.new_comment = self._orig_comment
+        self.ui_props.new_comment_is_validation = self._orig_is_validation
+
+    def test_validator_new_thread_sends_is_validation(self):
+        result = bpy.ops.wm.blenderkit_post_comment(asset_id="test-asset", comment_id=0)
+        self.assertEqual(result, {"FINISHED"})
+        asset_id, text, _api_key, reply_to, is_validation = self.calls[0]
+        self.assertEqual(asset_id, "test-asset")
+        self.assertEqual(text, "needs fixes")
+        self.assertEqual(reply_to, 0)
+        self.assertTrue(is_validation)
+        # the draft is cleared and the checkbox returns to its checked default
+        self.assertEqual(self.ui_props.new_comment, "")
+        self.assertTrue(self.ui_props.new_comment_is_validation)
+
+    def test_reply_never_sends_is_validation(self):
+        bpy.ops.wm.blenderkit_post_comment(asset_id="test-asset", comment_id=42)
+        self.assertFalse(self.calls[0][4])
+        self.assertEqual(self.calls[0][3], 42)
+
+    def test_non_validator_never_sends_is_validation(self):
+        global_vars.BKIT_PROFILE = datas.MineProfile(id=1, canEditAllAssets=False)
+        bpy.ops.wm.blenderkit_post_comment(asset_id="test-asset", comment_id=0)
+        self.assertFalse(self.calls[0][4])
