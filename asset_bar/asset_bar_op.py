@@ -5102,6 +5102,9 @@ class BlenderKitAssetBarOperator(BL_UI_OT_draw_operator):
         history_step = search.get_active_history_step()
         sr = history_step.get("search_results", [])
         asset_data = sr[asset_index]
+        author = asset_data.get("author")
+        if author is None:
+            return True
         author_id = asset_data["author"]["id"]
         if author_id is None:
             return True
