@@ -14,7 +14,7 @@ import bpy
 # "blenderkit" is unreliable when several blenderkit* add-ons are enabled.
 if __package__:
     __package__ = __package__.rsplit(".tests", 1)[0]
-from . import datas, global_vars, ui_panels
+from . import global_vars, ui_panels
 
 
 class TestGetEnvironmentInfoString(unittest.TestCase):
@@ -250,12 +250,12 @@ class TestPostCommentIsValidation(unittest.TestCase):
 
     def setUp(self):
         self.ui_props = bpy.context.window_manager.blenderkitUI
-        self._orig_profile = global_vars.BKIT_PROFILE
         self._orig_comment = self.ui_props.new_comment
         self._orig_is_validation = self.ui_props.new_comment_is_validation
-        global_vars.BKIT_PROFILE = datas.MineProfile(
-            id=1, firstName="Vera", lastName="Validator", canEditAllAssets=True
+        self._validator_patch = patch.object(
+            ui_panels.utils, "profile_is_validator", return_value=True
         )
+        self._validator_patch.start()
         self.ui_props.new_comment = "needs fixes"
         self.ui_props.new_comment_is_validation = True
         self._orig_create_comment = ui_panels.client_lib.create_comment
@@ -264,7 +264,7 @@ class TestPostCommentIsValidation(unittest.TestCase):
 
     def tearDown(self):
         ui_panels.client_lib.create_comment = self._orig_create_comment
-        global_vars.BKIT_PROFILE = self._orig_profile
+        self._validator_patch.stop()
         self.ui_props.new_comment = self._orig_comment
         self.ui_props.new_comment_is_validation = self._orig_is_validation
 
@@ -286,8 +286,8 @@ class TestPostCommentIsValidation(unittest.TestCase):
         self.assertEqual(self.calls[0][3], 42)
 
     def test_non_validator_never_sends_is_validation(self):
-        global_vars.BKIT_PROFILE = datas.MineProfile(id=1, canEditAllAssets=False)
-        bpy.ops.wm.blenderkit_post_comment(asset_id="test-asset", comment_id=0)
+        with patch.object(ui_panels.utils, "profile_is_validator", return_value=False):
+            bpy.ops.wm.blenderkit_post_comment(asset_id="test-asset", comment_id=0)
         self.assertFalse(self.calls[0][4])
 
 
@@ -322,36 +322,36 @@ class _RecordingLayout:
 class TestDrawCommentResponseValidationCheckbox(unittest.TestCase):
     """The validation checkbox draws only for validators starting a thread."""
 
-    def setUp(self):
-        self._orig_profile = global_vars.BKIT_PROFILE
-
-    def tearDown(self):
-        global_vars.BKIT_PROFILE = self._orig_profile
-
-    def draw(self, comment_id):
+    def draw(self, comment_id, is_validator):
         layout = _RecordingLayout()
         fake_popup = SimpleNamespace(asset_data={"assetBaseId": "abc"})
         # nested "with": Blender 3.0 runs Python 3.9, which has no
         # parenthesized context managers yet
         with patch.object(ui_panels.utils, "user_logged_in", lambda: True):
             with patch.object(
-                ui_panels.icons,
-                "icon_collections",
-                {"main": {"post_comment": SimpleNamespace(icon_id=0)}},
+                ui_panels.utils, "profile_is_validator", return_value=is_validator
             ):
-                ui_panels.AssetPopupCard.draw_comment_response(
-                    fake_popup, bpy.context, layout, comment_id
-                )
+                with patch.object(
+                    ui_panels.icons,
+                    "icon_collections",
+                    {"main": {"post_comment": SimpleNamespace(icon_id=0)}},
+                ):
+                    ui_panels.AssetPopupCard.draw_comment_response(
+                        fake_popup, bpy.context, layout, comment_id
+                    )
         return layout.log
 
     def test_validator_sees_checkbox_on_new_thread(self):
-        global_vars.BKIT_PROFILE = datas.MineProfile(id=1, canEditAllAssets=True)
-        self.assertIn(("prop", "new_comment_is_validation"), self.draw(0))
+        self.assertIn(
+            ("prop", "new_comment_is_validation"), self.draw(0, is_validator=True)
+        )
 
     def test_no_checkbox_on_replies(self):
-        global_vars.BKIT_PROFILE = datas.MineProfile(id=1, canEditAllAssets=True)
-        self.assertNotIn(("prop", "new_comment_is_validation"), self.draw(42))
+        self.assertNotIn(
+            ("prop", "new_comment_is_validation"), self.draw(42, is_validator=True)
+        )
 
     def test_no_checkbox_for_non_validators(self):
-        global_vars.BKIT_PROFILE = datas.MineProfile(id=1, canEditAllAssets=False)
-        self.assertNotIn(("prop", "new_comment_is_validation"), self.draw(0))
+        self.assertNotIn(
+            ("prop", "new_comment_is_validation"), self.draw(0, is_validator=False)
+        )

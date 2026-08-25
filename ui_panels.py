@@ -1298,7 +1298,7 @@ class PostComment(bpy.types.Operator):
         is_validation = (
             self.comment_id == 0
             and ui_props.new_comment_is_validation
-            and global_vars.BKIT_PROFILE.canEditAllAssets
+            and utils.profile_is_validator()
         )
         client_lib.create_comment(
             self.asset_id,
@@ -3876,7 +3876,7 @@ class AssetPopupCard(bpy.types.Operator, ratings_utils.RatingProperties):
 
         # Replies inherit the thread's type, so the choice only exists when
         # starting a new thread.
-        if comment_id == 0 and global_vars.BKIT_PROFILE.canEditAllAssets:
+        if comment_id == 0 and utils.profile_is_validator():
             layout.row().prop(ui_props, "new_comment_is_validation")
 
         layout.separator()
