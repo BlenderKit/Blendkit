@@ -1,6 +1,8 @@
 import platform
 import sys
 import unittest
+from types import SimpleNamespace
+from unittest.mock import patch
 from urllib.parse import unquote
 
 import bpy
@@ -240,3 +242,116 @@ class TestCommentsOrderPreference(unittest.TestCase):
 
         prefs_dict = utils.get_preferences_as_dict()
         self.assertIn("comments_order", prefs_dict)
+
+
+class TestPostCommentIsValidation(unittest.TestCase):
+    """The post-comment operator forwards is_validation only for validators
+    starting a new thread; replies inherit the thread type server-side."""
+
+    def setUp(self):
+        self.ui_props = bpy.context.window_manager.blenderkitUI
+        self._orig_comment = self.ui_props.new_comment
+        self._orig_is_validation = self.ui_props.new_comment_is_validation
+        self._validator_patch = patch.object(
+            ui_panels.utils, "profile_is_validator", return_value=True
+        )
+        self._validator_patch.start()
+        self.ui_props.new_comment = "needs fixes"
+        self.ui_props.new_comment_is_validation = True
+        self._orig_create_comment = ui_panels.client_lib.create_comment
+        self.calls = []
+        ui_panels.client_lib.create_comment = lambda *args: self.calls.append(args)
+
+    def tearDown(self):
+        ui_panels.client_lib.create_comment = self._orig_create_comment
+        self._validator_patch.stop()
+        self.ui_props.new_comment = self._orig_comment
+        self.ui_props.new_comment_is_validation = self._orig_is_validation
+
+    def test_validator_new_thread_sends_is_validation(self):
+        result = bpy.ops.wm.blenderkit_post_comment(asset_id="test-asset", comment_id=0)
+        self.assertEqual(result, {"FINISHED"})
+        asset_id, text, _api_key, reply_to, is_validation = self.calls[0]
+        self.assertEqual(asset_id, "test-asset")
+        self.assertEqual(text, "needs fixes")
+        self.assertEqual(reply_to, 0)
+        self.assertTrue(is_validation)
+        # the draft is cleared and the checkbox returns to its checked default
+        self.assertEqual(self.ui_props.new_comment, "")
+        self.assertTrue(self.ui_props.new_comment_is_validation)
+
+    def test_reply_never_sends_is_validation(self):
+        bpy.ops.wm.blenderkit_post_comment(asset_id="test-asset", comment_id=42)
+        self.assertFalse(self.calls[0][4])
+        self.assertEqual(self.calls[0][3], 42)
+
+    def test_non_validator_never_sends_is_validation(self):
+        with patch.object(ui_panels.utils, "profile_is_validator", return_value=False):
+            bpy.ops.wm.blenderkit_post_comment(asset_id="test-asset", comment_id=0)
+        self.assertFalse(self.calls[0][4])
+
+
+class _RecordingLayout:
+    """Records prop/operator calls; mimics the tiny UILayout subset that
+    draw_comment_response uses."""
+
+    def __init__(self, log=None):
+        self.log = [] if log is None else log
+        self.active = True
+
+    def separator(self):
+        pass
+
+    def row(self, **kwargs):
+        return _RecordingLayout(self.log)
+
+    def split(self, **kwargs):
+        return _RecordingLayout(self.log)
+
+    def label(self, **kwargs):
+        pass
+
+    def prop(self, data, prop_name, **kwargs):
+        self.log.append(("prop", prop_name))
+
+    def operator(self, idname, **kwargs):
+        self.log.append(("operator", idname))
+        return SimpleNamespace()
+
+
+class TestDrawCommentResponseValidationCheckbox(unittest.TestCase):
+    """The validation checkbox draws only for validators starting a thread."""
+
+    def draw(self, comment_id, is_validator):
+        layout = _RecordingLayout()
+        fake_popup = SimpleNamespace(asset_data={"assetBaseId": "abc"})
+        # nested "with": Blender 3.0 runs Python 3.9, which has no
+        # parenthesized context managers yet
+        with patch.object(ui_panels.utils, "user_logged_in", lambda: True):
+            with patch.object(
+                ui_panels.utils, "profile_is_validator", return_value=is_validator
+            ):
+                with patch.object(
+                    ui_panels.icons,
+                    "icon_collections",
+                    {"main": {"post_comment": SimpleNamespace(icon_id=0)}},
+                ):
+                    ui_panels.AssetPopupCard.draw_comment_response(
+                        fake_popup, bpy.context, layout, comment_id
+                    )
+        return layout.log
+
+    def test_validator_sees_checkbox_on_new_thread(self):
+        self.assertIn(
+            ("prop", "new_comment_is_validation"), self.draw(0, is_validator=True)
+        )
+
+    def test_no_checkbox_on_replies(self):
+        self.assertNotIn(
+            ("prop", "new_comment_is_validation"), self.draw(42, is_validator=True)
+        )
+
+    def test_no_checkbox_for_non_validators(self):
+        self.assertNotIn(
+            ("prop", "new_comment_is_validation"), self.draw(0, is_validator=False)
+        )

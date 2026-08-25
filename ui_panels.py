@@ -1295,10 +1295,20 @@ class PostComment(bpy.types.Operator):
         comments_utils.store_comments_local(self.asset_id, comments)
 
         # Send to server
+        is_validation = (
+            self.comment_id == 0
+            and ui_props.new_comment_is_validation
+            and utils.profile_is_validator()
+        )
         client_lib.create_comment(
-            self.asset_id, ui_props.new_comment, api_key, self.comment_id
+            self.asset_id,
+            ui_props.new_comment,
+            api_key,
+            self.comment_id,
+            is_validation,
         )
         ui_props.new_comment = ""
+        ui_props.new_comment_is_validation = True
         return {"FINISHED"}
 
 
@@ -3863,6 +3873,11 @@ class AssetPopupCard(bpy.types.Operator, ratings_utils.RatingProperties):
         )
         op.asset_id = self.asset_data["assetBaseId"]
         op.comment_id = comment_id
+
+        # Replies inherit the thread's type, so the choice only exists when
+        # starting a new thread.
+        if comment_id == 0 and utils.profile_is_validator():
+            layout.row().prop(ui_props, "new_comment_is_validation")
 
         layout.separator()
 
