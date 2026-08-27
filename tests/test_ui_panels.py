@@ -103,7 +103,7 @@ class TestGetReportBugURL(unittest.TestCase):
 
     def test_uses_bug_report_template(self):
         url = ui_panels.get_report_bug_url()
-        self.assertIn("template=bug-report-prefilled.yaml", url)
+        self.assertIn("template=report-prefilled.yaml", url)
 
     def test_does_not_prefill_title(self):
         url = ui_panels.get_report_bug_url()
