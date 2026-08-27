@@ -1642,7 +1642,7 @@ class CopyEnvironmentInfo(bpy.types.Operator):
 def get_report_bug_url() -> str:
     """Build GitHub issue URL with pre-filled environment information.
     Do not set the title and description, we require the user to fill those fields manually.
-    File is located at: .github/ISSUE_TEMPLATE/bug-report-prefilled.yaml
+    File is located at: .github/ISSUE_TEMPLATE/report-prefilled.yaml
     """
 
     info = get_environment_info()
@@ -1652,7 +1652,7 @@ def get_report_bug_url() -> str:
 
     return (
         "https://github.com/BlenderKit/blenderkit/issues/new"
-        f"?template=bug-report-prefilled.yaml"
+        f"?template=report-prefilled.yaml"
         f"&blendkit_version={quote(info['addon_version'])}"
         f"&blender_version={quote(info['blender_version'])}"
         f"&operating_system={quote(info['os'])}"
