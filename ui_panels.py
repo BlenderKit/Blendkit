@@ -3758,7 +3758,11 @@ class AssetPopupCard(bpy.types.Operator, ratings_utils.RatingProperties):
                 f"{tooltip_extension if rcount <= show_rating_threshold else ''}"
             )
 
-            if (
+            if self.asset_data.get("assetType") == "addon":
+                pass  # do not ask users to rate unratable add-ons
+            elif utils.user_is_owner(asset_data=self.asset_data):
+                pass  # do not ask creators to rate themselves
+            elif (
                 rcount <= show_rating_prompt_threshold
                 and self.rating_quality == 0
                 and self.rating_work_hours == 0
@@ -4014,14 +4018,21 @@ class AssetPopupCard(bpy.types.Operator, ratings_utils.RatingProperties):
 
         self.draw_thumbnail_box(left_column, width=int(self.width * split_ratio))
 
-        if not utils.user_is_owner(asset_data=self.asset_data) and self.asset_data.get(
-            "assetType"
-        ) not in ("addon", "author"):
-            # Draw ratings, but not for owners of assets - doesn't make sense.
-            # also addons and authors are excluded.
+        if utils.user_is_owner(asset_data=self.asset_data):
+            pass  # do not draw ratings for owners of assets - doesn't make sense
+        elif self.asset_data.get("assetType") == "author":
+            pass  # authors are excluded from rating
+        elif self.asset_data.get("assetType") == "addon":
+            # addons are excluded, lets inform the users
+            explanation_box = left_column.box()
+            col = explanation_box.column()
+            col.row().label(text="Ratings are not enabled for add-ons.", icon="INFO")
+            col.row().label(text="Please share your feedback in the comments instead.")
+        else:  # draw ratings for all other assets
             ratings_box = left_column.box()
             self.prefill_ratings()
             ratings.draw_ratings_menu(self, context, ratings_box)
+
         # self.draw_description(left_column, width = int(self.width*split_ratio))
         # right split
         split_right = split_left.split()
