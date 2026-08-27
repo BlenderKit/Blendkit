@@ -3372,6 +3372,8 @@ class AssetPopupCard(bpy.types.Operator, ratings_utils.RatingProperties):
             dict_params = self.asset_data.get("dictParameters", {})
             min_version = dict_params.get("blenderVersionMin")
             max_version = dict_params.get("blenderVersionMax")
+            min_version_tuple = None
+            max_version_tuple = None
             if min_version:
                 min_version_tuple = tuple(map(int, min_version.split(".")))
             if max_version:
@@ -3465,6 +3467,7 @@ class AssetPopupCard(bpy.types.Operator, ratings_utils.RatingProperties):
             self.asset_data
         )
         if has_warning:
+            warning = ""
             if difference == "major_newer":
                 warning = (
                     f"{self.asset_data['sourceAppVersion']} - newer major version!"
