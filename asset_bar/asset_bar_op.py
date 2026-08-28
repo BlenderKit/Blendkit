@@ -1811,7 +1811,7 @@ class BlenderKitAssetBarOperator(BL_UI_OT_draw_operator):
         # right after the asset name
         self.multi_price_label.set_location(
             self.tooltip_margin,
-            self.labels_start + (self.tooltip_margin * 3) + self.asset_name.height,
+            self.labels_start + (self.tooltip_margin * 2) + self.asset_name.height,
         )
         self.multi_price_label.width = self.tooltip_width - 2 * self.tooltip_margin
         self.multi_price_label.height = self.asset_name_text_size
@@ -3787,18 +3787,19 @@ class BlenderKitAssetBarOperator(BL_UI_OT_draw_operator):
                 self.authors_name.visible = True
                 self.gravatar_image.visible = True
 
-                # Hide ratings for addons
+                # Ratings are shown for all asset types, including add-ons.
                 is_addon = asset_data.get("assetType") == "addon"
-                if not is_addon:
-                    quality_text = asset_data["tooltip_data"]["quality"]
-                    if utils.profile_is_validator():
-                        quality_text += f" / {int(asset_data['score'])}"
-                    self.quality_label.text = quality_text
-                    self.quality_label.visible = True
-                    self.quality_star.visible = True
-                else:
-                    self.quality_label.visible = False
-                    self.quality_star.visible = False
+                quality_text = asset_data["tooltip_data"]["quality"]
+                if is_addon:
+                    # Add-ons show only the quality rating out of 10 - no
+                    # complexity/score, which confuses regular users.
+                    if quality_text != "-":
+                        quality_text = f"{quality_text}/10"
+                elif utils.profile_is_validator():
+                    quality_text += f" / {int(asset_data['score'])}"
+                self.quality_label.text = quality_text
+                self.quality_label.visible = True
+                self.quality_star.visible = True
 
                 # Update price labels for addons
                 user_price_text = asset_data["tooltip_data"].get("user_price_text", "")

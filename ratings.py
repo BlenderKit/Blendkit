@@ -30,6 +30,7 @@ from . import (
     global_vars,
     icons,
     ratings_utils,
+    reports,
     search,
     ui,
     ui_panels,
@@ -163,6 +164,11 @@ def draw_ratings_menu(self, context, layout):
     if self.rating_quality > 0:
         row.label(text=f"    Thanks{profile_name}!", icon="FUND")
 
+    # Complexity ("working hours") rating is hidden for add-ons - it confuses
+    # regular users and doesn't map well to installable tools.
+    if self.asset_type == "addon":
+        return
+
     col.separator()
     col.separator()
 
@@ -263,6 +269,14 @@ class FastRateMenu(Operator, ratings_utils.RatingProperties):
             self.asset = ob
         if self.asset_id == "":
             return {"CANCELLED"}
+
+        # Add-ons can only be rated once they are installed.
+        if self.asset_type == "addon":
+            from . import download
+
+            if not download.is_addon_installed(self.asset_data):
+                reports.add_report("Install the add-on before rating it.", type="INFO")
+                return {"CANCELLED"}
 
         wm = context.window_manager
 

@@ -26,12 +26,27 @@ from . import global_vars
 bk_logger = logging.getLogger(__name__)
 
 
+# Custom level below DEBUG for very high-frequency diagnostic logs (e.g. per-draw
+# add-on installation status checks) that would otherwise flood DEBUG output.
+TRACE = 5
+logging.addLevelName(TRACE, "TRACE")
+
+
+def _trace(self, message, *args, **kwargs):
+    if self.isEnabledFor(TRACE):
+        self._log(TRACE, message, args, **kwargs)
+
+
+logging.Logger.trace = _trace  # type: ignore[attr-defined]
+
+
 class BlenderKitFormatter(logging.Formatter):
     """Add emojis for logging level and mask API key tokens.
     Replace temporary tokens with *** and permanent tokens with *****.
     """
 
     EMOJIS = {
+        TRACE: "🔬 ",
         logging.DEBUG: "🐞 ",
         logging.INFO: "ℹ️ ",
         logging.WARNING: "⚠️ ",
