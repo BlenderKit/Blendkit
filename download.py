@@ -121,7 +121,7 @@ def get_addon_installation_status(asset_data: dict[str, Any]) -> dict[str, Any]:
     if not is_enabled:
         extension_module_name = f"bl_ext.www_blenderkit_com.{extension_id}"
         is_enabled = extension_module_name in enabled_addons
-        bk_logger.debug(
+        bk_logger.trace(
             "Checking extension format: %s -> enabled: %s",
             extension_module_name,
             is_enabled,
@@ -134,7 +134,7 @@ def get_addon_installation_status(asset_data: dict[str, Any]) -> dict[str, Any]:
                     f".{extension_id}"
                 ) and addon_module.startswith("bl_ext."):
                     is_enabled = True
-                    bk_logger.info(
+                    bk_logger.trace(
                         "Found enabled addon with extension format: %s", addon_module
                     )
                     break
@@ -152,7 +152,7 @@ def get_addon_installation_status(asset_data: dict[str, Any]) -> dict[str, Any]:
                 f".{extension_id}"
             ) and addon_module.__name__.startswith("bl_ext."):
                 is_installed = True
-                bk_logger.info(
+                bk_logger.trace(
                     "Found installed addon with extension format: %s",
                     addon_module.__name__,
                 )
@@ -173,7 +173,9 @@ def get_addon_installation_status(asset_data: dict[str, Any]) -> dict[str, Any]:
                     # Check if this specific module name is enabled
                     is_enabled = addon_module.__name__ in enabled_addons
                     if is_enabled:
-                        bk_logger.info("Found enabled addon: %s", addon_module.__name__)
+                        bk_logger.trace(
+                            "Found enabled addon: %s", addon_module.__name__
+                        )
                     break
         except Exception as e:
             bk_logger.warning("Error double-checking enabled status: %s", e)
@@ -224,9 +226,9 @@ def get_addon_installation_status(asset_data: dict[str, Any]) -> dict[str, Any]:
         if "blenderkit" in addon.lower() or addon.endswith(extension_id)
     ]
     if blenderkit_addons:
-        bk_logger.debug("Found Blendkit-related enabled addons: %s", blenderkit_addons)
+        bk_logger.trace("Found Blendkit-related enabled addons: %s", blenderkit_addons)
 
-    bk_logger.debug(
+    bk_logger.trace(
         "Addon status check for '%s': installed=%s, enabled=%s",
         extension_id,
         is_installed,
@@ -239,6 +241,13 @@ def get_addon_installation_status(asset_data: dict[str, Any]) -> dict[str, Any]:
         "pkg_id": extension_id,
         "cached_pkg": None,  # Not using cached_pkg anymore
     }
+
+
+def is_addon_installed(asset_data: dict[str, Any]) -> bool:
+    """Whether the add-on asset is installed. Prerequisite for rating add-ons."""
+    if asset_data.get("assetType") != "addon":
+        return False
+    return get_addon_installation_status(asset_data).get("installed", False)
 
 
 def install_addon_from_local_file(
