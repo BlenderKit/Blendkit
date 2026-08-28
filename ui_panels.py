@@ -3710,7 +3710,9 @@ class AssetPopupCard(bpy.types.Operator, ratings_utils.RatingProperties):
             and rc.get("workingHours") is not None
         ):
             row = box_thumbnail.row()
-            row.alignment = "EXPAND"
+            is_addon = self.asset_data.get("assetType") == "addon"
+            # Add-ons show a single star metric - center it instead of spreading.
+            row.alignment = "CENTER" if is_addon else "EXPAND"
 
             # display_ratings = can_display_ratings(self.asset_data)
             show_rating_threshold = 0
@@ -3733,33 +3735,42 @@ class AssetPopupCard(bpy.types.Operator, ratings_utils.RatingProperties):
 
             pcoll = icons.icon_collections["main"]
 
-            row.emboss = "NONE"
-            op = row.operator(
-                "wm.blenderkit_tooltip", text=str(s), icon_value=pcoll["trophy"].icon_id
-            )
-            op.tooltip = (
-                "Asset score calculated from user ratings. \n\n"
-                "Score = average quality × median complexity × 10*\n\n *Happiness multiplier"
-            )
-            row.label(text="   ")
-
             tooltip_extension = f".\n\nRatings results are shown for assets with more than {show_rating_threshold} ratings"
+
+            row.emboss = "NONE"
+
+            # Add-ons show only the quality star - the score/complexity confuse
+            # regular users.
+            if not is_addon:
+                op = row.operator(
+                    "wm.blenderkit_tooltip",
+                    text=str(s),
+                    icon_value=pcoll["trophy"].icon_id,
+                )
+                op.tooltip = (
+                    "Asset score calculated from user ratings. \n\n"
+                    "Score = average quality × median complexity × 10*\n\n *Happiness multiplier"
+                )
+                row.label(text="   ")
+
             op = row.operator("wm.blenderkit_tooltip", text=str(q), icon="SOLO_ON")
             op.tooltip = (
                 f"Quality, average from {rc['quality']} rating{'' if rc['quality'] == 1 else 's'}"
                 f"{tooltip_extension if rcount <= show_rating_threshold else ''}"
             )
-            row.label(text="   ")
 
-            op = row.operator(
-                "wm.blenderkit_tooltip",
-                text=str(c),
-                icon_value=pcoll["dumbbell"].icon_id,
-            )
-            op.tooltip = (
-                f"Complexity, median from {rc['workingHours']} rating{'' if rc['workingHours'] == 1 else 's'}"
-                f"{tooltip_extension if rcount <= show_rating_threshold else ''}"
-            )
+            if not is_addon:
+                row.label(text="   ")
+
+                op = row.operator(
+                    "wm.blenderkit_tooltip",
+                    text=str(c),
+                    icon_value=pcoll["dumbbell"].icon_id,
+                )
+                op.tooltip = (
+                    f"Complexity, median from {rc['workingHours']} rating{'' if rc['workingHours'] == 1 else 's'}"
+                    f"{tooltip_extension if rcount <= show_rating_threshold else ''}"
+                )
 
             if self.asset_data.get(
                 "assetType"
