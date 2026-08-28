@@ -149,7 +149,7 @@ def write_resolved_client_version(addon_build_dir: str, tag: str):
 
 def blenderkit_client_build(abs_build_dir: str) -> str:
     """Build Blendkit-Client locally from the bk_client submodule (dev only).
-    Binaries are cross-compiled for all platforms in parallel. Returns the
+    Binary is only compiled for the current platform. Returns the
     exact ``vX.Y.Z`` version that was built.
     """
     client_dir = os.path.join(abs_build_dir, "client")
