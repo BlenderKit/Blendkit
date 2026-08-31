@@ -3868,6 +3868,7 @@ class BlenderKitAssetBarOperator(BL_UI_OT_draw_operator):
                     compat_ok, min_v, max_v = utils.get_addon_blender_compatibility(
                         asset_data
                     )
+                    os_ok, os_platforms = utils.get_addon_os_compatibility(asset_data)
                     if not compat_ok:
                         if min_v and max_v:
                             rng = f"{min_v}\u2013{max_v}"
@@ -3877,6 +3878,9 @@ class BlenderKitAssetBarOperator(BL_UI_OT_draw_operator):
                             rng = f"\u2264{max_v}"
                         cur = utils.get_blender_version()
                         self.version_warning.text = f"Incompatible: addon requires Blender {rng} (you have {cur})"
+                        self.version_warning.text_color = self.warning_color
+                    elif not os_ok:
+                        self.version_warning.text = f"Incompatible: addon supports {', '.join(os_platforms)} (you have {utils.get_current_addon_platform()})"
                         self.version_warning.text_color = self.warning_color
 
                 author_id = int(asset_data["author"]["id"])

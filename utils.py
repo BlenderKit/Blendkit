@@ -2149,8 +2149,50 @@ def get_addon_blender_compatibility(asset_data):
     return True, min_v, max_v
 
 
+def get_current_addon_platform() -> str:
+    """Return the Blender-extension platform id for the running machine.
+
+    Format matches Blender manifest platforms, e.g. 'windows-x64',
+    'macos-arm64', 'linux-x64'.
+    """
+    os_name = {"win32": "windows", "darwin": "macos"}.get(sys.platform)
+    if os_name is None:
+        os_name = "linux" if sys.platform.startswith("linux") else sys.platform
+    machine = platform.machine().lower()
+    if machine in ("x86_64", "amd64", "x64"):
+        arch = "x64"
+    elif machine in ("arm64", "aarch64"):
+        arch = "arm64"
+    else:
+        arch = machine
+    return f"{os_name}-{arch}"
+
+
+def get_addon_os_compatibility(asset_data):
+    """Return (is_compatible, platforms) for an addon asset.
+
+    Reads dictParameters.platforms (list of Blender platform ids). An empty or
+    missing list means the addon is platform-independent (compatible). Non-addon
+    assets are always compatible.
+    """
+    if not isinstance(asset_data, dict) or asset_data.get("assetType") != "addon":
+        return True, None
+    dp = asset_data.get("dictParameters") or {}
+    platforms = dp.get("platforms") or None
+    if not platforms:
+        return True, platforms
+    return get_current_addon_platform() in platforms, platforms
+
+
+def is_addon_os_compatible(asset_data) -> bool:
+    return get_addon_os_compatibility(asset_data)[0]
+
+
 def is_addon_blender_compatible(asset_data) -> bool:
-    return get_addon_blender_compatibility(asset_data)[0]
+    """Whether an addon is usable on this machine (both Blender version and OS)."""
+    return get_addon_blender_compatibility(asset_data)[0] and is_addon_os_compatible(
+        asset_data
+    )
 
 
 def get_addon_version() -> str:

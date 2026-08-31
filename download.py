@@ -2019,13 +2019,23 @@ class BlenderkitAddonChoiceOperator(bpy.types.Operator):
             )
             warn.label(text=f"Your Blender version: {cur}")
 
+        os_compat, os_platforms = utils.get_addon_os_compatibility(asset_data)
+        if not os_compat:
+            warn = layout.box()
+            warn.alert = True
+            warn.label(
+                text=f"Incompatible: supports {', '.join(os_platforms)}",
+                icon="ERROR",
+            )
+            warn.label(text=f"Your platform: {utils.get_current_addon_platform()}")
+
         layout = layout.column()
         # Show current status and appropriate action enum
         if not status["installed"]:
             layout.label(text="Status: Not Installed", icon="QUESTION")
             layout.separator()
             layout.prop(self, "action_not_installed", expand=True)
-            if not is_compat:
+            if not is_compat or not os_compat:
                 layout.separator()
                 row = layout.row()
                 row.alert = True

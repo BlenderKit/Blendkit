@@ -68,30 +68,36 @@
         },
 
         {
-            "name": "Run Blender 5.1.2",
+            "name": "Run Blender 5.2.1",
             "type": "node",
             "request": "launch",
             "console": "integratedTerminal",
             "cwd": "${workspaceFolder}",
+            "env": {
+                "BLENDKIT_DEBUG": "1"
+            },
             "windows": {
-                "runtimeExecutable": "D:/blenders/5.1.2/blender.exe",
+                "args": [
+                    "-dev"
+                ],
+                "runtimeExecutable": "D:/blenders/5.2.1/blender.exe",
             },
             "linux": {
                 "runtimeExecutable": "blender",
             },
             "osx": {
-                "runtimeExecutable": "/Applications/Blender.app/Contents/MacOS/Blender",
+                "runtimeExecutable": "/Applications/Blender 5.2.app/Contents/MacOS/Blender",
             }
         },
 
         {
-            "name": "Run Blender 5.1.2 Tests",
+            "name": "Run Blender 5.2.1 Tests",
             "type": "node",
             "request": "launch",
             "console": "integratedTerminal",
             "cwd": "${workspaceFolder}",
             "windows": {
-                "runtimeExecutable": "D:/blenders/5.1.2/blender.exe",
+                "runtimeExecutable": "D:/blenders/5.2.1/blender.exe",
                 "args": [
                     "-noaudio",
                     "--python-exit-code",
