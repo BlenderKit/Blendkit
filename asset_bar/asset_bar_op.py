@@ -601,9 +601,16 @@ def get_tooltip_data(asset_data):
     rcount = 0
     quality = "-"
     if rc:
-        rcount = min(rc.get("quality", 0), rc.get("workingHours", 0))
-    if rcount > show_rating_threshold:
-        quality = str(round(asset_data["ratingsAverage"].get("quality")))
+        # Add-ons only get quality ratings (no working-hours/complexity), so
+        # gating on workingHours would always hide their quality rating.
+        if asset_data.get("assetType") == "addon":
+            rcount = rc.get("quality", 0)
+        else:
+            rcount = min(rc.get("quality", 0), rc.get("workingHours", 0))
+    if rcount > show_rating_threshold and asset_data.get("ratingsAverage"):
+        quality_avg = asset_data["ratingsAverage"].get("quality")
+        if quality_avg is not None:
+            quality = str(round(quality_avg))
 
     # Add pricing information
     base_price_text = ""

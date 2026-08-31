@@ -35,6 +35,7 @@ from . import (
     ui,
     ui_panels,
     utils,
+    download,
 )
 
 
@@ -272,8 +273,6 @@ class FastRateMenu(Operator, ratings_utils.RatingProperties):
 
         # Add-ons can only be rated once they are installed.
         if self.asset_type == "addon":
-            from . import download
-
             if not download.is_addon_installed(self.asset_data):
                 reports.add_report("Install the add-on before rating it.", type="INFO")
                 return {"CANCELLED"}
