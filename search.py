@@ -907,11 +907,15 @@ def handle_search_task(task: client_tasks.Task) -> bool:
                 if asset.get("assetType") == "author" or asset.get("downloaded", 0) > 0
             ]
         if addon_props.search_compatible_only:
-            # Filter out addons that don't support the running Blender version.
+            # Filter out addons that don't support the running Blender version
+            # or OS. Validators are exempt: they keep seeing incompatible
+            # addons (rendered with the red overlay in the asset bar).
+            is_validator = utils.profile_is_validator()
             result_field = [
                 asset
                 for asset in result_field
                 if asset.get("assetType") != "addon"
+                or is_validator
                 or utils.is_addon_blender_compatible(asset)
             ]
 
