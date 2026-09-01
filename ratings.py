@@ -250,10 +250,10 @@ def draw_didnt_use_control(layout, asset_id):
     layout.separator()
     row = layout.row()
     if flagged:
-        text = rating.didnt_use_reason or "Didn't use it"
+        text = rating.didnt_use_reason or "I didn't use this asset"
         row.menu(NotUsedMenu.bl_idname, text=text, icon="CHECKMARK")
     else:
-        row.menu(NotUsedMenu.bl_idname, text="Didn't use it")
+        row.menu(NotUsedMenu.bl_idname, text="I didn't use this asset")
     if rating is not None and rating.didnt_use_error:
         # The refusal right under the control that caused it - the corner
         # report overlay is out of sight of this popup.
@@ -310,6 +310,13 @@ class FastRateMenu(Operator, ratings_utils.RatingProperties):
             self.asset_type = self.asset_data["assetType"]
         elif ui_props.active_index > -1:
             sr = search.get_search_results()
+            if ui_props.active_index >= len(sr):
+                bk_logger.warning(
+                    "FastRateMenu: active_index %d out of bounds for search results of length %d",
+                    ui_props.active_index,
+                    len(sr),
+                )
+                return {"CANCELLED"}
             self.asset_data = dict(sr[ui_props.active_index])
             self.asset_id = self.asset_data["id"]
             self.asset_type = self.asset_data["assetType"]
@@ -541,7 +548,7 @@ class SetNotUsed(bpy.types.Operator):
     """Mark the asset as one you did not use, or undo that.\nMutually exclusive with rating - the flag is refused while your rating stands"""
 
     bl_idname = "wm.blenderkit_not_used"
-    bl_label = "Didn't use it"
+    bl_label = "I didn't use this asset"
     bl_options = {"REGISTER", "INTERNAL"}
 
     asset_id: StringProperty(  # type: ignore[valid-type]
