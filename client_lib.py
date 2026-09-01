@@ -475,6 +475,58 @@ def send_rating(asset_id: str, rating_type: str, rating_value: Union[str, int]):
         )
 
 
+def get_not_used_reasons():
+    """Fetch the shared "didn't use it" reason choices."""
+    data = ensure_minimal_data()
+    with requests.Session() as session:
+        return session.get(
+            f"{get_base_url()}/ratings/get_not_used_reasons",
+            json=data,
+            timeout=TIMEOUT,
+            proxies=NO_PROXIES,
+        )
+
+
+def get_didnt_use(asset_id: str):
+    """Fetch the user's "I didn't use this asset" flag for one asset."""
+    data = ensure_minimal_data({"asset_id": asset_id})
+    with requests.Session() as session:
+        return session.get(
+            f"{get_base_url()}/ratings/get_didnt_use",
+            json=data,
+            timeout=TIMEOUT,
+            proxies=NO_PROXIES,
+        )
+
+
+def send_didnt_use(
+    asset_id: str,
+    didnt_use: bool,
+    reason_id: Optional[int] = None,
+    replace_rating: bool = False,
+):
+    """Set (with an optional reason) or clear the "I didn't use this asset" flag.
+
+    replace_rating deletes the user's score ratings server-side instead of the
+    409 refusal - send it only from UI that warned about the replacement.
+    """
+    data = ensure_minimal_data(
+        {
+            "asset_id": asset_id,
+            "didnt_use": didnt_use,
+            "reason_id": reason_id,
+            "replace_rating": replace_rating,
+        }
+    )
+    with requests.Session() as session:
+        return session.post(
+            f"{get_base_url()}/ratings/send_didnt_use",
+            json=data,
+            timeout=TIMEOUT,
+            proxies=NO_PROXIES,
+        )
+
+
 # BOOKMARKS
 def get_bookmarks():
     data = ensure_minimal_data()

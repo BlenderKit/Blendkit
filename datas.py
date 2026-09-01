@@ -196,4 +196,17 @@ class AssetRating(FromDictMixin):
     quality_fetched: bool = False
     working_hours: Optional[float] = None  # name kept as comes from API
     working_hours_fetched: bool = False
+    # The "I didn't use this asset" feedback flag; mutually exclusive with
+    # quality/working_hours server-side (rating wins).
+    didnt_use: bool = False
+    didnt_use_reason: Optional[str] = None
+    didnt_use_reason_id: Optional[int] = None
+    didnt_use_fetched: bool = False
+    # Session-local memory of the scores a "didn't use" pick replaced, so
+    # undo restores the numbers, not just the unflagged state.
+    didnt_use_replaced_quality: Optional[float] = None
+    didnt_use_replaced_working_hours: Optional[float] = None
+    # The last "didn't use" server refusal, shown inline under the control -
+    # the corner report overlay is out of sight of the rating popup.
+    didnt_use_error: Optional[str] = None
     # TODO: Add last time ratings checked to improve caching
