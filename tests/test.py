@@ -99,6 +99,7 @@ _test_modules = [
     "test_persistent_preferences",
     "test_timer",
     "test_rating_nudge",
+    "test_didnt_use",
     "test_ratings",
     "test_keymap_utils",
     "test_override_extension_draw",

@@ -523,6 +523,12 @@ def handle_task(task: client_tasks.Task):
         return ratings_utils.handle_get_ratings_task(task)
     if task.task_type == "ratings/send_rating":
         return ratings_utils.handle_send_rating_task(task)
+    if task.task_type == "ratings/get_not_used_reasons":
+        return ratings_utils.handle_get_not_used_reasons_task(task)
+    if task.task_type == "ratings/get_didnt_use":
+        return ratings_utils.handle_get_didnt_use_task(task)
+    if task.task_type == "ratings/send_didnt_use":
+        return ratings_utils.handle_send_didnt_use_task(task)
 
     # HANDLE BOOKMARKS
     if task.task_type == "ratings/get_bookmarks":

@@ -63,6 +63,11 @@ TABS: dict[str, Any] = {
 }
 
 RATINGS: dict[str, datas.AssetRating] = {}
+
+# Shared "didn't use it" reason choices fetched from the server
+# (None = not fetched yet, [] = fetch requested/failed - flag still works
+# without a reason).
+NOT_USED_REASONS: Optional[list[dict]] = None
 BKIT_PROFILE: datas.MineProfile = datas.MineProfile()
 """Profile of the current user."""
 BKIT_AUTHORS: dict[int, datas.UserProfile] = {}
