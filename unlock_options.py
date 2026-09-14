@@ -32,7 +32,34 @@ import logging
 import random
 from dataclasses import dataclass
 
+from . import client_lib
+
 bk_logger = logging.getLogger(__name__)
+
+LOCKED_ASSET_EVENT = "locked_asset_clicked"
+
+
+def report_locked_asset_click(
+    asset_data: dict, placement: str, variant_id: str | None
+) -> None:
+    """Telemetry for an attempt to use a locked asset (a drag, or the unlock button).
+
+    Goes through Blendkit-Client's optional /report_event route, so it is covered by
+    the "Send usage data" preference. Asset ids make locked assets comparable by
+    demand and let the web side follow up on real interest; ``placement`` and
+    ``variant_id`` mirror the unlock link's UTM tags so encounters and click-throughs
+    share one vocabulary.
+    """
+    client_lib.report_event(
+        LOCKED_ASSET_EVENT,
+        {
+            "asset_base_id": asset_data.get("assetBaseId"),
+            "asset_id": asset_data.get("id"),
+            "asset_type": asset_data.get("assetType"),
+            "placement": placement,
+            "variant": variant_id,
+        },
+    )
 
 
 @dataclass(frozen=True)

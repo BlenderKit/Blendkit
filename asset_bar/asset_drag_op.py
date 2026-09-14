@@ -2173,6 +2173,9 @@ class AssetDragOperator(bpy.types.Operator):
         ):
             message = "This addon is not purchased yet."
             link_text = "Purchase add-on online"
+            unlock_options.report_locked_asset_click(
+                self.asset_data, "addon_purchase_drag", None
+            )
             url = paths.get_unlock_asset_url(
                 self.asset_data["id"], "addon_purchase_drag"
             )
@@ -2186,6 +2189,9 @@ class AssetDragOperator(bpy.types.Operator):
         if not self.asset_data.get("canDownload"):
 
             variant = unlock_options.get_unlock_variant()
+            unlock_options.report_locked_asset_click(
+                self.asset_data, "asset_unlock_drag", variant.identifier
+            )
             url = paths.get_unlock_asset_url(
                 self.asset_data["id"], "asset_unlock_drag", variant.identifier
             )

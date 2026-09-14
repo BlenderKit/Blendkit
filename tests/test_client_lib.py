@@ -613,6 +613,22 @@ class TestReportEvent(unittest.TestCase):
         self._saved_version = global_vars.CLIENT_VERSION
         global_vars.CLIENT_PORTS = ["62485"]
         global_vars.CLIENT_VERSION = "v1.12.0"
+        enabled = mock.patch.object(
+            client_lib, "send_usage_data_enabled", return_value=True
+        )
+        enabled.start()
+        self.addCleanup(enabled.stop)
+
+    def test_opted_out_sends_nothing(self):
+        with (
+            mock.patch.object(
+                client_lib, "send_usage_data_enabled", return_value=False
+            ),
+            mock.patch.object(client_lib.requests, "Session") as session_cls,
+        ):
+            client_lib.report_event("login_started", {"placement": "login_panel"})
+
+        session_cls.assert_not_called()
 
     def tearDown(self):
         global_vars.CLIENT_PORTS = self._saved_ports

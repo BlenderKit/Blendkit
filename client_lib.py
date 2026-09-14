@@ -467,12 +467,20 @@ def handle_settings_task(task) -> None:
         applying_client_settings = False
 
 
+def send_usage_data_enabled() -> bool:
+    """The "Send usage data" preference; main thread only (reads bpy.context)."""
+    return bool(bpy.context.preferences.addons[__package__].preferences.send_usage_data)
+
+
 def report_event(event: str, data: Optional[dict] = None) -> None:
     """Fire-and-forget telemetry event (e.g. login funnel) via Blendkit-Client.
 
     The Client forwards it to the server with standard headers in the background
-    and surfaces nothing to the UI.
+    and surfaces nothing to the UI. Skipped when the user opted out of sending
+    usage data; the Client drops the event too, this only saves the request.
     """
+    if not send_usage_data_enabled():
+        return
     payload = ensure_minimal_data({"event": event, "data": data or {}})
     try:
         with requests.Session() as session:

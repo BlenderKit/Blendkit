@@ -355,3 +355,42 @@ class TestDrawCommentResponseValidationCheckbox(unittest.TestCase):
         self.assertNotIn(
             ("prop", "new_comment_is_validation"), self.draw(0, is_validator=False)
         )
+
+
+class TestUnlockAssetOperator(unittest.TestCase):
+    def test_reports_click_then_opens_tagged_url(self):
+        with (
+            patch.object(
+                ui_panels.unlock_options, "report_locked_asset_click"
+            ) as report,
+            patch.object(ui_panels, "_open_url") as open_url,
+        ):
+            result = bpy.ops.wm.blenderkit_unlock_asset(
+                asset_id="ver-1",
+                asset_base_id="base-1",
+                asset_type="model",
+                variant="join",
+            )
+
+        self.assertEqual(result, {"FINISHED"})
+        report.assert_called_once_with(
+            {"id": "ver-1", "assetBaseId": "base-1", "assetType": "model"},
+            "asset_unlock_panel",
+            "join",
+        )
+        url = open_url.call_args.args[0]
+        self.assertIn("/get-blenderkit/ver-1/?from_addon=True", url)
+        self.assertIn("utm_content=asset_unlock_panel", url)
+        self.assertIn("ab_variant=join", url)
+
+    def test_empty_variant_is_not_sent(self):
+        with (
+            patch.object(
+                ui_panels.unlock_options, "report_locked_asset_click"
+            ) as report,
+            patch.object(ui_panels, "_open_url") as open_url,
+        ):
+            bpy.ops.wm.blenderkit_unlock_asset(asset_id="ver-1")
+
+        self.assertIsNone(report.call_args.args[2])
+        self.assertNotIn("ab_variant", open_url.call_args.args[0])

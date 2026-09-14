@@ -58,6 +58,7 @@ from . import (
     ratings_utils,
     search,
     ui,
+    unlock_options,
     upload,
     utils,
 )
@@ -3811,11 +3812,12 @@ class AssetPopupCard(bpy.types.Operator, ratings_utils.RatingProperties):
         else:
             variant = unlock_options.get_unlock_variant()
             op = layout.operator(
-                "wm.blenderkit_url", text=variant.button_text, icon="UNLOCKED"
+                "wm.blenderkit_unlock_asset", text=variant.button_text, icon="UNLOCKED"
             )
-            op.url = paths.get_unlock_asset_url(
-                self.asset_data["id"], "asset_unlock_panel", variant.identifier
-            )
+            op.asset_id = self.asset_data["id"]
+            op.asset_base_id = self.asset_data.get("assetBaseId", "")
+            op.asset_type = self.asset_data.get("assetType", "")
+            op.variant = variant.identifier
 
     def draw_menu_desc_author(self, context, layout, width=330):
         box = layout.column()
@@ -4890,7 +4892,42 @@ class NodegroupDropDialog(bpy.types.Operator):
         return context.window_manager.invoke_props_dialog(self, width=400)
 
 
+def _open_url(url: str) -> None:
+    bpy.ops.wm.url_open(url=url)
+
+
+class UnlockAssetOnline(bpy.types.Operator):
+    """Open the unlock page for this locked asset"""
+
+    bl_idname = "wm.blenderkit_unlock_asset"
+    bl_label = "Unlock asset"
+    bl_options = {"REGISTER", "INTERNAL"}
+
+    asset_id: bpy.props.StringProperty(options={"SKIP_SAVE", "HIDDEN"})  # type: ignore[valid-type]
+    asset_base_id: bpy.props.StringProperty(options={"SKIP_SAVE", "HIDDEN"})  # type: ignore[valid-type]
+    asset_type: bpy.props.StringProperty(options={"SKIP_SAVE", "HIDDEN"})  # type: ignore[valid-type]
+    placement: bpy.props.StringProperty(  # type: ignore[valid-type]
+        default="asset_unlock_panel", options={"SKIP_SAVE", "HIDDEN"}
+    )
+    variant: bpy.props.StringProperty(options={"SKIP_SAVE", "HIDDEN"})  # type: ignore[valid-type]
+
+    def execute(self, context):
+        variant_id = self.variant or None
+        unlock_options.report_locked_asset_click(
+            {
+                "id": self.asset_id,
+                "assetBaseId": self.asset_base_id,
+                "assetType": self.asset_type,
+            },
+            self.placement,
+            variant_id,
+        )
+        _open_url(paths.get_unlock_asset_url(self.asset_id, self.placement, variant_id))
+        return {"FINISHED"}
+
+
 classes = (
+    UnlockAssetOnline,
     BLENDERKIT_OT_hdr_thumbnail_tune,
     BLENDERKIT_OT_show_validation_popup,
     BLENDERKIT_OT_permissions_error_popup,

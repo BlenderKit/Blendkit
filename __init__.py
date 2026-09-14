@@ -2583,11 +2583,13 @@ In this case you should also set path to your system CA bundle containing proxy'
     send_usage_data: BoolProperty(
         name="Send usage data to improve Blendkit",
         description=(
-            "Report which Blendkit assets are in your file when you save or render "
-            "(asset ids and counts only, no file names or scene content). Helps rank "
-            "search results by what people actually use and, in the future, reward "
-            "creators for assets that get used. The choice is stored in Blendkit-Client "
-            "and shared by every Blendkit add-on on this machine"
+            "Send anonymous usage data: which Blendkit assets are in your file when "
+            "you save or render (asset ids and counts only, no file names or scene "
+            "content), when a sign-in prompt is shown or used, and when you try a "
+            "locked asset (its id). Helps rank search results by what people actually "
+            "use, reward creators for assets that get used, and improve the add-on. "
+            "Never affects downloads, search or sign-in. The choice is stored in "
+            "Blendkit-Client and shared by every Blendkit add-on on this machine"
         ),
         default=True,
         update=utils.send_usage_data_updated,

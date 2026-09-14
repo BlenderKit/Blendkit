@@ -460,7 +460,7 @@ def handle_usage_report_task(task: client_tasks.Task) -> None:
 
 
 def usage_reports_enabled() -> bool:
-    return bool(bpy.context.preferences.addons[__package__].preferences.send_usage_data)
+    return client_lib.send_usage_data_enabled()
 
 
 @persistent
