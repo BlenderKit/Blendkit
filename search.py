@@ -640,18 +640,23 @@ def get_large_thumbnail_url(asset_data) -> str:
     This is the same selection parse_result() uses to derive asset_data['thumbnail'],
     so downloading from it yields exactly the cached filename other code expects.
     """
-    use_webp = True
-    if bpy.app.version < (3, 4, 0) or asset_data.get("webpGeneratedTimestamp", 0) == 0:
-        use_webp = False  # WEBP was optimized in Blender 3.4.0
     if asset_data.get("assetType") == "hdr":
-        key = (
-            "thumbnailLargeUrlNonsquaredWebp"
-            if use_webp
-            else "thumbnailLargeUrlNonsquared"
-        )
+        webp_url = asset_data.get("thumbnailLargeUrlNonsquaredWebp")
+        key = "thumbnailLargeUrlNonsquared"
     else:
-        key = "thumbnailMiddleUrlWebp" if use_webp else "thumbnailMiddleUrl"
+        webp_url = asset_data.get("thumbnailMiddleUrlWebp")
+        key = "thumbnailMiddleUrl"
+    if _use_webp_thumbnail(webp_url):
+        return webp_url
     return asset_data.get(key) or ""
+
+
+def _use_webp_thumbnail(webp_url: Optional[str]) -> bool:
+    if bpy.app.version < (3, 4, 0) or not webp_url:
+        return False  # WEBP was optimized in Blender 3.4.0
+    parsed = urllib.parse.urlparse(webp_url)
+    generated = urllib.parse.parse_qs(parsed.query).get("webp_generated", [""])[0]
+    return generated.strip().lower() not in {"", "none", "0"}
 
 
 # TODO: type annotate and check this crazy function!
@@ -681,16 +686,13 @@ def parse_result(r) -> dict:
     generate_author_profile(author)
 
     r["available_resolutions"] = []
-    use_webp = True
-    if bpy.app.version < (3, 4, 0) or r.get("webpGeneratedTimestamp", 0) == 0:
-        use_webp = False  # WEBP was optimized in Blender 3.4.0
-
     # BIG THUMB
     thumb_url = get_large_thumbnail_url(r)
 
     # SMALL THUMB
-    if use_webp:
-        small_thumb_url = r.get("thumbnailSmallUrlWebp")
+    webp_small_thumb_url = r.get("thumbnailSmallUrlWebp")
+    if _use_webp_thumbnail(webp_small_thumb_url):
+        small_thumb_url = webp_small_thumb_url
     else:
         small_thumb_url = r.get("thumbnailSmallUrl")
 
@@ -962,6 +964,7 @@ def handle_search_task(task: client_tasks.Task) -> bool:
 
 def handle_thumbnail_download_task(task: client_tasks.Task) -> None:
     if task.status == "finished":
+        _apply_thumbnail_download_path(task.data)
         global_vars.DATA["images available"][task.data["image_path"]] = True
         ui_bgl.path_to_gpu_texture(task.data["image_path"])
     elif task.status == "error":
@@ -988,6 +991,22 @@ def handle_thumbnail_download_task(task: client_tasks.Task) -> None:
     if task.data["thumbnail_type"] in {"photo_full", "wire_full"}:
         asset_bar_op.asset_bar_operator.needs_tooltip_update = True
         return
+
+
+def _apply_thumbnail_download_path(data: dict) -> None:
+    thumbnail_type = data.get("thumbnail_type")
+    if thumbnail_type not in {"small", "full"}:
+        return
+    asset_base_id = data.get("assetBaseId", "")
+    image_path = data.get("image_path", "")
+    thumbnail_name = os.path.basename(image_path)
+    if not asset_base_id or not thumbnail_name:
+        return
+    target_key = "thumbnail_small" if thumbnail_type == "small" else "thumbnail"
+    for asset_data in get_search_results():
+        if asset_data.get("assetBaseId") == asset_base_id:
+            asset_data[target_key] = thumbnail_name
+            return
 
 
 def handle_prxc_download_task(task: client_tasks.Task) -> None:
