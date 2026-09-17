@@ -19,8 +19,11 @@
 import os
 import logging
 from collections.abc import Mapping
+from contextlib import contextmanager, suppress
 from typing import Optional, Tuple, Union
 import math
+
+from mathutils import Matrix, Vector
 
 import blf
 import bpy
@@ -31,16 +34,100 @@ from gpu_extras.batch import batch_for_shader
 
 from .image_utils import IMG
 
-
 bk_logger = logging.getLogger(__name__)
 
 cached_images = {}
 
 cached_gpu_textures = {}
 
+# Persistent scratch image reused for thumbnail->GPU texture conversion.
+# Loading and removing a fresh bpy.data.images for every thumbnail triggers a
+# full depsgraph relations rebuild (DEG_relations_tag_update) on each
+# add/remove, which scales with scene complexity and makes asset-bar mouse-over
+# very slow in huge scenes. Reusing one image (just reload its filepath) avoids
+# that cost entirely.
+_scratch_image = None
+_SCRATCH_IMAGE_NAME = ".blenderkit_thumb_scratch"
+
 _cached_image_shader: Optional[gpu.types.GPUShader] = None
 
 SEGMENTS_DEFAULT = 4
+
+
+def _resolve_region_dimensions(region) -> Tuple[float, float]:
+    width = getattr(region, "width", None) if region else None
+    height = getattr(region, "height", None) if region else None
+
+    if width is None or width <= 0 or height is None or height <= 0:
+        ctx_region = getattr(bpy.context, "region", None)
+        if ctx_region is not None:
+            width = width or getattr(ctx_region, "width", None)
+            height = height or getattr(ctx_region, "height", None)
+
+    width = float(width or 1.0)
+    height = float(height or 1.0)
+    return width, height
+
+
+@contextmanager
+def overlay_matrix_guard(region=None, *args, **kwargs):
+    """Ensure viewport overlays draw in screen space regardless of other handlers."""
+
+    pushed = False
+    try:
+        try:
+            gpu.matrix.push()
+            pushed = True
+            gpu.matrix.load_identity()
+            width, height = _resolve_region_dimensions(region)
+            _set_overlay_projection(width, height)
+        except Exception:  # noqa: BLE001
+            bk_logger.exception("Failed to prepare overlay matrix state")
+        yield
+    finally:
+        if pushed:
+            try:
+                gpu.matrix.pop()
+            except Exception:  # noqa: BLE001
+                bk_logger.exception("Failed to restore overlay matrix state")
+
+
+def _ortho_projection_matrix(width: float, height: float, *, near=-100.0, far=100.0):
+    """Return a pixel-aligned orthographic projection matrix."""
+
+    if width <= 0.0:
+        width = 1.0
+    if height <= 0.0:
+        height = 1.0
+    if far == near:
+        far = near + 0.001
+
+    sx = 2.0 / width
+    sy = 2.0 / height
+    sz = -2.0 / (far - near)
+    tx = -1.0
+    ty = -1.0
+    tz = -(far + near) / (far - near)
+
+    return Matrix(
+        (
+            (sx, 0.0, 0.0, tx),
+            (0.0, sy, 0.0, ty),
+            (0.0, 0.0, sz, tz),
+            (0.0, 0.0, 0.0, 1.0),
+        )
+    )
+
+
+def _set_overlay_projection(width: float, height: float):
+    """Set the 2D projection matrix used by Blendkit overlays."""
+
+    try:
+        projection = _ortho_projection_matrix(width, height)
+        gpu.matrix.load_projection_matrix(projection)
+    except Exception:  # noqa: BLE001
+        bk_logger.exception("overlay_matrix_guard: Failed to load projection matrix")
+
 
 VERTEX_SHADER_LEGACY = """
 uniform mat4 ModelViewProjectionMatrix;
@@ -634,8 +721,6 @@ def draw_image_runtime(
     rounded_segments = max(1, int(corner_segments))
     cache_key = (
         image.filepath,
-        float(x),
-        float(y),
         float(width),
         float(height),
         tuple(float(component) for component in crop),
@@ -657,8 +742,8 @@ def draw_image_runtime(
         indices = None
         if corner_radius is not None:
             mesh_data = _rounded_rect_mesh(
-                x,
-                y,
+                0,
+                0,
                 width,
                 height,
                 corner_radius,
@@ -668,7 +753,7 @@ def draw_image_runtime(
             if mesh_data:
                 coords, uvs, indices = mesh_data
         if coords is None or uvs is None or indices is None:
-            coords = [(x, y), (x + width, y), (x, y + height), (x + width, y + height)]
+            coords = [(0, 0), (width, 0), (0, height), (width, height)]
             uvs = [
                 (crop[0], crop[1]),
                 (crop[2], crop[1]),
@@ -709,15 +794,111 @@ def draw_image_runtime(
 
         # set color space mode
         image_shader.uniform_int("color_space_mode", color_space_mode)
-        batch.draw(image_shader)
     except Exception:
         pass
+
+    gpu.matrix.push()
+    gpu.matrix.translate((x, y))
+    batch.draw(image_shader)
+    gpu.matrix.pop()
 
     return batch
 
 
+def _unpack_scratch_image(img) -> None:
+    """Drop any packed data from the scratch image so the next reload re-reads
+    the file from disk.
+
+    When "Automatically Pack Resources" (``bpy.data.use_autopack``) is on,
+    Blender re-packs the reused scratch image after every ``reload()``. Once it
+    is packed, ``reload()`` reads the stale packed bytes instead of the new
+    ``filepath``, so every thumbnail would render as the first image loaded.
+    Removing the packed data forces a fresh read. Unpacking only edits image
+    data (no datablock add/remove), so it avoids the depsgraph relations rebuild
+    that loading a fresh image per thumbnail would trigger in big scenes.
+    """
+    if getattr(img, "packed_file", None) is None:
+        return
+    with suppress(Exception):
+        img.unpack(method="REMOVE")
+
+
+def _get_scratch_image():
+    """Return a single persistent bpy.types.Image reused for all thumbnail
+    conversions, avoiding per-thumbnail image add/remove (which forces a
+    depsgraph relations rebuild)."""
+    global _scratch_image
+    if _scratch_image is not None:
+        try:
+            # access something to verify the datablock is still valid
+            _scratch_image.name
+            return _scratch_image
+        except (ReferenceError, AttributeError):
+            _scratch_image = None
+
+    img = bpy.data.images.get(_SCRATCH_IMAGE_NAME)
+    if img is None:
+        img = bpy.data.images.new(_SCRATCH_IMAGE_NAME, 1, 1)
+    img.use_fake_user = False
+    try:
+        img.colorspace_settings.name = "sRGB"
+    except Exception:
+        pass
+    _scratch_image = img
+    return img
+
+
+def _legacy_path_to_gpu_texture(path: str) -> Optional[gpu.types.GPUTexture]:
+    """Original load+remove path, kept as a fallback if the scratch-image
+    approach fails for some reason."""
+    img = bpy.data.images.load(path, check_existing=False)
+    img.gl_load()
+    tex = gpu.texture.from_image(img)
+    bpy.data.images.remove(img)
+    return tex
+
+
+def _gl_texture_limit_px() -> Optional[int]:
+    """Return the System > GL Texture Limit as an integer pixel size, or None
+    when there is no limit ('CLAMP_OFF') or it can't be determined."""
+    try:
+        value = bpy.context.preferences.system.gl_texture_limit
+    except Exception:  # noqa: BLE001
+        return None
+    if not value or value == "CLAMP_OFF":
+        return None
+    try:
+        return int(value.split("_")[1])  # e.g. 'CLAMP_128' -> 128
+    except (IndexError, ValueError):
+        return None
+
+
+# Below this GL Texture Limit, gl_load()/from_image() would clamp thumbnails
+# enough to look blurry, so we bypass it via a full-resolution pixel upload.
+# At 512+ the clamped result is still sharp enough, so we keep the cheap path.
+_FULLRES_BYPASS_THRESHOLD = 512
+
+
 def path_to_gpu_texture(path: str) -> Optional[gpu.types.GPUTexture]:
-    """Convert a Blender image to a GPU texture.
+    """Convert an image file path to a GPU texture.
+
+    Reuses a single persistent scratch image (reloading its filepath) instead
+    of adding/removing a fresh bpy.data.images per call. gpu.texture.from_image
+    returns an independent snapshot, so the returned texture stays valid after
+    the scratch image is reloaded for the next thumbnail.
+
+    This single-image reuse also works when "Automatically Pack Resources" is
+    enabled: the scratch image is unpacked before each reload (see
+    _unpack_scratch_image), so we never have to fall back to loading a fresh
+    bpy.data.images per thumbnail (which would trigger a costly depsgraph
+    relations rebuild in big scenes).
+
+    Normally the texture is built with gl_load()/from_image(), which is cheap
+    but honours the user's System > GL Texture Limit. When that limit is set
+    aggressively low (< 512) and the image is bigger than the limit, we instead
+    upload the image's full-resolution pixels into an RGBA16F texture, bypassing
+    the clamp so previews stay sharp. Colour matches: image.pixels are already
+    linear-decoded, exactly what the draw shader expects.
 
     Returns:
         The GPU texture if successful, or None if the image is invalid.
@@ -729,14 +910,53 @@ def path_to_gpu_texture(path: str) -> Optional[gpu.types.GPUTexture]:
     if not os.path.exists(path) or not os.path.isfile(path):
         # do not spam log with warnings, just return None
         return None
-    img = bpy.data.images.load(path, check_existing=False)
-    img.gl_load()
 
-    tex = gpu.texture.from_image(img)
+    try:
+        img = _get_scratch_image()
+        if img is None:
+            return None
+        img.filepath = path
+        img.filepath_raw = path
+        # The scratch image is created via images.new() => source 'GENERATED'
+        # (a 1x1 black image). Without switching it to 'FILE', reload() never
+        # reads the file and every thumbnail/icon ends up a 1x1 black texture.
+        if img.source != "FILE":
+            img.source = "FILE"
+        # Drop any auto-packed data first so reload() re-reads `path` from disk.
+        _unpack_scratch_image(img)
+        img.reload()
+
+        width, height = img.size
+        channels = img.channels
+        limit = _gl_texture_limit_px()
+        needs_bypass = (
+            limit is not None
+            and limit < _FULLRES_BYPASS_THRESHOLD
+            and max(width, height) > limit
+            and channels == 4
+            and width > 0
+            and height > 0
+        )
+
+        if needs_bypass:
+            # Full-resolution upload that ignores the GL Texture Limit clamp.
+            buf = gpu.types.Buffer("FLOAT", width * height * channels)
+            img.pixels.foreach_get(buf)
+            tex = gpu.types.GPUTexture((width, height), format="SRGB8_A8", data=buf)
+        else:
+            img.gl_load()
+            tex = gpu.texture.from_image(img)
+    except Exception as e:
+        bk_logger.warning(
+            "scratch-image path_to_gpu_texture failed (%s), using legacy load",
+            e,
+        )
+        try:
+            tex = _legacy_path_to_gpu_texture(path)
+        except Exception:
+            return None
+
     cached_gpu_textures[path] = tex
-
-    # # Clean up Blender image
-    bpy.data.images.remove(img)
     return tex
 
 
@@ -771,3 +991,199 @@ def draw_text(text, x, y, size, color=(1, 1, 1, 0.5), halign="LEFT", valign="TOP
     blf.position(font_id, x, y, 0)
 
     blf.draw(font_id, text)
+
+
+def draw_bbox(
+    location: Vector,
+    rotation: Vector,
+    bbox_min: Vector,
+    bbox_max: Vector,
+    progress: Optional[float] = None,
+    color: Tuple[float, float, float, float] = (0.0, 1.0, 0.0, 1.0),
+) -> None:
+    """Draw a 3D wireframe bounding box with an optional progress fill."""
+    import mathutils
+
+    rot_euler = mathutils.Euler(rotation)
+
+    side_min = Vector(bbox_min)
+    side_max = Vector(bbox_max)
+    v0 = Vector(side_min)
+    v1 = Vector((side_max.x, side_min.y, side_min.z))
+    v2 = Vector((side_max.x, side_max.y, side_min.z))
+    v3 = Vector((side_min.x, side_max.y, side_min.z))
+    v4 = Vector((side_min.x, side_min.y, side_max.z))
+    v5 = Vector((side_max.x, side_min.y, side_max.z))
+    v6 = Vector((side_max.x, side_max.y, side_max.z))
+    v7 = Vector((side_min.x, side_max.y, side_max.z))
+
+    arrow_x = side_min.x + (side_max.x - side_min.x) / 2
+    arrow_y = side_min.y - (side_max.x - side_min.x) / 2
+    v8 = Vector((arrow_x, arrow_y, side_min.z))
+
+    vertices = [v0, v1, v2, v3, v4, v5, v6, v7, v8]
+    for v in vertices:
+        v.rotate(rot_euler)
+        v += Vector(location)
+
+    lines = [
+        [0, 1],
+        [1, 2],
+        [2, 3],
+        [3, 0],
+        [4, 5],
+        [5, 6],
+        [6, 7],
+        [7, 4],
+        [0, 4],
+        [1, 5],
+        [2, 6],
+        [3, 7],
+        [0, 8],
+        [1, 8],
+    ]
+    draw_lines(vertices, lines, color)
+    if progress is not None:
+        # Draw side fill quads based on progress along +Z of the local bbox
+        color = (color[0], color[1], color[2], 0.2)
+        progress = progress * 0.01
+        vz0 = (v4 - v0) * progress + v0
+        vz1 = (v5 - v1) * progress + v1
+        vz2 = (v6 - v2) * progress + v2
+        vz3 = (v7 - v3) * progress + v3
+        rects = (
+            (v0, v1, vz1, vz0),
+            (v1, v2, vz2, vz1),
+            (v2, v3, vz3, vz2),
+            (v3, v0, vz0, vz3),
+        )
+        for r in rects:
+            draw_rect_3d(r, color)
+
+
+def draw_proxor_download(
+    location: Vector,
+    rotation: Vector,
+    proxor_data: dict,
+    progress: Optional[float] = None,
+    color: Tuple[float, float, float, float] = (0.0, 1.0, 0.0, 1.0),
+) -> None:
+    """Draw full proxor (mesh, lines, points) during download.
+
+    Uses ``visibility_input`` to Z-clip the proxor based on *progress*.
+    GPU batches are created and discarded each frame (same pattern as
+    ``draw_bbox`` / ``draw_lines``).
+    """
+    from mathutils import Euler
+
+    from .bk_proxor._blender.draw import (
+        ProxorLiteDrawBuilder,
+        _get_mvp,
+        default_draw_context,
+        draw_arrow_batch,
+    )
+
+    vis = progress if progress is not None else 100
+    ctx = default_draw_context(
+        mesh_color_mode="CUSTOM",
+        line_color_mode="CUSTOM",
+        point_color_mode="CUSTOM",
+        custom_color=color,
+        mesh_shading_mode="FLAT",
+        use_gradient=True,
+        visibility_input=vis,
+        use_outline=True,
+        outline_color=(*color[:3], 1.0),
+    )
+
+    # Reuse a single builder instance across frames (cheaper than rebuilding).
+    builder = draw_proxor_download.__dict__.setdefault(
+        "_builder", ProxorLiteDrawBuilder()
+    )
+    draw_data = builder.build_draw_data(proxor_data, ctx)
+    if not draw_data:
+        return
+
+    # World-space transform for this proxor.
+    mat = Matrix.Translation(Vector(location)) @ Euler(rotation).to_matrix().to_4x4()
+
+    gpu.matrix.push()
+    try:
+        gpu.matrix.multiply_matrix(mat)
+
+        # Draw mesh first so its depth blocks the outline interior.
+        # depth_mask_set(True) writes depth for front faces; the outline pass
+        # then uses LESS_EQUAL to clip back faces that are deeper than those
+        # front faces (interior), keeping only the rim visible.
+        mesh = draw_data.get("mesh")
+        if mesh:
+            gpu.state.depth_test_set("LESS_EQUAL")
+            gpu.state.depth_mask_set(True)
+            gpu.state.blend_set("ALPHA")
+            gpu.state.face_culling_set("BACK")
+            shader = mesh["shader"]
+            for batch in mesh.get("batches") or []:
+                if batch is not None:
+                    batch.draw(shader)
+            gpu.state.face_culling_set("NONE")
+            gpu.state.depth_mask_set(False)
+            gpu.state.depth_test_set("NONE")
+            gpu.state.blend_set("NONE")
+
+        # Draw outline after mesh: interior back faces are at greater Z than the
+        # front faces already in the depth buffer, so LESS_EQUAL clips them.
+        outline = draw_data.get("outline")
+        if outline and outline["shader"] is not None:
+            shader = outline["shader"]
+            gpu.state.depth_test_set("LESS_EQUAL")
+            gpu.state.depth_mask_set(False)
+            gpu.state.blend_set("ALPHA")
+            gpu.state.face_culling_set("FRONT")
+            shader.bind()
+            shader.uniform_float("ModelViewProjectionMatrix", _get_mvp())
+            shader.uniform_float("outlineWidth", float(ctx.outline_width))
+            shader.uniform_float("outlineColor", ctx.outline_color)
+            for batch in outline.get("batches") or []:
+                if batch is not None:
+                    batch.draw(shader)
+            gpu.state.face_culling_set("NONE")
+            gpu.state.depth_test_set("NONE")
+            gpu.state.blend_set("NONE")
+
+        # Draw lines
+        line = draw_data.get("line")
+        if line:
+            gpu.state.depth_test_set("LESS_EQUAL")
+            gpu.state.depth_mask_set(False)
+            gpu.state.blend_set("ALPHA")
+            shader = line["shader"]
+            shader.uniform_float("lineWidth", 1.0)
+            line["batch"].draw(shader)
+            gpu.state.depth_test_set("NONE")
+            gpu.state.blend_set("NONE")
+
+        # Draw points
+        pts = draw_data.get("points")
+        if pts:
+            gpu.state.depth_test_set("LESS_EQUAL")
+            gpu.state.depth_mask_set(False)
+            gpu.state.blend_set("ALPHA")
+            shader = pts["shader"]
+            gpu.state.point_size_set(3.0)
+            shader.bind()
+            try:
+                shader.uniform_float("pointSize", 3.0)
+            except Exception:  # noqa: BLE001
+                pass
+            if not pts["has_colors"] and pts["color"] is not None:
+                shader.uniform_float("color", pts["color"])
+            pts["batch"].draw(shader)
+            gpu.state.depth_test_set("NONE")
+            gpu.state.blend_set("NONE")
+
+        # Draw floor-level forward arrow (matches the default green bbox arrow)
+        arrow = draw_data.get("arrow")
+        if arrow:
+            draw_arrow_batch(arrow, float(getattr(ctx, "arrow_width", 2.0)))
+    finally:
+        gpu.matrix.pop()

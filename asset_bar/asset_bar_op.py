@@ -21,15 +21,17 @@ import math
 import os
 import re
 import time
-from functools import partial
 from collections import Counter
+from functools import partial
 from types import SimpleNamespace
 from typing import Any, Dict, Optional, Union
 
 import bpy
+import gpu
+import blf
 from bpy.props import BoolProperty, StringProperty
 
-from . import (
+from .. import (
     colors,
     comments_utils,
     global_vars,
@@ -42,15 +44,26 @@ from . import (
     utils,
     viewport_utils,
 )
-from .bl_ui_widgets.bl_ui_button import BL_UI_Button
-from .bl_ui_widgets.bl_ui_drag_panel import BL_UI_Drag_Panel
-from .bl_ui_widgets.bl_ui_draw_op import BL_UI_OT_draw_operator
-from .bl_ui_widgets.bl_ui_image import BL_UI_Image
-from .bl_ui_widgets.bl_ui_label import BL_UI_Label, BL_UI_DuoLabel
-from .bl_ui_widgets.bl_ui_widget import BL_UI_Widget
+from ..bl_ui_widgets.bl_ui_button import BL_UI_Button
+from ..bl_ui_widgets.bl_ui_drag_panel import BL_UI_Drag_Panel
+from ..bl_ui_widgets.bl_ui_draw_op import BL_UI_OT_draw_operator
+from ..bl_ui_widgets.bl_ui_image import BL_UI_Image
+from ..bl_ui_widgets.bl_ui_label import BL_UI_Label, BL_UI_DuoLabel
+from ..bl_ui_widgets.bl_ui_resize_handle import BL_UI_Resize_Handle
+from ..bl_ui_widgets.bl_ui_widget import (
+    BL_UI_Widget,
+    batched_region_redraw,
+    region_redraw,
+    set_font_size,
+)
 
 
 bk_logger = logging.getLogger(__name__)
+
+# Addon root package name. We live in <addon>.asset_bar, but addon
+# preferences are registered under the top-level addon package, so we
+# strip the last component to look them up correctly.
+_ADDON_PACKAGE = __package__.rsplit(".", 1)[0]
 
 # Maximum label length for manufacturer chips (e.g. "Ford motor company")
 MAX_MANUFACTURER_LABEL_LEN = 17
@@ -67,7 +80,129 @@ active_area_pointer = 0
 
 ROUNDING_RADIUS = 20
 
+
+def _format_comment_timestamp(submit_date):
+    """Format an ISO comment date as [DD.MM.YYYY-HH:MM]. Returns "" if unknown."""
+    if not submit_date or submit_date == "just now":
+        return ""
+    try:
+        from datetime import datetime
+
+        dt = datetime.fromisoformat(submit_date.replace("Z", "+00:00"))
+    except (ValueError, TypeError):
+        return ""
+    return dt.strftime("%d.%m.%Y-%H:%M")
+
+
+def _wrap_text_to_width(text, width_px, text_size):
+    """Split text into lines that fit within width_px pixels at text_size."""
+    if text == "":
+        return [""]
+    font_id = 1
+    set_font_size(font_id, text_size)
+
+    def fits(candidate):
+        return blf.dimensions(font_id, candidate)[0] <= width_px
+
+    lines = []
+    current = ""
+    for word in text.split(" "):
+        candidate = word if current == "" else f"{current} {word}"
+        if fits(candidate) or current == "":
+            # break a single word that is too long on its own
+            while current == "" and not fits(word) and len(word) > 1:
+                cut = len(word)
+                while cut > 1 and not fits(word[:cut]):
+                    cut -= 1
+                lines.append(word[:cut])
+                word = word[cut:]
+                candidate = word
+            current = candidate
+        else:
+            lines.append(current)
+            current = word
+    if current:
+        lines.append(current)
+    return lines
+
+
+ASSETBAR_MAX_VISIBLE_ASSETS = 200
+ASSETBAR_RESIZE_CURSOR = "MOVE_Y"
+ASSETBAR_RESIZE_CLICK_THRESHOLD_PX = 5
+
 TOOLTIP_SIZE_PX = 512
+
+# How many assets ahead of the current scroll position to trigger fetching the next page.
+# Higher values start the fetch earlier, reducing visible pauses when scrolling fast.
+SEARCH_PREFETCH_LOOKAHEAD = 20
+
+# Default trackpad scroll sensitivity (pixels of finger travel per asset slot).
+# Used as a fallback when addon preferences are unavailable.
+SCROLL_TRACKPAD_SENSITIVITY_DEFAULT = 120.0
+
+# --- Smooth-scroll animation tunables -----------------------------------------
+# The scroll position is `scroll_offset` (integer slot count) + `scroll_phase`
+# (signed pixel offset along the active scroll axis). Trackpad input feeds the
+# phase continuously; once |phase| >= one slot-step the integer offset advances
+# and the phase is reduced by that step. After the user stops feeding events
+# we coast on the recorded velocity (friction decay) and finally snap the
+# phase to zero (which is automatically row-aligned because integer commits
+# always advance by a full row in multi-row mode).
+SCROLL_FRICTION = 7.0  # exponential decay rate for inertia (1/s)
+SCROLL_MIN_VELOCITY = 25.0  # px/s; below this we hand off from inertia to snap
+SCROLL_SNAP_RATE = 16.0  # exponential rate for snap-to-zero (1/s)
+SCROLL_SETTLE_PX = 0.5  # px; below this the animation stops entirely
+SCROLL_INPUT_GAP = 0.05  # s; idle gap before inertia takes over
+SCROLL_DT_CAP = 0.1  # s; max frame dt (avoid jumps after lag spikes)
+SCROLL_VELOCITY_SAMPLE = 0.06  # s; window over which trackpad velocity is averaged
+
+# Smooth scroll relies on per-frame partial-row offsets that need the
+# GPU scissor API (gpu.state.scissor_test_set / scissor_set) to clip
+# top/bottom rows during the animation so they don't spill outside the
+# asset bar. That API is reliably available from Blender 3.6+; on older
+# versions we fall back to immediate integer-row scrolling.
+SMOOTH_SCROLL_SUPPORTED = bpy.app.version >= (3, 6, 0) and hasattr(
+    gpu.state, "scissor_test_set"
+)
+# Per wheel-notch velocity boost, expressed as a multiple of one slot per
+# second. With v0 = step_px * SCROLL_WHEEL_NOTCH_VELOCITY and exponential
+# friction decay at SCROLL_FRICTION, each notch glides ~one slot before
+# inertia hands off to magnetic snap. Multiple rapid notches accumulate
+# (clamped to SCROLL_WHEEL_MAX_NOTCH_STACK slots-worth of velocity) so a
+# fast spin coasts proportionally further.
+SCROLL_WHEEL_NOTCH_VELOCITY = 7.0  # = SCROLL_FRICTION; gives ~1 slot per notch
+SCROLL_WHEEL_MAX_NOTCH_STACK = 6  # cap on stacked notch velocity (in slots)
+# Direction-bias for the magnetic snap: when traveling forward we still snap
+# forward to the next slot as long as we already crossed >= (1 - bias) of one
+# slot, i.e. we bias the half-way decision boundary toward the travel
+# direction. 0.0 = pure nearest-slot, 0.5 = always continue forward unless
+# almost no progress, sane range ~0.2-0.35.
+SCROLL_SNAP_DIRECTION_BIAS = 0.30
+
+# Scroll buffer rows/cols rendered outside the visible bar so that fast
+# inertial swipes have pre-positioned thumbnails to slide in. Bigger values
+# preload more pages around the visible area at the cost of extra widget
+# instances. Asset-button pool size is sized to fit these buffers (see
+# `setup_widgets`).
+SCROLL_BUFFER_ROWS = 3  # multi-row mode: extra rows above + below visible grid
+SCROLL_BUFFER_COLS = 6  # single-row mode: extra cols on each side
+
+# Scroll position indicator dimensions (in unscaled px; multiplied by UI scale).
+SCROLL_INDICATOR_THICKNESS_PX = 3  # track / thumb thickness
+SCROLL_INDICATOR_MIN_THUMB_PX = 8  # min thumb length so it stays visible
+
+# Wheel event types we treat as scroll input. Direction is mapped per-event:
+#   WHEELUPMOUSE / WHEELLEFTMOUSE   -> back    (negative step)
+#   WHEELDOWNMOUSE / WHEELRIGHTMOUSE -> forward (positive step)
+# Both vertical and horizontal wheel events drive the same logical axis,
+# so the user can scroll the bar with whatever wheel their hardware emits.
+_WHEEL_EVENT_TYPES = {
+    "WHEELUPMOUSE",
+    "WHEELDOWNMOUSE",
+    "WHEELLEFTMOUSE",
+    "WHEELRIGHTMOUSE",
+}
+_WHEEL_FORWARD = {"WHEELDOWNMOUSE", "WHEELRIGHTMOUSE"}
 
 
 def get_area_height(self):
@@ -121,7 +256,6 @@ def modal_inside(self, context, event):
     if self._finished:
         return {"FINISHED"}
 
-    user_preferences = bpy.context.preferences.addons[__package__].preferences
     if self.context:
         context = self.context
 
@@ -179,13 +313,11 @@ def modal_inside(self, context, event):
     if sr is not None:
         # this check runs more search, useful especially for first search. Could be moved to a better place where the check
         # doesn't run that often.
-        # Calculate current max rows based on expanded state
-        if user_preferences.assetbar_expanded:
-            current_max_rows = user_preferences.maximized_assetbar_rows
-        else:
-            current_max_rows = 1
-
-        if len(sr) - ui_props.scroll_offset < (ui_props.wcount * current_max_rows) + 15:
+        current_max_rows = self.get_requested_assetbar_rows()
+        if (
+            len(sr) - ui_props.scroll_offset
+            < (ui_props.wcount * current_max_rows) + SEARCH_PREFETCH_LOOKAHEAD
+        ):
             self.search_more()
 
     # Toggle overlay stats/text with animation playback
@@ -200,16 +332,14 @@ def modal_inside(self, context, event):
         self.update_buttons()
 
         # progress bar
-        # change - let's try to optimize and redraw only when needed
-        change = False
         for asset_button in self.asset_buttons:
             if not asset_button.visible:
                 continue
             if sr is not None and len(sr) > asset_button.asset_index:
                 asset_data = sr[asset_button.asset_index]
+                if asset_data.get("placeholder"):
+                    continue
                 self.update_progress_bar(asset_button, asset_data)
-        if change:
-            context.region.tag_redraw()
 
     # Check for tab shortcut keys directly in the modal function
     if (
@@ -310,53 +440,22 @@ def modal_inside(self, context, event):
 
     self.mouse_x, self.mouse_y = self._event_coords_in_active_region(event)
 
-    # TRACKPAD SCROLL
-    if event.type == "TRACKPADPAN" and self.panel.is_in_rect(
-        self.mouse_x, self.mouse_y
-    ):
-        # accumulate trackpad inputs
-        self.trackpad_x_accum -= event.mouse_x - event.mouse_prev_x
-        self.trackpad_y_accum += event.mouse_y - event.mouse_prev_y
+    # Smooth-scroll animation tick. Runs every TIMER while inertia or snap
+    # is in flight; cheap no-op once settled.
+    if self._scroll_animating and event.type == "TIMER":
+        self._smooth_scroll_tick(time.time())
 
-        step = 0
-        multiplier = 30
-        if abs(self.trackpad_x_accum) > abs(self.trackpad_y_accum) or self.hcount < 2:
-            step = math.floor(self.trackpad_x_accum / multiplier)
-            self.trackpad_x_accum -= step * multiplier
-            # reset the other axis not to accidentally scroll it
-            if step != 0:
-                self.trackpad_y_accum = 0
-        if abs(self.trackpad_y_accum) > 0 and self.hcount > 1:
-            step = self.wcount * math.floor(self.trackpad_x_accum / multiplier)
-            self.trackpad_y_accum -= step * multiplier
-            # reset the other axis not to accidentally scroll it
-            if step != 0:
-                self.trackpad_x_accum = 0
-        if step != 0:
-            self.scroll_offset += step
-            self.scroll_update()
-        return {"RUNNING_MODAL"}
-
-    # MOUSEWHEEL SCROLL
-    if event.type == "WHEELUPMOUSE" and self.panel.is_in_rect(
-        self.mouse_x, self.mouse_y
-    ):
-        if self.hcount > 1:
-            self.scroll_offset -= self.wcount
-        else:
-            self.scroll_offset -= 2
-        self.scroll_update()
-        return {"RUNNING_MODAL"}
-
-    elif event.type == "WHEELDOWNMOUSE" and self.panel.is_in_rect(
-        self.mouse_x, self.mouse_y
-    ):
-        if self.hcount > 1:
-            self.scroll_offset += self.wcount
-        else:
-            self.scroll_offset += 2
-
-        self.scroll_update()
+    # SCROLL INPUT
+    # All scroll-like input (vertical wheel, horizontal/tilt wheel, trackpad pan)
+    # is routed through a single handler. Axis of motion is determined purely
+    # by layout mode:
+    #   - multi-row  (hcount > 1)  -> vertical input drives scrolling
+    #   - single-row (hcount == 1) -> horizontal input drives scrolling
+    # We always grab these events when the cursor is over the asset bar,
+    # regardless of source, so the bar feels responsive to every input device.
+    # Wheel and trackpad events never arrive in the same event so there is no
+    # double-step risk.
+    if self._handle_scroll_event(context, event):
         return {"RUNNING_MODAL"}
 
     if self.check_ui_resized(context):
@@ -415,7 +514,10 @@ def asset_bar_invoke(self, context, event):
 
     self.update_timer_limit = 0.5
     self.update_timer_start = time.time()
-    self._timer = context.window_manager.event_timer_add(0.5, window=context.window)
+    # Fast timer so the scroll animation can tick smoothly even when the
+    # user is not producing any other events (post-release momentum, wheel
+    # decay, etc.). Heavy per-tick work is still gated by `update_timer_limit`.
+    self._timer = context.window_manager.event_timer_add(1 / 60, window=context.window)
 
     context.window_manager.modal_handler_add(self)
     global active_area_pointer
@@ -499,9 +601,16 @@ def get_tooltip_data(asset_data):
     rcount = 0
     quality = "-"
     if rc:
-        rcount = min(rc.get("quality", 0), rc.get("workingHours", 0))
-    if rcount > show_rating_threshold:
-        quality = str(round(asset_data["ratingsAverage"].get("quality")))
+        # Add-ons only get quality ratings (no working-hours/complexity), so
+        # gating on workingHours would always hide their quality rating.
+        if asset_data.get("assetType") == "addon":
+            rcount = rc.get("quality", 0)
+        else:
+            rcount = min(rc.get("quality", 0), rc.get("workingHours", 0))
+    if rcount > show_rating_threshold and asset_data.get("ratingsAverage"):
+        quality_avg = asset_data["ratingsAverage"].get("quality")
+        if quality_avg is not None:
+            quality = str(round(quality_avg))
 
     # Add pricing information
     base_price_text = ""
@@ -526,23 +635,39 @@ def get_tooltip_data(asset_data):
 
         # for debug show both prices always
         if utils.profile_is_validator():
-            if user_price_text:
+            if (
+                user_price_text
+                and base_price_text
+                and str(user_price_text) != str(base_price_text)
+            ):
+                # Sale: show discounted price + strikethrough original
                 user_price_text = f" ${user_price_text} "
+                user_price_color = colors.WHITE
+                user_price_bg_color = colors.PURPLE_PRICE
+
+                base_price_text = f" ${base_price_text} "
+                base_price_color = colors.TEXT_DIM
+                base_price_bg_color = colors.PURPLE_PRICE
+            elif base_price_text:
+                # No sale or only base price available
+                base_price_text = f" ${base_price_text} "
+                base_price_color = colors.WHITE
+                base_price_bg_color = colors.PURPLE_PRICE
+
+                user_price_text = ""
+            elif user_price_text:
+                user_price_text = f" ${user_price_text} "
+                user_price_color = colors.WHITE
+                user_price_bg_color = colors.PURPLE_PRICE
+
+                base_price_text = ""
             else:
                 user_price_text = ""
-            user_price_color = colors.WHITE
-            user_price_bg_color = colors.GREEN_PRICE
-
-            if base_price_text:
-                base_price_text = f" ${base_price_text} "
-            else:
                 base_price_text = ""
-            base_price_color = colors.TEXT_DIM
-            base_price_bg_color = colors.PURPLE_PRICE
         else:
             if is_for_sale and not can_download and user_price_text and base_price_text:
                 user_price_text = f" ${user_price_text} "
-                user_price_bg_color = colors.GREEN_PRICE
+                user_price_bg_color = colors.PURPLE_PRICE
                 user_price_color = colors.WHITE
 
                 base_price_text = f" (${base_price_text}) "
@@ -590,11 +715,25 @@ def set_thumb_check(
     element: Union[BL_UI_Button, BL_UI_Image],
     asset: Dict[str, Any],
     thumb_type: str = "thumbnail_small",
-) -> None:
+) -> bool:
     """Set image in case it is loaded in search results. Checks global_vars.DATA["images available"].
     - if image download failed, it will be set to 'thumbnail_not_available.jpg'
     - if image doesn't exist, it will be set to 'thumbnail_notready.jpg'
+
+    Returns:
+        True if the slot is showing its real/intended thumbnail (loaded, gravatar,
+        or definitively "not available"). False when the slot is still showing the
+        transient "loading" placeholder - callers should suppress overlay badges
+        in that case to avoid drawing stale badges over not-yet-loaded items.
     """
+    # Placeholder entries from prefetch get the "not ready" thumbnail
+    if asset.get("placeholder"):
+        tpath = paths.get_addon_thumbnail_path("thumbnail_notready.jpg")
+        if element.get_image_path() != tpath:
+            element.set_image(tpath)
+            element.set_image_colorspace("")
+        return False
+
     # Author assets have no server thumbnails, use gravatar from BKIT_AUTHORS
     if asset.get("assetType") == "author":
         author_id = int(asset.get("id", asset.get("author", {}).get("id", 0)))
@@ -603,39 +742,46 @@ def set_thumb_check(
             if element.get_image_path() != author.gravatarImg:
                 element.set_image(author.gravatarImg)
                 element.set_image_colorspace("")
-            return
+            return True
         tpath = paths.get_addon_thumbnail_path("thumbnail_notready.jpg")
         if element.get_image_path() != tpath:
             element.set_image(tpath)
             element.set_image_colorspace("")
-        return
+        return False
 
     directory = paths.get_temp_dir("%s_search" % asset["assetType"])
     tpath = os.path.join(directory, asset[thumb_type])
 
     if element.get_image_path() == tpath:
-        return  # no need to update
+        return True  # already showing the real thumbnail
 
     image_ready = global_vars.DATA["images available"].get(tpath)
+    loaded = True
     if image_ready is None:
         tpath = paths.get_addon_thumbnail_path("thumbnail_notready.jpg")
+        loaded = False
     if image_ready is False or asset[thumb_type] == "":
+        # "not available" is a terminal state - treat as loaded so the
+        # badges (e.g. locked icon) can be shown over the fallback image.
         tpath = paths.get_addon_thumbnail_path("thumbnail_not_available.jpg")
+        loaded = True
 
     if element.get_image_path() == tpath:
-        return
+        return loaded
     element.set_image(tpath)
     element.set_image_colorspace("")
+    return loaded
 
 
 class BlenderKitAssetBarOperator(BL_UI_OT_draw_operator):
-    """BlenderKit Asset Bar Operator."""
+    """Blendkit Asset Bar Operator."""
 
     bl_idname = "view3d.blenderkit_asset_bar_widget"
-    bl_label = "BlenderKit asset bar refresh"
-    bl_description = "BlenderKit asset bar refresh"
+    bl_label = "Blendkit asset bar refresh"
+    bl_description = "Blendkit asset bar refresh"
     bl_options = {"REGISTER"}
-    instances = []
+    instances: list["BlenderKitAssetBarOperator"] = []
+    _requested_rows_override: Optional[int]
 
     do_search: BoolProperty(  # type: ignore[valid-type]
         name="Run Search", description="", default=True, options={"SKIP_SAVE"}
@@ -736,6 +882,197 @@ class BlenderKitAssetBarOperator(BL_UI_OT_draw_operator):
             region = self._validated_region(getattr(bpy.context, "region", None))
 
         return area, region
+
+    def _current_layout_context(self):
+        area, region = self._current_area_region()
+        return self._build_context_snapshot(bpy.context, area, region)
+
+    def _get_row_limit(self) -> int:
+        wcount = getattr(self, "wcount", 0)
+        if wcount > 0:
+            return math.ceil(ASSETBAR_MAX_VISIBLE_ASSETS / wcount)
+        return ASSETBAR_MAX_VISIBLE_ASSETS
+
+    def _get_height_limited_rows(self, context=None) -> int:
+        context = (
+            context
+            or getattr(self, "_override_context", None)
+            or self._current_layout_context()
+        )
+        region = getattr(context, "region", None)
+        if region is None or getattr(self, "button_size", 0) <= 0:
+            return self._get_row_limit()
+        available_height = (
+            region.height
+            - self.bar_y
+            - 2 * self.assetbar_margin
+            - self.other_button_size
+        )
+        max_rows_by_height = math.floor(available_height / self.button_size)
+        return max(1, min(self._get_row_limit(), max_rows_by_height))
+
+    def clamp_assetbar_rows(self, rows: int, context=None) -> int:
+        return max(1, min(rows, self._get_height_limited_rows(context)))
+
+    def get_expanded_assetbar_rows(self) -> int:
+        user_preferences = bpy.context.preferences.addons[_ADDON_PACKAGE].preferences
+        return self.clamp_assetbar_rows(
+            max(2, int(user_preferences.maximized_assetbar_rows))
+        )
+
+    def get_requested_assetbar_rows(self) -> int:
+        override_rows = getattr(self, "_requested_rows_override", None)
+        if override_rows is not None:
+            return self.clamp_assetbar_rows(int(override_rows))
+        user_preferences = bpy.context.preferences.addons[_ADDON_PACKAGE].preferences
+        if not user_preferences.assetbar_expanded:
+            return 1
+        return self.get_expanded_assetbar_rows()
+
+    def _resolve_layout_rows(self, user_preferences):
+        """Resolve ``(expanded, max_rows)`` for the asset bar layout.
+
+        Honors a live resize-drag preview: while the user drags the bottom
+        handle, ``_requested_rows_override`` holds the previewed (already
+        clamped) row count, so feed that into the layout instead of the saved
+        preference and the bar reflows live. ``apply_assetbar_rows`` writes the
+        preference and clears the override when the drag ends.
+        """
+        rows_override = getattr(self, "_requested_rows_override", None)
+        if rows_override is not None:
+            return rows_override > 1, max(2, int(rows_override))
+        return (
+            bool(user_preferences.assetbar_expanded),
+            int(user_preferences.maximized_assetbar_rows),
+        )
+
+    def get_assetbar_rows_from_drag(
+        self, start_rows: int, start_mouse_y: int, current_mouse_y: int
+    ) -> int:
+        """Translate vertical mouse drag distance into a target row count."""
+        if getattr(self, "button_size", 0) <= 0:
+            return self.clamp_assetbar_rows(start_rows)
+        row_delta = int(
+            round((start_mouse_y - current_mouse_y) / max(float(self.button_size), 1.0))
+        )
+        return self.clamp_assetbar_rows(start_rows + row_delta)
+
+    def update_expand_button_icon(self):
+        user_preferences = bpy.context.preferences.addons[_ADDON_PACKAGE].preferences
+        self.button_expand.text = "▲" if user_preferences.assetbar_expanded else "▼"
+
+    def _cursor_window(self):
+        context_window = getattr(bpy.context, "window", None)
+        if context_window is not None:
+            return context_window
+        try:
+            return self.window
+        except ReferenceError:
+            return None
+
+    def set_resize_hover_cursor(self):
+        if self._resize_dragging:
+            return
+        window = self._cursor_window()
+        if window is None:
+            return
+        window.cursor_set(ASSETBAR_RESIZE_CURSOR)
+
+    def set_resize_drag_cursor(self):
+        window = self._cursor_window()
+        if window is None:
+            return
+        window.cursor_modal_set(ASSETBAR_RESIZE_CURSOR)
+        self._resize_cursor_modal_active = True
+
+    def restore_resize_cursor(self, *, hovering=False):
+        window = self._cursor_window()
+        if window is None:
+            return
+        if self._resize_cursor_modal_active:
+            window.cursor_modal_restore()
+            self._resize_cursor_modal_active = False
+        cursor_name = (
+            ASSETBAR_RESIZE_CURSOR
+            if hovering and not self._resize_dragging
+            else "DEFAULT"
+        )
+        window.cursor_set(cursor_name)
+
+    def _get_resize_rows_from_mouse_y(self, mouse_y: int) -> int:
+        return self.get_assetbar_rows_from_drag(
+            self._resize_drag_start_rows, self._resize_drag_start_y, mouse_y
+        )
+
+    def on_resize_handle_enter(self, handle):
+        if self._resize_dragging:
+            return
+        self.set_resize_hover_cursor()
+
+    def on_resize_handle_exit(self, handle):
+        if self._resize_dragging:
+            return
+        self.restore_resize_cursor()
+
+    def on_resize_drag_begin(self, handle, start_y: int):
+        self._resize_drag_start_rows = self.get_requested_assetbar_rows()
+        self._resize_drag_start_y = start_y
+        self.begin_resize_drag()
+        self.set_resize_drag_cursor()
+
+    def on_resize_drag_update(self, handle, y: int):
+        self.preview_assetbar_rows(self._get_resize_rows_from_mouse_y(y))
+
+    def on_resize_drag_end(self, handle, y: int, *, hovering: bool):
+        self.apply_assetbar_rows(self._get_resize_rows_from_mouse_y(y))
+        self.end_resize_drag(hovering=hovering)
+
+    def on_resize_handle_click(self, handle):
+        self.toggle_assetbar_rows()
+        self.restore_resize_cursor(hovering=True)
+
+    def begin_resize_drag(self):
+        self._resize_dragging = True
+        self.hide_tooltip()
+
+    def end_resize_drag(self, *, hovering: bool):
+        self._resize_dragging = False
+        self.restore_resize_cursor(hovering=hovering)
+
+    def preview_assetbar_rows(self, rows: int):
+        rows = self.clamp_assetbar_rows(rows)
+        if rows == self.get_requested_assetbar_rows():
+            return
+        self._requested_rows_override = rows
+        self._refresh_layout(self._current_layout_context())
+        self._redraw_tracked_regions()
+
+    def apply_assetbar_rows(self, rows: int):
+        rows = self.clamp_assetbar_rows(rows)
+        self._requested_rows_override = None
+        user_preferences = bpy.context.preferences.addons[_ADDON_PACKAGE].preferences
+        if rows > 1 and user_preferences.maximized_assetbar_rows != rows:
+            user_preferences.maximized_assetbar_rows = rows
+        if rows <= 1 and user_preferences.maximized_assetbar_rows < 2:
+            user_preferences.maximized_assetbar_rows = 2
+        user_preferences.assetbar_expanded = rows > 1
+        self._refresh_layout(self._current_layout_context())
+        self.update_expand_button_icon()
+        self._redraw_tracked_regions()
+
+    def toggle_assetbar_rows(self):
+        user_preferences = bpy.context.preferences.addons[_ADDON_PACKAGE].preferences
+        if user_preferences.assetbar_expanded:
+            self.apply_assetbar_rows(1)
+            return
+        self.apply_assetbar_rows(self.get_expanded_assetbar_rows())
+
+    def _reset_resize_state(self):
+        self._requested_rows_override = None
+        self._resize_dragging = False
+        self._resize_cursor_modal_active = False
+        self._resize_drag_start_rows = 1
+        self._resize_drag_start_y = 0
 
     def _event_window_coords(self, event):
         if not hasattr(event, "mouse_x") or not hasattr(event, "mouse_y"):
@@ -947,7 +1284,7 @@ class BlenderKitAssetBarOperator(BL_UI_OT_draw_operator):
         if event.type not in {"TIMER", "MOUSEMOVE"}:
             return
 
-        user_prefs = bpy.context.preferences.addons[__package__].preferences
+        user_prefs = bpy.context.preferences.addons[_ADDON_PACKAGE].preferences
         follow_cursor = getattr(user_prefs, "assetbar_follows_cursor", True)
 
         if not follow_cursor and not self._is_quad_view(context):
@@ -1196,18 +1533,8 @@ class BlenderKitAssetBarOperator(BL_UI_OT_draw_operator):
         )
         multi_price_label.use_rounded_background = True
         multi_price_label.background_corner_radius = "50%"
-        multi_price_label.text_a_color = (
-            1.0,
-            0.8,
-            0.2,
-            1.0,
-        )  # Golden color for current price
-        multi_price_label.text_b_color = (
-            0.8,
-            0.4,
-            0.4,
-            1.0,
-        )  # Reddish color for base price
+        multi_price_label.text_a_color = colors.WHITE
+        multi_price_label.text_b_color = colors.TEXT_DIM
         self.multi_price_label = multi_price_label
         self.tooltip_widgets.append(self.multi_price_label)
 
@@ -1227,7 +1554,7 @@ class BlenderKitAssetBarOperator(BL_UI_OT_draw_operator):
         self.author_about_me = author_about_me
         self.tooltip_widgets.append(author_about_me)
 
-        user_preferences = bpy.context.preferences.addons[__package__].preferences
+        user_preferences = bpy.context.preferences.addons[_ADDON_PACKAGE].preferences
         offset = 0
         if (
             user_preferences.asset_popup_counter
@@ -1263,10 +1590,17 @@ class BlenderKitAssetBarOperator(BL_UI_OT_draw_operator):
 
     def hide_tooltip(self):
         """Hide the tooltip panel and its widgets."""
+        # Idempotent redraw: doing the redraw on every row-crossing during
+        # scroll used to cause periodic stutter. We still always sync the
+        # widget visibility flags so the tooltip children can't linger
+        # visible (e.g. at startup before the panel was ever shown) while
+        # the panel itself is hidden.
+        was_visible = getattr(self.tooltip_panel, "visible", False)
         self.tooltip_panel.visible = False
         for w in self.tooltip_widgets:
             w.visible = False
-        self._redraw_tracked_regions()
+        if was_visible:
+            self._redraw_tracked_regions()
 
     def show_tooltip(self):
         """Show the tooltip panel and its widgets."""
@@ -1484,7 +1818,7 @@ class BlenderKitAssetBarOperator(BL_UI_OT_draw_operator):
         # right after the asset name
         self.multi_price_label.set_location(
             self.tooltip_margin,
-            self.labels_start + (self.tooltip_margin * 3) + self.asset_name.height,
+            self.labels_start + (self.tooltip_margin * 2) + self.asset_name.height,
         )
         self.multi_price_label.width = self.tooltip_width - 2 * self.tooltip_margin
         self.multi_price_label.height = self.asset_name_text_size
@@ -1526,7 +1860,7 @@ class BlenderKitAssetBarOperator(BL_UI_OT_draw_operator):
             return
 
         asset_data = search_results[self.active_index]
-        if asset_data["assetBaseId"] == asset_id:
+        if asset_data.get("assetBaseId") == asset_id:
             set_thumb_check(self.tooltip_image, asset_data, thumb_type="thumbnail")
 
     def update_comments_for_validators(self, asset_data):
@@ -1534,27 +1868,44 @@ class BlenderKitAssetBarOperator(BL_UI_OT_draw_operator):
         if not utils.profile_is_validator():
             return
 
+        # The comments label widget is only created during tooltip setup when
+        # the validator/popup-counter condition was true at that moment. If
+        # the profile only became a validator after the asset bar was already
+        # built, the widget won't exist — silently skip in that case.
+        if not hasattr(self, "comments"):
+            return
+
         if asset_data.get("assetType") == "author":
             self.comments.text = ""
             return
 
-        comments = global_vars.DATA.get("asset comments", {})
-        comments = comments.get(asset_data["assetBaseId"], [])
+        # Lazily request comments only on hover (deduped + cached) so we
+        # don't fire one HTTP request per search result, which would blow
+        # past the backend's 100 req/min rate limit on validator accounts.
+        asset_base_id = asset_data["assetBaseId"]
+        comments = comments_utils.request_comments_if_needed(asset_base_id)
         comment_text = "No comments yet."
-        if comments is not None:
-            comment_text = ""
+        if comments is None:
+            comment_text = "Loading comments..."
+        elif comments:
+            wrap_width = max(100, int(self.tooltip_width - 2 * self.tooltip_margin))
+            text_size = getattr(self, "comments_text_size", self.author_text_size)
+            lines_out = []
             # iterate comments from last to first
             for comment in reversed(comments):
-                comment_text += f"{comment['userName']}:\n"
-                # strip urls and stuff
-                comment_lines = comment["comment"].split("\n")
-                for line in comment_lines:
+                timestamp = _format_comment_timestamp(comment.get("submitDate"))
+                header = comment["userName"]
+                if timestamp:
+                    header = f"{header} [{timestamp}]"
+                lines_out.append(f"{header}:")
+                # strip urls and stuff, then wrap to the tooltip width
+                for line in comment["comment"].split("\n"):
                     urls, text = utils.has_url(line)
                     if urls:
-                        comment_text += f"{text}{urls[0][0]}\n"
-                    else:
-                        comment_text += f"{text}\n"
-                comment_text += "\n"
+                        text = f"{text}{urls[0][0]}"
+                    lines_out.extend(_wrap_text_to_width(text, wrap_width, text_size))
+                lines_out.append("")
+            comment_text = "\n".join(lines_out)
 
         self.comments.text = comment_text
 
@@ -1659,18 +2010,28 @@ class BlenderKitAssetBarOperator(BL_UI_OT_draw_operator):
         new_button.progress_bar = progress_bar
         self.progress_bars.append(progress_bar)
 
-        if utils.profile_is_validator():
-            red_alert = BL_UI_Widget(
-                asset_x - self.validation_icon_margin,
-                asset_y - self.validation_icon_margin,
-                self.button_size + 2 * self.validation_icon_margin,
-                self.button_size + 2 * self.validation_icon_margin,
-            )
-            red_alert.bg_color = (1.0, 0.0, 0.0, 0.0)
-            red_alert.visible = False
-            red_alert.active = False
-            new_button.red_alert = red_alert
-            self.red_alerts.append(red_alert)
+        # Tinted overlay reused for two purposes:
+        # - validator: red "old upload" alert
+        # - everyone:  dark-red dim for Blender-incompatible addons
+        red_alert = BL_UI_Widget(
+            asset_x - self.validation_icon_margin,
+            asset_y - self.validation_icon_margin,
+            self.button_size + 2 * self.validation_icon_margin,
+            self.button_size + 2 * self.validation_icon_margin,
+        )
+        red_alert.bg_color = (1.0, 0.0, 0.0, 0.0)
+        red_alert.visible = False
+        red_alert.active = False
+        red_alert._is_grid_widget = True
+        new_button.red_alert = red_alert
+        self.red_alerts.append(red_alert)
+
+        # Tag all grid sub-widgets so the draw callback can apply scissor clipping
+        new_button._is_grid_widget = True
+        validation_icon._is_grid_widget = True
+        bookmark_button._is_grid_widget = True
+        author_button._is_grid_widget = True
+        progress_bar._is_grid_widget = True
 
         return new_button
 
@@ -1701,6 +2062,7 @@ class BlenderKitAssetBarOperator(BL_UI_OT_draw_operator):
             self.bar_width,
             self.bar_height,  # Use total height including tabs
         )
+        self.panel.drag_enabled = False
         self.panel.bg_color = (0.0, 0.0, 0.0, 0.9)
 
         # Create tab area background
@@ -1723,10 +2085,39 @@ class BlenderKitAssetBarOperator(BL_UI_OT_draw_operator):
         # Add widgets to panel - add tab background first so it's behind everything
         self.widgets_panel.append(self.tab_area_bg)
 
+        # Scroll position indicator. Two thin widgets: a darker track behind
+        # a brighter thumb whose length / position reflect visible_slots /
+        # total_slots and current scroll position. Orientation switches with
+        # mode (horizontal in single-row, vertical in multi-row). Added to
+        # `widgets_panel` AFTER asset buttons in `setup_widgets` so they
+        # render on top of thumbnails (otherwise they'd be occluded).
+        scroll_track_height = max(
+            2, int(round(SCROLL_INDICATOR_THICKNESS_PX * ui_bgl.get_ui_scale()))
+        )
+        self.scroll_indicator_track = BL_UI_Widget(
+            0, 0, self.bar_width, scroll_track_height
+        )
+        self.scroll_indicator_track.bg_color = (0.0, 0.0, 0.0, 0.35)
+        self.scroll_indicator_track.visible = False
+        self.scroll_indicator_thumb = BL_UI_Widget(0, 0, 1, scroll_track_height)
+        self.scroll_indicator_thumb.bg_color = (1.0, 1.0, 1.0, 0.7)
+        self.scroll_indicator_thumb.visible = False
+        # NOTE: deliberately NOT appended to `self.widgets_panel` here -
+        # `setup_widgets` adds them last so they draw on top of thumbnails.
+
         # we init max possible buttons.
+        # Add buffer rows/cols around the visible grid for scroll animation.
+        # Multi-row mode uses extra rows; single-row mode uses extra columns.
+        # Pool size has to cover the worst case of either mode.
+        # The draggable resize handle lets the row count grow up to the
+        # visible-asset cap (``_get_row_limit()``), independent of the saved
+        # ``maximized_assetbar_rows`` (= ``self.max_wcount``); size the pool for
+        # that worst case so dragging taller never runs out of buttons.
         button_idx = 0
-        for x in range(0, self.max_wcount):
-            for y in range(0, self.max_hcount):
+        pool_cols = self._get_row_limit() + 2 * SCROLL_BUFFER_COLS
+        pool_rows = self.max_hcount + 2 * SCROLL_BUFFER_ROWS
+        for x in range(0, pool_cols):
+            for y in range(0, pool_rows):
                 # asset_x = self.assetbar_margin + a * (self.button_size)
                 # asset_y = self.assetbar_margin + b * (self.button_size)
                 # button_idx = x + y * self.max_wcount
@@ -1763,7 +2154,27 @@ class BlenderKitAssetBarOperator(BL_UI_OT_draw_operator):
 
         self.widgets_panel.append(self.button_close)
 
-        # Expand/collapse button (positioned at bottom of assetbar)
+        # Drag-to-resize handle: a thin strip along the bottom edge. It spans
+        # the bar width minus the expand-button corner so the two never fight
+        # over a click. Positioned just below the bar content (panel-relative
+        # y = bar_height), matching the expand button's coordinate convention.
+        self.resize_edge_height = max(6, self.other_button_size // 4)
+        self.resize_handle = BL_UI_Resize_Handle(
+            0,
+            self.bar_height,
+            self.bar_width - self.other_button_size,
+            self.resize_edge_height,
+        )
+        self.resize_handle.threshold_px = ASSETBAR_RESIZE_CLICK_THRESHOLD_PX
+        self.resize_handle.bg_color = (1.0, 1.0, 1.0, 0.5)
+        self.resize_handle.on_drag_begin = self.on_resize_drag_begin
+        self.resize_handle.on_drag_update = self.on_resize_drag_update
+        self.resize_handle.on_drag_end = self.on_resize_drag_end
+        self.resize_handle.on_click = self.on_resize_handle_click
+        self.resize_handle.set_mouse_enter(self.on_resize_handle_enter)
+        self.resize_handle.set_mouse_exit(self.on_resize_handle_exit)
+        self.resize_handle.visible = False
+
         self.button_expand = BL_UI_Button(
             self.bar_width - self.other_button_size,
             self.bar_height,
@@ -1786,7 +2197,6 @@ class BlenderKitAssetBarOperator(BL_UI_OT_draw_operator):
             (self.other_button_size, self.other_button_size)
         )
         self.button_expand.set_mouse_down(self.toggle_expand)
-
         self.widgets_panel.append(self.button_expand)
 
         self.button_scroll_down = BL_UI_Button(
@@ -2151,114 +2561,170 @@ class BlenderKitAssetBarOperator(BL_UI_OT_draw_operator):
     # region updates
 
     def update_assetbar_sizes(self, context):
-        """Calculate all important sizes for the asset bar"""
+        """Calculate all important sizes for the asset bar.
+
+        Pure geometry math is delegated to :mod:`.layout`; this method
+        only collects inputs (which require ``bpy`` reads), runs the
+        widget-side-effect steps that contribute height contributions
+        (filter chips, manufacturer chips), then applies the resulting
+        :class:`~.layout.LayoutSpec` onto ``self`` for backwards-compat
+        attribute access (``self.bar_x``, ``self.button_size``, ...).
+
+        Idempotency cache: the layout is recomputed only when the input
+        signature changes. Repeat calls with identical inputs are O(1).
+        """
+        from . import layout as _layout_mod
+
         region = context.region
         area = context.area
 
         ui_props = bpy.context.window_manager.blenderkitUI
-        user_preferences = bpy.context.preferences.addons[__package__].preferences
+        user_preferences = bpy.context.preferences.addons[_ADDON_PACKAGE].preferences
         scale = ui_bgl.get_ui_scale()
-        self._ui_scale_factor = scale
-        # assetbar sizing (fixed, not scaled)
 
-        self.button_margin = int(round(0 * scale))
-        self.assetbar_margin = int(round(2 * scale))
-        # user preference thumb size is in logical pixels; scale to match Blender UI scaling
-        self.thumb_size = int(round(user_preferences.thumb_size * scale))
-        self.button_size = int(2 * self.button_margin + self.thumb_size)
-
-        self.scroll_width = int(round(30 * scale))
-        self.other_button_size = int(round(30 * scale))
-        self.filter_button_height = int(round(25 * scale))
-        self.filter_button_text_size = int(round(20 * scale))
-
-        self.free_button_margin = int(self.button_size * 0.05)
-        self.free_button_text_size = int(self.other_button_size * 0.4)
-
-        self.icon_size = int(round(24 * scale))
-        self.validation_icon_margin = int(round(3 * scale))
-        reg_multiplier = 1
-        if not bpy.context.preferences.system.use_region_overlap:
-            reg_multiplier = 0
-
-        ui_width = 0
-        tools_width = 0
-        reg_multiplier = 1
-        if not bpy.context.preferences.system.use_region_overlap:
-            reg_multiplier = 0
-        for r in area.regions:
-            if r.type == "UI":
-                ui_width = r.width * reg_multiplier
-            if r.type == "TOOLS":
-                tools_width = r.width * reg_multiplier
-        self.bar_x = int(
-            tools_width + self.button_margin + ui_props.bar_x_offset * scale
+        ui_width, tools_width = _layout_mod.collect_side_panel_widths(
+            area, bpy.context.preferences.system.use_region_overlap
         )
-        base_bar_y = int(self.button_margin + ui_props.bar_y_offset * scale)
-        self.bar_y = base_bar_y
-
-        self.bar_end = int(ui_width + 180 + self.other_button_size)
-        self.bar_width = int(region.width - self.bar_x - self.bar_end)
-        # Quad view and very small regions can shrink the available width below a single
-        # thumbnail. Keep the bar wide enough to host at least one column and keep the
-        # math stable so the buttons do not disappear entirely.
-        self.bar_width = max(1, self.bar_width)
-
-        effective_bar_width = max(self.bar_width, self.button_size)
-        self.wcount = max(1, math.floor(effective_bar_width / self.button_size))
-
-        self.max_hcount = math.floor(
-            max(region.width, context.window.width) / self.button_size
-        )
-        self.max_wcount = user_preferences.maximized_assetbar_rows
 
         history_step = search.get_active_history_step()
         search_results = history_step.get("search_results")
+        sr_count = len(search_results) if search_results is not None else None
+        sr_id = id(search_results) if search_results is not None else 0
 
+        layout_expanded, layout_max_rows = self._resolve_layout_rows(user_preferences)
+
+        # Build a stage-1 ("prelim") inputs object: everything we know
+        # without having to call into widget-mutating helpers. This is
+        # also the cache key - manufacturer height is recomputed each
+        # time it would matter, and active filter height comes from a
+        # widget-side-effect helper we still have to run.
+        prelim_inputs = _layout_mod.LayoutInputs(
+            region_width=int(region.width),
+            region_height=int(region.height),
+            window_width=int(context.window.width),
+            ui_region_width=ui_width,
+            tools_region_width=tools_width,
+            ui_scale=scale,
+            bar_x_offset=float(ui_props.bar_x_offset),
+            bar_y_offset=float(ui_props.bar_y_offset),
+            thumb_size_pref=int(user_preferences.thumb_size),
+            assetbar_expanded=layout_expanded,
+            maximized_assetbar_rows=layout_max_rows,
+            search_results_count=sr_count,
+            search_results_id=sr_id,
+            active_filter_height=0,  # filled in below
+            manufacturer_section_height=0,  # filled in below
+        )
+
+        # Position filter chips (widget side effect) so we can read
+        # ``self.active_filter_height``. This is cheap when the chip
+        # set hasn't changed, but it always runs because chips can be
+        # restyled (e.g. active filter set changed) without the prelim
+        # inputs changing.
         self.position_active_filter_buttons()
+        active_filter_height = int(self.active_filter_height or 0)
 
-        bubble_offset = 0
-        if self._filter_bubbles_enabled() and self.active_filter_height:
-            bubble_offset = self.active_filter_height
+        # Now we know the active filter height; rebuild prelim_inputs
+        # with that field populated so the cache key reflects all
+        # geometry-affecting state we currently know.
+        prelim_inputs = _layout_mod.LayoutInputs(
+            region_width=prelim_inputs.region_width,
+            region_height=prelim_inputs.region_height,
+            window_width=prelim_inputs.window_width,
+            ui_region_width=prelim_inputs.ui_region_width,
+            tools_region_width=prelim_inputs.tools_region_width,
+            ui_scale=prelim_inputs.ui_scale,
+            bar_x_offset=prelim_inputs.bar_x_offset,
+            bar_y_offset=prelim_inputs.bar_y_offset,
+            thumb_size_pref=prelim_inputs.thumb_size_pref,
+            assetbar_expanded=prelim_inputs.assetbar_expanded,
+            maximized_assetbar_rows=prelim_inputs.maximized_assetbar_rows,
+            search_results_count=prelim_inputs.search_results_count,
+            search_results_id=prelim_inputs.search_results_id,
+            active_filter_height=active_filter_height,
+            manufacturer_section_height=0,
+        )
 
-        self.bar_y = base_bar_y + bubble_offset
+        # Idempotency fast path: identical inputs => skip the heavy work.
+        # The cache key stores the prelim form (manufacturer=0) so the
+        # comparison is well-defined regardless of whether the previous
+        # run had manufacturer chips.
+        cached_key = getattr(self, "_layout_cache_key", None)
+        if cached_key == prelim_inputs and getattr(self, "_layout", None) is not None:
+            # Re-apply spec onto self in case external code clobbered
+            # any mirrored attribute since the last call.
+            self._layout.apply_to(self)
+            return
 
-        # we need to init all possible thumb previews in advance/
-        # Calculate hcount based on expanded state
-        if search_results is not None and self.wcount > 0:
-            if user_preferences.assetbar_expanded:
-                max_rows = user_preferences.maximized_assetbar_rows
-                available_height = (
-                    region.height
-                    - self.bar_y
-                    - 2 * self.assetbar_margin
-                    - self.other_button_size
-                )
-                max_rows_by_height = math.floor(available_height / self.button_size)
-                max_rows = (
-                    min(max_rows, max_rows_by_height) if max_rows_by_height > 0 else 1
-                )
-            else:
-                max_rows = 1
-            self.hcount = min(
-                max_rows,
-                math.ceil(len(search_results) / self.wcount),
-            )
-            self.hcount = max(self.hcount, 1)
-        else:
-            self.hcount = 1
+        # Build preliminary spec so manufacturer recomputation has the
+        # geometry it needs (button_size, bar_width).
+        # Remember geometry before the rebuild: only a button_size/wcount change
+        # invalidates the smooth-scroll phase (phase is pixels relative to slot
+        # size). A rebuild caused merely by search_results_count changing
+        # (placeholders padded, a page arriving) keeps the same grid, so the
+        # phase is still valid and must NOT be reset - otherwise scrolling jerks
+        # back every time thumbnails populate. Scrolling and population are
+        # independent.
+        _prev_button_size = getattr(self, "button_size", None)
+        _prev_wcount = getattr(self, "wcount", None)
+        prelim_spec = _layout_mod.build_layout_spec(prelim_inputs)
+        prelim_spec.apply_to(self)
 
-        self.base_bar_height = self.button_size * self.hcount + 2 * self.assetbar_margin
+        # Update manufacturer data using the preliminary geometry. This
+        # populates ``self.manufacturer_section_height`` as a side effect.
         self._update_manufacturer_data(search_results)
-        self.bar_height = self.base_bar_height + self.manufacturer_section_height
+        manufacturer_section_height = int(self.manufacturer_section_height or 0)
 
+        # Final spec with the now-known manufacturer height.
+        if manufacturer_section_height != 0:
+            final_inputs = _layout_mod.LayoutInputs(
+                region_width=prelim_inputs.region_width,
+                region_height=prelim_inputs.region_height,
+                window_width=prelim_inputs.window_width,
+                ui_region_width=prelim_inputs.ui_region_width,
+                tools_region_width=prelim_inputs.tools_region_width,
+                ui_scale=prelim_inputs.ui_scale,
+                bar_x_offset=prelim_inputs.bar_x_offset,
+                bar_y_offset=prelim_inputs.bar_y_offset,
+                thumb_size_pref=prelim_inputs.thumb_size_pref,
+                assetbar_expanded=prelim_inputs.assetbar_expanded,
+                maximized_assetbar_rows=prelim_inputs.maximized_assetbar_rows,
+                search_results_count=prelim_inputs.search_results_count,
+                search_results_id=prelim_inputs.search_results_id,
+                active_filter_height=prelim_inputs.active_filter_height,
+                manufacturer_section_height=manufacturer_section_height,
+            )
+            final_spec = _layout_mod.build_layout_spec(final_inputs)
+        else:
+            final_spec = prelim_spec
+        final_spec.apply_to(self)
+
+        # Cache the spec and its key so repeat calls are free.
+        self._layout = final_spec
+        self._layout_cache_key = prelim_inputs
+
+        # Layout actually rebuilt -> any in-flight smooth-scroll phase is
+        # stale ONLY if button_size / wcount changed (the pixel value of
+        # "phase" no longer matches the intended slot fraction). When the grid
+        # geometry is unchanged - e.g. the rebuild was triggered only by a
+        # search_results_count change as placeholders/pages stream in - the
+        # phase stays valid and we keep animating so population never snaps the
+        # scroll back. The integer offset is preserved either way.
+        if _prev_button_size != self.button_size or _prev_wcount != self.wcount:
+            self.scroll_phase = 0.0
+            self._scroll_velocity = 0.0
+            self._scroll_animating = False
+            self._scroll_travel_dir = 0
+
+        # Reports panel coordinates depend on bar geometry and current
+        # operator mode. Kept out of the pure spec because they touch
+        # ``ui_props`` (Blender state).
         if ui_props.down_up == "UPLOAD":
             self.reports_y = region.height - self.bar_y - 600
             ui_props.reports_y = region.height - self.bar_y - 600
             self.reports_x = self.bar_x
             ui_props.reports_x = self.bar_x
-
-        else:  # ui.bar_y - ui.bar_height - 100
+        else:
             self.reports_y = region.height - self.bar_y - self.bar_height - 50
             ui_props.reports_y = int(region.height - self.bar_y - self.bar_height - 50)
             self.reports_x = self.bar_x
@@ -2270,16 +2736,29 @@ class BlenderKitAssetBarOperator(BL_UI_OT_draw_operator):
 
     def update_assetbar_layout(self, context):
         """Update the layout of the asset bar"""
-        self.scroll_update(always=True)
+        self.scroll_update(
+            always=True,
+            update_visible_buttons=False,
+        )
 
         self.position_and_hide_buttons()
+        self.update_buttons()
 
         self.button_close.set_location(
             self.bar_width - self.other_button_size, -self.other_button_size
         )
-        self.button_scroll_down.width = self.scroll_width
-        self.button_scroll_down.set_location(-self.scroll_width, 0)
-        self.button_scroll_up.width = self.scroll_width
+        self.button_expand.set_location(
+            self.bar_width - self.other_button_size,
+            self.bar_height,
+        )
+        history_step = search.get_active_history_step()
+        search_results = history_step.get("search_results") or []
+        edge_visible = len(search_results) > self.wcount
+        self.button_expand.visible = edge_visible
+        self.resize_handle.width = self.bar_width - self.other_button_size
+        self.resize_handle.height = self.resize_edge_height
+        self.resize_handle.visible = edge_visible
+        self.resize_handle.set_location(0, self.bar_height)
         self.button_scroll_up.set_location(self.bar_width, 0)
         self.panel.width = self.bar_width
         self.panel.height = self.bar_height
@@ -2316,12 +2795,6 @@ class BlenderKitAssetBarOperator(BL_UI_OT_draw_operator):
             return False
         return getattr(r3d, "view_perspective", "") in {"PERSP", "CAMERA"}
 
-    def _filter_bubbles_enabled(self) -> bool:
-        """Return True when filter bubbles are allowed to render."""
-        addon = bpy.context.preferences.addons.get(__package__)
-        prefs = getattr(addon, "preferences", None)
-        return bool(getattr(prefs, "display_filter_bubbles", True))
-
     def set_element_images(self):
         """set ui elements images, has to be done after init of UI."""
         # img_fp = paths.get_addon_thumbnail_path("vs_rejected.png")
@@ -2334,7 +2807,6 @@ class BlenderKitAssetBarOperator(BL_UI_OT_draw_operator):
         # Update tab icons
         self.update_tab_icons()
 
-        # Update expand button icon
         self.update_expand_button_icon()
 
     def update_scroll_button_icons(self):
@@ -2396,27 +2868,11 @@ class BlenderKitAssetBarOperator(BL_UI_OT_draw_operator):
                     tab_button.set_image(icon_path)
                     tab_button.set_image_colorspace("")
 
-    def update_expand_button_icon(self):
-        """Update expand button icon based on current expanded state."""
-        user_preferences = bpy.context.preferences.addons[__package__].preferences
-        if user_preferences.assetbar_expanded:
-            # Show up arrow when expanded (to collapse)
-            self.button_expand.text = "▲"
-        else:
-            # Show down arrow when collapsed (to expand)
-            self.button_expand.text = "▼"
-
     # region active filters
 
     def position_active_filter_buttons(self):
         self.active_filter_height = 0
         if not self.active_filter_buttons:
-            return
-
-        if not self._filter_bubbles_enabled():
-            for button in self.active_filter_buttons:
-                button.visible = False
-                button.active_filter = None
             return
 
         active_filters = search.get_active_filters()
@@ -2512,7 +2968,6 @@ class BlenderKitAssetBarOperator(BL_UI_OT_draw_operator):
     # endregion active filters
 
     # region manufacturer
-
     def _extract_manufacturer_name(self, asset_data):
         manufacturer = asset_data.get("dictParameters", {}).get("manufacturer")
         if not manufacturer:
@@ -2569,7 +3024,7 @@ class BlenderKitAssetBarOperator(BL_UI_OT_draw_operator):
         )
 
     def _update_manufacturer_data(self, search_results: Optional[list[dict]] = None):
-        if not self._filter_bubbles_enabled():
+        if not utils.experimental_enabled():
             self.manufacturer_names = []
             self.manufacturer_counts = Counter()
             self.manufacturer_section_height = 0
@@ -2604,7 +3059,7 @@ class BlenderKitAssetBarOperator(BL_UI_OT_draw_operator):
         names = self.manufacturer_names[: self.max_manufacturer_filters]
         content_width = max(0, self.bar_width - 2 * self.assetbar_margin)
 
-        if not self._filter_bubbles_enabled() or not names or content_width <= 0:
+        if not utils.experimental_enabled() or not names or content_width <= 0:
             for button in self.manufacturer_buttons:
                 button.visible = False
             return
@@ -2622,13 +3077,12 @@ class BlenderKitAssetBarOperator(BL_UI_OT_draw_operator):
 
         counts = self.manufacturer_counts
 
-        base_y = (
-            self.active_filter_height
-            + self.bar_height
-            + self.other_button_size
-            + self.filter_button_height
-            + (self.free_button_margin * 2)
-        )
+        # Vertically center the chips in the dark manufacturer strip at the
+        # bottom of the bar. Strip occupies [base_bar_height, bar_height]
+        # within the panel; centering a chip of height filter_button_height
+        # in a strip of height (filter_button_height + 2*free_button_margin)
+        # leaves free_button_margin of padding above and below.
+        chip_y = self.bar_y + self.base_bar_height + self.free_button_margin
         displayed_counts = [counts.get(name, 0) for name in self.manufacturer_names]
 
         min_count = min(displayed_counts) if displayed_counts else 1
@@ -2661,7 +3115,7 @@ class BlenderKitAssetBarOperator(BL_UI_OT_draw_operator):
 
             button.set_location(
                 current_left_offset,
-                self.filter_button_height + base_y,
+                chip_y,
             )
             button.width = width
             button.height = self.filter_button_height
@@ -2679,86 +3133,239 @@ class BlenderKitAssetBarOperator(BL_UI_OT_draw_operator):
 
     # endregion manufacturer
 
-    def position_and_hide_buttons(self):
-        """Position asset buttons in the asset bar and hide unused buttons."""
-        # position and layout buttons
-        sr = search.get_search_results()
-        if sr is None:
-            sr = []
+    def _position_single_button(self, button, asset_x, asset_y, asset_idx, sr_len):
+        """Position a single asset button and its sub-widgets."""
+        button.set_location(asset_x, asset_y)
+        button.validation_icon.set_location(
+            asset_x
+            + self.button_size
+            - self.icon_size
+            - self.button_margin
+            - self.validation_icon_margin,
+            asset_y
+            + self.button_size
+            - self.icon_size
+            - self.button_margin
+            - self.validation_icon_margin,
+        )
+        button.bookmark_button.set_location(
+            asset_x
+            + self.button_size
+            - self.icon_size
+            - self.button_margin
+            - self.validation_icon_margin,
+            asset_y + self.button_margin + self.validation_icon_margin,
+        )
+        button.progress_bar.set_location(asset_x, asset_y + self.button_size - 6)
+        button.author_button.set_location(
+            asset_x + self.button_margin + self.validation_icon_margin,
+            asset_y + self.button_margin + self.validation_icon_margin,
+        )
 
-        i = 0
-        for y in range(0, self.hcount):
-            for x in range(0, self.wcount):
-                asset_x = self.assetbar_margin + x * (self.button_size)
-                asset_y = self.assetbar_margin + y * (self.button_size)
-                button_idx = x + y * self.wcount
-                asset_idx = button_idx + self.scroll_offset
-                if len(self.asset_buttons) <= button_idx:
-                    break
-                button = self.asset_buttons[button_idx]
-                button.set_location(asset_x, asset_y)
-                button.validation_icon.set_location(
-                    asset_x
-                    + self.button_size
-                    - self.icon_size
-                    - self.button_margin
-                    - self.validation_icon_margin,
-                    asset_y
-                    + self.button_size
-                    - self.icon_size
-                    - self.button_margin
-                    - self.validation_icon_margin,
-                )
-                button.bookmark_button.set_location(
-                    asset_x
-                    + self.button_size
-                    - self.icon_size
-                    - self.button_margin
-                    - self.validation_icon_margin,
-                    asset_y + self.button_margin + self.validation_icon_margin,
-                )
-                button.progress_bar.set_location(
-                    asset_x, asset_y + self.button_size - 6
-                )
-                button.author_button.set_location(
-                    asset_x + self.button_margin + self.validation_icon_margin,
-                    asset_y + self.button_margin + self.validation_icon_margin,
-                )
-
-                if asset_idx < len(sr):
-                    button.visible = True
-                    button.validation_icon.visible = True
-                    button.bookmark_button.visible = False
-                    button.author_button.visible = False
-                    # button.progress_bar.visible = True
-                else:
-                    button.visible = False
-                    button.validation_icon.visible = False
-                    button.bookmark_button.visible = False
-                    button.author_button.visible = False
-                    button.progress_bar.visible = False
-                if utils.profile_is_validator():
-                    button.red_alert.set_location(
-                        asset_x - self.validation_icon_margin,
-                        asset_y - self.validation_icon_margin,
-                    )
-                i += 1
-
-        for a in range(i, len(self.asset_buttons)):
-            button = self.asset_buttons[a]
+        if 0 <= asset_idx < sr_len:
+            # If this button was just assigned to a new asset index (scrolling),
+            # hide overlay badges immediately to avoid "ghost" badges from the
+            # previous asset. update_buttons() will restore them when ready.
+            if getattr(button, "asset_index", -1) != asset_idx:
+                button.asset_index = asset_idx
+                button.validation_icon.visible = False
+                button.bookmark_button.visible = False
+                button.author_button.visible = False
+                button.progress_bar.visible = False
+                button.red_alert.visible = False
+            button.visible = True
+        else:
             button.visible = False
             button.validation_icon.visible = False
             button.bookmark_button.visible = False
             button.author_button.visible = False
             button.progress_bar.visible = False
+        button.red_alert.set_location(
+            asset_x - self.validation_icon_margin,
+            asset_y - self.validation_icon_margin,
+        )
+
+    def _update_scroll_indicator(self):
+        """Position and size the scroll position indicator.
+
+        In single-row mode the indicator runs horizontally along the bottom
+        edge of the asset bar. In multi-row mode it runs vertically along
+        the right edge, since scrolling there moves whole rows. Hidden
+        whenever the entire result set fits without scrolling. Reads
+        ``scroll_offset + scroll_phase / button_size`` so the thumb glides
+        smoothly during animation.
+        """
+        track = self.scroll_indicator_track
+        thumb = self.scroll_indicator_thumb
+
+        history_step = search.get_active_history_step()
+        sro = history_step.get("search_results_orig") if history_step else None
+        sr = search.get_search_results() or []
+        total = sro.get("count") if isinstance(sro, dict) else None
+        if not isinstance(total, int) or total <= 0:
+            total = len(sr)
+
+        if self.button_size <= 0 or total <= 0 or self.wcount <= 0:
+            track.visible = False
+            thumb.visible = False
+            return
+
+        thickness = max(
+            2, int(round(SCROLL_INDICATOR_THICKNESS_PX * ui_bgl.get_ui_scale()))
+        )
+        margin = self.assetbar_margin
+        bar_inner_width = max(1, self.bar_width - 2 * margin)
+        bar_inner_height = max(1, self.base_bar_height - 2 * margin)
+
+        # Convert phase (pixels) into the same unit as `scroll_offset`.
+        phase_slots = (self.scroll_phase or 0.0) / float(self.button_size)
+        if self.hcount > 1:
+            # Vertical: scrolling moves whole rows. Work in row units.
+            total_units = int(math.ceil(total / float(self.wcount)))
+            visible_units = self.hcount
+            progress = self.scroll_offset / float(self.wcount) + phase_slots
+            track_length = bar_inner_height
+        else:
+            # Horizontal: scrolling moves item-by-item.
+            total_units = total
+            visible_units = self.wcount
+            progress = self.scroll_offset + phase_slots * self.wcount
+            track_length = bar_inner_width
+
+        if total_units <= visible_units:
+            track.visible = False
+            thumb.visible = False
+            return
+
+        progress = max(0.0, min(float(total_units - visible_units), progress))
+
+        thumb_length = max(
+            SCROLL_INDICATOR_MIN_THUMB_PX,
+            int(round(track_length * visible_units / total_units)),
+        )
+        thumb_offset = int(
+            round(
+                (track_length - thumb_length)
+                * (progress / float(total_units - visible_units))
+            )
+        )
+
+        if self.hcount > 1:
+            # Vertical: pinned to right edge, inside the bar.
+            track_x = self.bar_width - thickness - 1
+            track_y = margin
+            track.width = thickness
+            track.height = bar_inner_height
+            track.set_location(track_x, track_y)
+            thumb.width = thickness
+            thumb.height = thumb_length
+            thumb.set_location(track_x, track_y + thumb_offset)
+        else:
+            # Horizontal: pinned to bottom edge of thumbnail strip.
+            track_y = self.base_bar_height - thickness - 1
+            track.width = bar_inner_width
+            track.height = thickness
+            track.set_location(margin, track_y)
+            thumb.width = thumb_length
+            thumb.height = thickness
+            thumb.set_location(margin + thumb_offset, track_y)
+
+        # `set_location` writes the same coords to `x` (panel-local) and
+        # `x_screen` (absolute). Bake the panel offset into `x_screen` so
+        # the indicator draws at the correct absolute position whether or
+        # not `panel.layout_widgets()` runs between updates. Without this
+        # the indicator sits at panel-local coords in screen space at rest
+        # and only happens to land in the right spot during smooth-scroll
+        # animation (which re-bakes via `_smooth_scroll_redraw`).
+        panel = getattr(self, "panel", None)
+        if panel is not None:
+            px = panel.x_screen
+            py = panel.y_screen
+            track.update(px + track.x, py + track.y)
+            thumb.update(px + thumb.x, py + thumb.y)
+
+        track.visible = True
+        thumb.visible = True
+
+    def position_and_hide_buttons(self):
+        """Position asset buttons in the asset bar and hide unused buttons.
+
+        Includes one buffer row above and below (multi-row) or two buffer
+        columns on each side (single-row) so that scroll animation has
+        content to slide in from off-screen.  The draw callback clips
+        everything to the visible bar area with a GPU scissor rect.
+        """
+        sr = search.get_search_results()
+        if sr is None:
+            sr = []
+
+        sr_len = len(sr)
+        i = 0
+
+        # Grid range including buffer rows/cols on each side for scroll animation.
+        if self.hcount > 1:
+            y_start = -SCROLL_BUFFER_ROWS
+            y_end = self.hcount + SCROLL_BUFFER_ROWS
+            x_start, x_end = 0, self.wcount
+        else:
+            y_start, y_end = 0, 1
+            x_start = -SCROLL_BUFFER_COLS
+            x_end = self.wcount + SCROLL_BUFFER_COLS
+
+        # Buttons are positioned at their integer grid slots. The sub-slot
+        # smooth-scroll offset (scroll_phase) is NOT baked into positions here;
+        # it is applied as a single draw-time translate in the asset-bar draw
+        # callback (see _update_grid_draw_offset). That way a smooth-scroll
+        # animation frame no longer repositions every grid widget.
+        #
+        # Reposition the grid (incl. buffer rows/cols) and hide the rest. Each
+        # set_location() inside would normally tag a redraw; coalesce them into
+        # a single redraw for the whole pass.
+        with batched_region_redraw():
+            for y in range(y_start, y_end):
+                for x in range(x_start, x_end):
+                    if i >= len(self.asset_buttons):
+                        break
+                    asset_x = self.assetbar_margin + x * self.button_size
+                    asset_y = self.assetbar_margin + y * self.button_size
+                    logical_idx = x + y * self.wcount
+
+                    button = self.asset_buttons[i]
+                    button.button_index = logical_idx
+                    button._grid_positioned = True
+                    self._position_single_button(
+                        button,
+                        asset_x,
+                        asset_y,
+                        logical_idx + self.scroll_offset,
+                        sr_len,
+                    )
+                    i += 1
+                else:
+                    continue
+                break
+
+            for a in range(i, len(self.asset_buttons)):
+                button = self.asset_buttons[a]
+                # Already hidden by a previous pass - skip the redundant work
+                # (this loop runs every smooth-scroll frame over ~300 buttons).
+                # getattr default covers the first pass, before _grid_positioned
+                # has ever been assigned on freshly-created buffer buttons.
+                if (
+                    not getattr(button, "_grid_positioned", False)
+                    and not button.visible
+                ):
+                    continue
+                button._grid_positioned = False
+                button.visible = False
+                button.validation_icon.visible = False
+                button.bookmark_button.visible = False
+                button.author_button.visible = False
+                button.progress_bar.visible = False
+                button.red_alert.visible = False
+        region_redraw()
 
         self.position_active_filter_buttons()
-
-        # Position expand button and hide it when all results fit in a single row
-        self.button_expand.set_location(
-            self.bar_width - self.other_button_size, self.bar_height
-        )
-        self.button_expand.visible = len(sr) > self.wcount
 
         self.button_scroll_down.width = self.scroll_width
         self.button_scroll_down.height = self.bar_height
@@ -2768,16 +3375,41 @@ class BlenderKitAssetBarOperator(BL_UI_OT_draw_operator):
         self.button_scroll_up.set_location(self.bar_width, 0)
         self.update_scroll_button_icons()
 
-    # endregion updates
-
     # region setup
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self._quad_view_state = None
         self._restart_pending = False
+        self._reset_resize_state()
         self.scroll_offset = 0
         self._tooltip_available_height = None
+
+        # Smooth-scroll animation state. `scroll_phase` is a signed pixel
+        # offset along the active scroll axis: `total_visual_position = (
+        # scroll_offset + scroll_phase / button_size) * slot_size_px`.
+        # While `_scroll_animating` is True the modal timer ticks the phase
+        # toward rest (friction decay -> magnetic snap to zero).
+        self.scroll_phase = 0.0
+        # Sub-slot scroll offset applied as a single draw-time gpu.matrix
+        # translate to all grid widgets (GPU coords: +x right, +y up), instead
+        # of repositioning every widget per animation frame. Updated from
+        # scroll_phase by _update_grid_draw_offset(); read by the draw callback.
+        self._grid_draw_offset = (0.0, 0.0)
+        self._scroll_velocity = 0.0
+        self._scroll_last_input_time = 0.0
+        self._scroll_last_tick_time = 0.0
+        self._scroll_animating = False
+        # True while the active source is the discrete mouse wheel (velocity
+        # injected per-notch). The tick must integrate phase from velocity
+        # even during active input, since wheel notches don't carry a
+        # continuous pixel delta the way trackpad pans do.
+        self._scroll_wheel_mode = False
+        # Sticky travel direction (-1, 0, +1). Captures the dominant sign of
+        # recent input/velocity so the snap stage can prefer continuing in
+        # the same direction instead of always pulling phase toward 0.
+        self._scroll_travel_dir = 0
+        self._trackpad_axis_vertical = None
 
         self.base_bar_height = 0
 
@@ -2799,6 +3431,7 @@ class BlenderKitAssetBarOperator(BL_UI_OT_draw_operator):
         self.tooltip_scale = 1.0
         self.bottom_panel_fraction = 0.18
         self.needs_tooltip_update = False
+        self._reset_resize_state()
         self.update_ui_size(context)
         self._quad_view_state = self._is_quad_view(context)
 
@@ -2812,14 +3445,13 @@ class BlenderKitAssetBarOperator(BL_UI_OT_draw_operator):
         self.scroll_offset = ui_props.scroll_offset
 
         self.text_color = (0.9, 0.9, 0.9, 1.0)
-        self.warning_color = (0.9, 0.5, 0.5, 1.0)
+        self.info_color = (0.6, 0.6, 0.6, 1.0)
+        self.caution_color = (0.7, 0.7, 0.5, 1.0)
+        self.warning_color = (0.9, 0.3, 0.3, 1.0)
 
         self.init_ui()
         self.init_tooltip()
         self.hide_tooltip()
-
-        self.trackpad_x_accum = 0
-        self.trackpad_y_accum = 0
 
     def setup_widgets(self, context, event):
         """Set up all widgets for the asset bar and tooltip."""
@@ -2834,6 +3466,13 @@ class BlenderKitAssetBarOperator(BL_UI_OT_draw_operator):
         widgets_panel.extend(self.validation_icons)
         widgets_panel.extend(self.author_buttons)
         widgets_panel.extend(self.progress_bars)
+        # Scroll indicator goes last so it draws on top of every thumbnail
+        # and overlay; otherwise it would be occluded by the asset buttons.
+        widgets_panel.append(self.scroll_indicator_track)
+        widgets_panel.append(self.scroll_indicator_thumb)
+        # Resize handle is registered last so reverse-order dispatch gives it
+        # priority over the asset buttons along the bottom edge.
+        widgets_panel.append(self.resize_handle)
 
         widgets = [self.panel]
 
@@ -2862,17 +3501,31 @@ class BlenderKitAssetBarOperator(BL_UI_OT_draw_operator):
 
     def on_invoke(self, context, event):
         """Invoke the asset bar operator."""
+        # Microsoft Store builds of Blender are sandboxed and break a number of
+        # Blendkit features (client launch, background Blender, writing into
+        # blenderkit_data). Show an in-viewport warning instead of the asset
+        # bar on first launch; the warning's "Proceed anyway" button persists
+        # the acceptance flag and re-invokes the asset bar.
+        from .. import warning_dialog
+
+        if warning_dialog.should_block_for_ms_store():
+            warning_dialog.show_ms_store_warning()
+            return False
+
         self.instances.append(self)
         if not context.area:
             return False
 
         ui_props = context.window_manager.blenderkitUI
+        needs_initial_search = not search.get_search_results()
+        if needs_initial_search:
+            search.get_active_history_step()["is_searching"] = True
 
         self.on_init(context)
         self.context = context
 
         # start search if there isn't a search result yet
-        if not search.get_search_results():
+        if needs_initial_search:
             search.search()
 
         if ui_props.assetbar_on:
@@ -2974,6 +3627,8 @@ class BlenderKitAssetBarOperator(BL_UI_OT_draw_operator):
         # to pass the operator to validation icons
         global asset_bar_operator
         asset_bar_operator = None
+        self.restore_resize_cursor()
+        self._reset_resize_state()
 
         context.window_manager.event_timer_remove(self._timer)
 
@@ -2990,6 +3645,8 @@ class BlenderKitAssetBarOperator(BL_UI_OT_draw_operator):
     # handlers
     def enter_button(self, widget):
         """Handle mouse enter on an asset button."""
+        if self._resize_dragging:
+            return
         if not hasattr(widget, "button_index") or widget.button_index < 0:
             return  # click on left/right arrow button gave no attr button_index
             # we should detect on which button_index scroll/left/right happened to refresh shown thumbnail
@@ -3004,6 +3661,12 @@ class BlenderKitAssetBarOperator(BL_UI_OT_draw_operator):
             if search_index >= len(sr):
                 return  # issue #1481 - index can be sometimes over the length of search results
             asset_data = sr[search_index]
+
+            # Skip tooltip for placeholder entries (results not yet loaded)
+            if asset_data.get("placeholder"):
+                self.draw_tooltip = False
+                self.hide_tooltip()
+                return
 
             self.draw_tooltip = True
             # self.tooltip = asset_data['tooltip']
@@ -3154,18 +3817,19 @@ class BlenderKitAssetBarOperator(BL_UI_OT_draw_operator):
                 self.authors_name.visible = True
                 self.gravatar_image.visible = True
 
-                # Hide ratings for addons
+                # Ratings are shown for all asset types, including add-ons.
                 is_addon = asset_data.get("assetType") == "addon"
-                if not is_addon:
-                    quality_text = asset_data["tooltip_data"]["quality"]
-                    if utils.profile_is_validator():
-                        quality_text += f" / {int(asset_data['score'])}"
-                    self.quality_label.text = quality_text
-                    self.quality_label.visible = True
-                    self.quality_star.visible = True
-                else:
-                    self.quality_label.visible = False
-                    self.quality_star.visible = False
+                quality_text = asset_data["tooltip_data"]["quality"]
+                if is_addon:
+                    # Add-ons show only the quality rating out of 10 - no
+                    # complexity/score, which confuses regular users.
+                    if quality_text != "-":
+                        quality_text = f"{quality_text}/10"
+                elif utils.profile_is_validator():
+                    quality_text += f" / {int(asset_data['score'])}"
+                self.quality_label.text = quality_text
+                self.quality_label.visible = True
+                self.quality_star.visible = True
 
                 # Update price labels for addons
                 user_price_text = asset_data["tooltip_data"].get("user_price_text", "")
@@ -3215,18 +3879,40 @@ class BlenderKitAssetBarOperator(BL_UI_OT_draw_operator):
                 # preview comments for validators
                 self.update_comments_for_validators(asset_data)
 
-                from_newer, difference = utils.asset_from_newer_blender_version(
+                has_warning, difference = utils.asset_from_newer_blender_version(
                     asset_data
                 )
-                if from_newer:
-                    if difference == "major":
+                if has_warning:
+                    if difference == "major_newer":
                         self.version_warning.text = f"Made in Blender {asset_data['sourceAppVersion']}! Use at your own risk."
+                        self.version_warning.text_color = self.warning_color
                     elif difference == "minor":
-                        self.version_warning.text = f"Made in Blender {asset_data['sourceAppVersion']}! Caution advised."
-                    else:
-                        self.version_warning.text = f"Made in Blender {asset_data['sourceAppVersion']}! Some features may not work."
+                        self.version_warning.text = f"Made in Blender {asset_data['sourceAppVersion']}. Caution advised."
+                        self.version_warning.text_color = self.caution_color
                 else:
                     self.version_warning.text = ""
+
+                # Addon-specific compatibility warning. This takes precedence
+                # over the generic sourceAppVersion notice because it's based
+                # on the addon's own declared supported range.
+                if is_addon:
+                    compat_ok, min_v, max_v = utils.get_addon_blender_compatibility(
+                        asset_data
+                    )
+                    os_ok, os_platforms = utils.get_addon_os_compatibility(asset_data)
+                    if not compat_ok:
+                        if min_v and max_v:
+                            rng = f"{min_v}\u2013{max_v}"
+                        elif min_v:
+                            rng = f"{min_v}+"
+                        else:
+                            rng = f"\u2264{max_v}"
+                        cur = utils.get_blender_version()
+                        self.version_warning.text = f"Incompatible: addon requires Blender {rng} (you have {cur})"
+                        self.version_warning.text_color = self.warning_color
+                    elif not os_ok:
+                        self.version_warning.text = f"Incompatible: addon supports {', '.join(os_platforms)} (you have {utils.get_current_addon_platform()})"
+                        self.version_warning.text_color = self.warning_color
 
                 author_id = int(asset_data["author"]["id"])
                 author = global_vars.BKIT_AUTHORS.get(author_id)
@@ -3313,10 +3999,10 @@ class BlenderKitAssetBarOperator(BL_UI_OT_draw_operator):
             if widget.bookmark_button and not is_author:
                 widget.bookmark_button.visible = True
 
-            # bpy.ops.wm.blenderkit_asset_popup('INVOKE_DEFAULT')
-
     def exit_button(self, widget):
         """Handle mouse exit from an asset button."""
+        if self._resize_dragging:
+            return
         # this condition checks if there wasn't another button already entered, which can happen with small button gaps
         if self.active_index == widget.button_index + self.scroll_offset:
             ui_props = bpy.context.window_manager.blenderkitUI
@@ -3340,6 +4026,7 @@ class BlenderKitAssetBarOperator(BL_UI_OT_draw_operator):
             bpy.ops.wm.blenderkit_login_dialog(
                 "INVOKE_DEFAULT",
                 message="Please login to bookmark your favorite assets.",
+                placement="bookmarks_prompt",
             )
             return
 
@@ -3364,8 +4051,8 @@ class BlenderKitAssetBarOperator(BL_UI_OT_draw_operator):
         # personal site >>
         # url = author.aboutMeUrl
 
-        # blenderkit site profile >>
-        url = paths.get_author_gallery_url(author_id)
+        # Blendkit site profile >>
+        url = paths.get_author_gallery_url(author_id, placement="asset_bar_author")
         if url is None:
             bk_logger.warning("url is none")
             return
@@ -3381,11 +4068,16 @@ class BlenderKitAssetBarOperator(BL_UI_OT_draw_operator):
         if ui_props.dragging:
             return
 
-        # Author assets: clicking/dragging triggers search-by-author instead
-        search_index = widget.search_index + self.scroll_offset
+        # Author assets: clicking/dragging triggers search-by-author instead.
+        # Use ``button_index`` (kept in sync by position_and_hide_buttons),
+        # NOT the stale ``search_index`` set once at button creation.
+        search_index = widget.button_index + self.scroll_offset
         sr = search.get_search_results()
         if sr and 0 <= search_index < len(sr):
-            if sr[search_index].get("assetType") == "author":
+            asset_data = sr[search_index]
+            if asset_data.get("placeholder"):
+                return
+            if asset_data.get("assetType") == "author":
                 self.search_by_author(search_index)
                 return
 
@@ -3400,15 +4092,8 @@ class BlenderKitAssetBarOperator(BL_UI_OT_draw_operator):
         self.finish()
 
     def toggle_expand(self, widget):
-        """Toggle the expanded state of the assetbar."""
-        user_preferences = bpy.context.preferences.addons[__package__].preferences
-        user_preferences.assetbar_expanded = not user_preferences.assetbar_expanded
-
-        # Update the button icon
-        self.update_expand_button_icon()
-
-        # Restart the asset bar to apply the new layout
-        self.restart_asset_bar()
+        """Toggle the expanded state of the asset bar from the visible button."""
+        self.toggle_assetbar_rows()
 
     def handle_key_input(self, event):
         """Handle keyboard shortcuts for asset bar operations."""
@@ -3519,7 +4204,7 @@ class BlenderKitAssetBarOperator(BL_UI_OT_draw_operator):
             if author is None:
                 return True
             utils.p("author:", author)
-            url = paths.get_author_gallery_url(author.id)
+            url = paths.get_author_gallery_url(author.id, placement="asset_bar_author")
             bpy.ops.wm.url_open(url=url)
             return True
 
@@ -3600,14 +4285,14 @@ class BlenderKitAssetBarOperator(BL_UI_OT_draw_operator):
 
     def scroll_up(self, widget):
         """Scroll up in the asset bar."""
-        self.scroll_offset += self.wcount * self.hcount
-        self.scroll_update()
+        step = self.wcount * self.hcount
+        self._scroll_by_slots(step)
         self.enter_button(widget)
 
     def scroll_down(self, widget):
         """Scroll down in the asset bar."""
-        self.scroll_offset -= self.wcount * self.hcount
-        self.scroll_update()
+        step = -(self.wcount * self.hcount)
+        self._scroll_by_slots(step)
         self.enter_button(widget)
 
     # endregion events
@@ -3673,14 +4358,15 @@ class BlenderKitAssetBarOperator(BL_UI_OT_draw_operator):
             history_step = search.get_active_history_step()
             sr = history_step.get("search_results") or []
             if 0 <= search_index < len(sr):
-                # No context menu for author results
+                # No context menu for placeholder or author results
+                if sr[search_index].get("placeholder"):
+                    return
                 if sr[search_index].get("assetType") == "author":
                     return
                 self.active_index = search_index
                 ui_props = bpy.context.window_manager.blenderkitUI
                 ui_props.active_index = search_index
         bpy.ops.wm.blenderkit_asset_popup("INVOKE_DEFAULT")
-        # bpy.ops.wm.call_menu(name='OBJECT_MT_blenderkit_asset_menu')
 
     def search_more(self):
         """Search for more assets."""
@@ -3697,6 +4383,23 @@ class BlenderKitAssetBarOperator(BL_UI_OT_draw_operator):
 
         search.search(get_next=True)
 
+        # Append placeholder entries so the user can keep scrolling while results load.
+        sr = history_step.get("search_results")
+        if sr is not None:
+            total_count = sro.get("count", len(sr))
+            placeholders_needed = min(total_count - len(sr), search.MAX_PAGE_SIZE)
+            ui_props = bpy.context.window_manager.blenderkitUI
+            asset_type = ui_props.asset_type.lower()
+            for _ in range(placeholders_needed):
+                sr.append(
+                    {
+                        "placeholder": True,
+                        "assetType": asset_type,
+                        "thumbnail_small": "",
+                        "verificationStatus": "validated",
+                    }
+                )
+
     def update_bookmark_icon(self, bookmark_button: BL_UI_Button):
         """Update the bookmark icon for a given bookmark button."""
         history_step = search.get_active_history_step()
@@ -3707,6 +4410,9 @@ class BlenderKitAssetBarOperator(BL_UI_OT_draw_operator):
             return
         asset_data = sr[asset_index]
         if asset_data.get("assetType") == "author":
+            bookmark_button.visible = False
+            return
+        if asset_data.get("placeholder") or "id" not in asset_data:
             bookmark_button.visible = False
             return
         rating = ratings_utils.get_rating_local(asset_data["id"])
@@ -3784,13 +4490,27 @@ class BlenderKitAssetBarOperator(BL_UI_OT_draw_operator):
         sr = search.get_search_results()
         if not sr:
             return
+        promoted = False
         for asset_button in self.asset_buttons:
-            if asset_button.asset_index < len(sr):
+            if 0 <= asset_button.asset_index < len(sr):
                 asset_data = sr[asset_button.asset_index]
-                if asset_data["assetBaseId"] == asset_id:
-                    set_thumb_check(
+                if asset_data.get("placeholder"):
+                    continue
+                if asset_data.get("assetBaseId") == asset_id:
+                    was_loaded = getattr(asset_button, "_thumb_loaded", False)
+                    thumb_loaded = set_thumb_check(
                         asset_button, asset_data, thumb_type="thumbnail_small"
                     )
+                    asset_button._thumb_loaded = thumb_loaded
+                    # Slot just transitioned from "loading placeholder" to a
+                    # real thumbnail - run the full button update so the
+                    # overlay badges (validation/bookmark/progress/red_alert)
+                    # that were suppressed in update_buttons() are now drawn
+                    # against the correct thumbnail.
+                    if thumb_loaded and not was_loaded:
+                        promoted = True
+        if promoted:
+            self.update_buttons()
 
     def update_buttons(self):
         """Update asset buttons in the asset bar based on current search results and scroll offset."""
@@ -3800,107 +4520,152 @@ class BlenderKitAssetBarOperator(BL_UI_OT_draw_operator):
             return
         visible_results = []
 
-        # remember also position for manufacturer buttons
-
         for asset_button in self.asset_buttons:
-            if asset_button.visible:
-                asset_button.asset_index = (
-                    asset_button.button_index + self.scroll_offset
+            # Only re-evaluate buttons that have a grid position.
+            # Leftover (unused) buttons stay hidden.
+            if not getattr(asset_button, "_grid_positioned", False):
+                continue
+
+            asset_button.asset_index = asset_button.button_index + self.scroll_offset
+            if 0 <= asset_button.asset_index < len(sr):
+                asset_button.visible = True
+
+                asset_data = sr[asset_button.asset_index]
+                if asset_data is None:
+                    continue
+
+                # Update bookmark and author-profile button indices.
+                asset_button.bookmark_button.asset_index = asset_button.asset_index
+                asset_button.author_button.asset_index = asset_button.asset_index
+
+                thumb_loaded = set_thumb_check(
+                    asset_button, asset_data, thumb_type="thumbnail_small"
                 )
-                if asset_button.asset_index < len(sr):
-                    asset_button.visible = True
+                # Track loaded state on the button so update_image() (called
+                # when a thumbnail finishes downloading) can promote the slot
+                # from "loading - no badges" to fully populated without
+                # waiting for the next scroll/update_buttons pass.
+                asset_button._thumb_loaded = thumb_loaded
 
-                    asset_data = sr[asset_button.asset_index]
-                    if asset_data is None:
-                        continue
-                    # update bookmark buttons
-                    asset_button.bookmark_button.asset_index = asset_button.asset_index
-                    # update author profile buttons
-                    asset_button.author_button.asset_index = asset_button.asset_index
+                # Placeholder entries only need thumbnail rendering.
+                if asset_data.get("placeholder"):
+                    asset_button.bookmark_button.visible = False
+                    asset_button.author_button.visible = False
+                    asset_button.validation_icon.visible = False
+                    asset_button.progress_bar.visible = False
+                    asset_button.background_border = False
+                    asset_button.background_border_color = None
+                    asset_button.use_rounded_background = False
+                    asset_button.background_corner_radius = 0.0
+                    asset_button.image_corner_radius = None
+                    asset_button.background_padding = [0.0, 0.0]
+                    asset_button.image_padding = 0.0
+                    asset_button.red_alert.visible = False
+                    continue
 
-                    set_thumb_check(
-                        asset_button, asset_data, thumb_type="thumbnail_small"
+                # Distinguish author cards with a blue border and author icon.
+                if asset_data.get("assetType") == "author":
+                    asset_button.background_border_thickness = 3.0
+                    asset_button.author_button.visible = True
+                    asset_button.background_corner_radius = 12.0
+                    asset_button.image_corner_radius = 12.0
+                    asset_button.background_padding = [-1.0, -1.0]
+                    asset_button.background_border = True
+                    asset_button.background_border_color = colors.ACTIVE_BLUE
+                    asset_button.use_rounded_background = True
+                    asset_button.image_padding = (
+                        asset_button.background_border_thickness
                     )
-                    # Distinguish author cards with a blue border and author icon
-                    if asset_data.get("assetType") == "author":
-                        asset_button.background_border_thickness = 3.0
-                        asset_button.author_button.visible = True
-                        asset_button.background_corner_radius = 12.0
-                        asset_button.image_corner_radius = 12.0
-                        asset_button.background_padding = [-1.0, -1.0]
-                        asset_button.background_border = True
-                        asset_button.background_border_color = colors.ACTIVE_BLUE
-                        asset_button.use_rounded_background = True
-                        asset_button.image_padding = (
-                            asset_button.background_border_thickness
-                        )
+                else:
+                    asset_button.background_border = False
+                    asset_button.background_border_color = None
+                    asset_button.author_button.visible = False
+                    asset_button.use_rounded_background = False
+                    asset_button.background_corner_radius = 0.0
+                    asset_button.image_corner_radius = None
+                    asset_button.background_padding = [0.0, 0.0]
+                    asset_button.image_padding = 0.0
+
+                self.update_validation_icon(asset_button, asset_data)
+                self.update_bookmark_icon(asset_button.bookmark_button)
+                self.update_progress_bar(asset_button, asset_data)
+
+                # red_alert overlay is reused for two cases (incompatible
+                # addons take priority over the validator "old upload" alert):
+                if asset_data.get(
+                    "assetType"
+                ) == "addon" and not utils.is_addon_blender_compatible(asset_data):
+                    asset_button.red_alert.bg_color = (0.6, 0.05, 0.05, 0.55)
+                    asset_button.red_alert.visible = True
+                elif (
+                    utils.profile_is_validator()
+                    and asset_data["verificationStatus"] == "uploaded"
+                ):
+                    over_limit = utils.is_upload_old(asset_data.get("lastBlendUpload"))
+                    if over_limit:
+                        redness = min(over_limit * 0.05, 0.7)
+                        asset_button.red_alert.bg_color = (1, 0, 0, redness)
+                        asset_button.red_alert.visible = True
                     else:
-                        asset_button.background_border = False
-                        asset_button.background_border_color = None
-                        asset_button.author_button.visible = False
-                        asset_button.use_rounded_background = False
-                        asset_button.background_corner_radius = 0.0
-                        asset_button.image_corner_radius = None
-                        asset_button.background_padding = [0.0, 0.0]
-                        asset_button.image_padding = 0.0
-
-                    self.update_validation_icon(asset_button, asset_data)
-
-                    self.update_bookmark_icon(asset_button.bookmark_button)
-
-                    self.update_progress_bar(asset_button, asset_data)
-
-                    if (
-                        utils.profile_is_validator()
-                        and asset_data["verificationStatus"] == "uploaded"
-                    ):
-                        over_limit = utils.is_upload_old(
-                            asset_data.get("lastBlendUpload")
-                        )
-                        if over_limit:
-                            redness = min(over_limit * 0.05, 0.7)
-                            asset_button.red_alert.bg_color = (1, 0, 0, redness)
-                            asset_button.red_alert.visible = True
-                        else:
-                            asset_button.red_alert.visible = False
-                    elif utils.profile_is_validator():
                         asset_button.red_alert.visible = False
-                    visible_results.append(asset_data)
+                else:
+                    asset_button.red_alert.visible = False
 
+                # When the thumbnail for this slot hasn't been downloaded
+                # yet, the slot is showing the "Loading..." placeholder.
+                # Suppress all overlay badges (validation icon, bookmark,
+                # progress bar, red alert) so we don't draw stale or
+                # next-asset badges over a not-yet-loaded thumbnail while
+                # scrolling. The badges are restored by update_image() as
+                # soon as the real thumbnail arrives.
+                if not thumb_loaded:
+                    asset_button.validation_icon.visible = False
+                    asset_button.bookmark_button.visible = False
+                    asset_button.progress_bar.visible = False
+                    asset_button.red_alert.visible = False
+
+                visible_results.append(asset_data)
             else:
+                # Buffer button with out-of-range index – hide it
                 asset_button.visible = False
                 asset_button.validation_icon.visible = False
                 asset_button.bookmark_button.visible = False
                 asset_button.author_button.visible = False
                 asset_button.progress_bar.visible = False
-                if utils.profile_is_validator():
-                    asset_button.red_alert.visible = False
+                asset_button.red_alert.visible = False
 
-        # Refresh manufacturer chips to match currently visible assets
+        # Refresh manufacturer chips to match currently visible assets.
         self._update_manufacturer_data(visible_results)
 
-    def scroll_update(self, always=False):
+    def scroll_update(self, always=False, *, update_visible_buttons=True):
         """Update scroll position and visibility of scroll buttons."""
         self.hide_tooltip()
+        # Outside the smooth-scroll loop any stale phase would leave buttons
+        # visually offset from their integer position - reset it so external
+        # callers (clicks, search refresh, edge clamps) start clean.
+        if not self._scroll_animating and self.scroll_phase != 0.0:
+            self.scroll_phase = 0.0
+            self._scroll_velocity = 0.0
+        # Keep the draw-time grid offset in sync with the (possibly reset)
+        # phase so the grid never draws shifted while at rest.
+        self._update_grid_draw_offset()
         history_step = search.get_active_history_step()
         sr = history_step.get("search_results")
         sro = history_step.get("search_results_orig")
-        # orig_offset = self.scroll_offset
         # empty results
         if sr is None:
             self.button_scroll_down.visible = False
             self.button_scroll_up.visible = False
             return
 
-        self.scroll_offset = min(
-            self.scroll_offset, len(sr) - (self.wcount * self.hcount)
-        )
+        self.scroll_offset = min(self.scroll_offset, self._aligned_max_offset(len(sr)))
         self.scroll_offset = max(self.scroll_offset, 0)
         # only update if scroll offset actually changed, otherwise this is unnecessary
 
         if (
             sro["count"] > len(sr)
-            and len(sr) - self.scroll_offset < (self.wcount * self.hcount) + 15
+            and len(sr) - self.scroll_offset
+            < (self.wcount * self.hcount) + SEARCH_PREFETCH_LOOKAHEAD
         ):
             self.search_more()
 
@@ -3909,23 +4674,472 @@ class BlenderKitAssetBarOperator(BL_UI_OT_draw_operator):
         else:
             self.button_scroll_down.visible = True
 
-        if self.scroll_offset >= sro["count"] - (self.wcount * self.hcount):
+        if self.scroll_offset >= self._aligned_max_offset(sro["count"]):
             self.button_scroll_up.visible = False
         else:
             self.button_scroll_up.visible = True
+
+        self._update_scroll_indicator()
 
         # here we save some time by only updating the images if the scroll offset actually changed
         if self.last_scroll_offset == self.scroll_offset and not always:
             return
         self.last_scroll_offset = self.scroll_offset
 
+        if not update_visible_buttons:
+            return
+
         self.update_buttons()
+
+    def _apply_edge_resistance(self, step: int) -> int:
+        """Reduce scroll step when near the start or end of results.
+
+        Instead of bouncing, we progressively reduce the step size so
+        scrolling decelerates smoothly at the edges.
+        """
+        history_step = search.get_active_history_step()
+        sr = history_step.get("search_results")
+        if sr is None:
+            return step
+
+        max_offset = self._aligned_max_offset(len(sr))
+
+        if step < 0 and self.scroll_offset <= 0:
+            # Already at the start, absorb the step entirely
+            return 0
+        if step > 0 and self.scroll_offset >= max_offset:
+            # Already at the end, absorb the step entirely
+            return 0
+
+        # When approaching the edge, reduce the step
+        if step < 0:
+            # Scrolling toward start
+            effective = self.scroll_offset + step
+            if effective < 0:
+                step = -self.scroll_offset  # clamp to exactly reach 0
+        elif step > 0:
+            # Scrolling toward end
+            effective = self.scroll_offset + step
+            if effective > max_offset:
+                step = max_offset - self.scroll_offset  # clamp to exactly reach end
+
+        return step
+
+    def _scroll_by_slots(self, slot_step: int):
+        """Discrete scroll commit. Cancels any in-flight smooth animation."""
+        if slot_step == 0:
+            return
+        slot_step = self._apply_edge_resistance(slot_step)
+        if slot_step == 0:
+            return
+        # A wheel commit overrides any active inertia or snap, so visuals do
+        # not lag behind the integer position.
+        self.scroll_phase = 0.0
+        self._scroll_velocity = 0.0
+        self._scroll_animating = False
+        self._scroll_travel_dir = 0
+        self.scroll_offset += slot_step
+        self.scroll_update()
+
+    # --- Smooth-scroll helpers ------------------------------------------------
+
+    def _smooth_scroll_axis_step_px(self) -> float:
+        """Pixel size of one slot along the active scroll axis."""
+        return float(max(1, int(self.button_size)))
+
+    def _smooth_scroll_unit_slots(self) -> int:
+        """Slots advanced per integer scroll step (1 single-row, wcount multi-row)."""
+        return self.wcount if self.hcount > 1 else 1
+
+    def _aligned_max_offset(self, total: int) -> int:
+        """Largest scroll_offset that still shows at least one asset, aligned
+        to the natural scroll step.
+
+        Aligning to the step (`wcount` for multi-row, `1` for single-row)
+        ensures we never "shift" the layout by a fractional row at the end
+        of the result set - trailing slots are simply left empty instead.
+        """
+        visible = self.wcount * self.hcount
+        if total <= visible:
+            return 0
+        unit = max(1, self._smooth_scroll_unit_slots())
+        # Round up so the last asset is guaranteed to be in view.
+        return int(math.ceil((total - visible) / float(unit))) * unit
+
+    def _smooth_scroll_max_offset(self) -> int:
+        sr = search.get_search_results()
+        if sr is None:
+            return 0
+        return self._aligned_max_offset(len(sr))
+
+    def _smooth_scroll_commit_phase(self) -> bool:
+        """Advance integer `scroll_offset` whenever |phase| crosses one slot step.
+
+        Returns True if any integer commit happened (so callers can refresh
+        button image bindings via `scroll_update`).
+        """
+        step_px = self._smooth_scroll_axis_step_px()
+        unit = self._smooth_scroll_unit_slots()
+        committed = False
+        # Forward direction: positive phase eats slots forward.
+        while self.scroll_phase >= step_px:
+            self.scroll_phase -= step_px
+            self.scroll_offset += unit
+            committed = True
+        while self.scroll_phase <= -step_px:
+            self.scroll_phase += step_px
+            self.scroll_offset -= unit
+            committed = True
+        return committed
+
+    def _smooth_scroll_clamp(self):
+        """Clamp `scroll_offset` to results bounds and zero phase at edges."""
+        max_offset = self._smooth_scroll_max_offset()
+        if self.scroll_offset < 0:
+            self.scroll_offset = 0
+        elif self.scroll_offset > max_offset:
+            self.scroll_offset = max_offset
+        if self.scroll_offset <= 0 and self.scroll_phase < 0:
+            self.scroll_phase = 0.0
+            self._scroll_velocity = 0.0
+        if self.scroll_offset >= max_offset and self.scroll_phase > 0:
+            self.scroll_phase = 0.0
+            self._scroll_velocity = 0.0
+        # Phase must always be a sub-slot fraction; any whole-slot residue
+        # is a logic bug we'd rather visualize as a clean snap than a drift.
+        step_px = self._smooth_scroll_axis_step_px()
+        if abs(self.scroll_phase) >= step_px:
+            self.scroll_phase = 0.0
+
+    def _update_grid_draw_offset(self):
+        """Translate the grid by the sub-slot scroll phase at draw time.
+
+        Returns a GPU-space (dx, dy) offset (+x right, +y up). Buttons stay at
+        their integer slot positions; the draw callback applies this translate
+        to all grid widgets so they slide as one, with no per-widget work.
+        Mirrors the old per-frame ``asset_x = base - phase`` baking:
+        increasing ``scroll_phase`` moves multi-row grids up (+gpu_y) and
+        single-row grids left (-gpu_x).
+        """
+        if self.hcount > 1:
+            self._grid_draw_offset = (0.0, self.scroll_phase)
+        else:
+            self._grid_draw_offset = (-self.scroll_phase, 0.0)
+        return self._grid_draw_offset
+
+    def _smooth_scroll_redraw(self):
+        """Apply the current scroll phase and request a redraw.
+
+        The sub-slot slide is now a single draw-time translate (see the draw
+        callback), so we no longer reposition every grid widget here - we just
+        refresh the draw offset and the scroll indicator, then tag a redraw.
+        """
+        self._update_grid_draw_offset()
+        # Refresh the indicator each animation frame so its thumb glides
+        # smoothly with the sub-slot phase. (`scroll_update` handles the
+        # non-animated paths.)
+        self._update_scroll_indicator()
+        try:
+            region = bpy.context.region
+        except Exception:
+            region = None
+        self._safe_tag_redraw(region)
+
+    def _smooth_scroll_apply_input(self, axis_delta_px: float, now: float):
+        """Feed a continuous (trackpad) pixel delta into the smooth scroller.
+
+        Updates phase, integrates velocity from inter-event timing, commits
+        any whole-slot crossings, clamps to edges, and redraws.
+        """
+        # If the layout's active scroll axis flipped since the last sample,
+        # discard stale velocity so cross-axis input doesn't carry over.
+        # (Axis flip itself is detected in `_handle_scroll_event`.)
+        self.scroll_phase += axis_delta_px
+        # Trackpad input drives phase directly; clear wheel mode so the tick
+        # reverts to its post-release coast behaviour.
+        self._scroll_wheel_mode = False
+
+        last_input = self._scroll_last_input_time
+        dt = now - last_input if last_input > 0.0 else 0.0
+        if dt <= 0.0 or dt > 0.25:
+            # Either first sample or long idle gap (start of a new swipe);
+            # don't extrapolate a velocity from this single frame.
+            instant_v = 0.0
+        else:
+            instant_v = axis_delta_px / max(dt, SCROLL_VELOCITY_SAMPLE)
+        # Light smoothing so a single jittery sample doesn't dominate.
+        blend = 0.6
+        self._scroll_velocity = (
+            1.0 - blend
+        ) * self._scroll_velocity + blend * instant_v
+
+        self._scroll_last_input_time = now
+        if self._scroll_last_tick_time == 0.0:
+            self._scroll_last_tick_time = now
+        self._scroll_animating = True
+        # Record dominant travel direction from this input. Sub-pixel jitter
+        # near 0 is ignored so we don't keep flipping the bias.
+        if axis_delta_px > 0.5:
+            self._scroll_travel_dir = 1
+        elif axis_delta_px < -0.5:
+            self._scroll_travel_dir = -1
+
+        committed = self._smooth_scroll_commit_phase()
+        self._smooth_scroll_clamp()
+        if committed:
+            # Image rebinding etc. only when integer offset actually changed.
+            self.scroll_update()
+        self._smooth_scroll_redraw()
+
+    def _smooth_scroll_tick(self, now: float):
+        """Per-frame animation step. Called from modal TIMER while animating.
+
+        Two-stage: friction-decayed inertia until velocity falls below
+        `SCROLL_MIN_VELOCITY`, then magnetic snap of phase toward 0 (which
+        is automatically row-aligned since integer commits move whole rows).
+        """
+        if not self._scroll_animating:
+            return
+        last = self._scroll_last_tick_time or now
+        dt = now - last
+        self._scroll_last_tick_time = now
+        if dt <= 0.0:
+            return
+        if dt > SCROLL_DT_CAP:
+            dt = SCROLL_DT_CAP
+
+        time_since_input = now - self._scroll_last_input_time
+        if time_since_input < SCROLL_INPUT_GAP and not self._scroll_wheel_mode:
+            # User still feeding trackpad events; let
+            # `_smooth_scroll_apply_input` drive phase. We just keep the
+            # animation loop alive. Wheel mode is velocity-driven and must
+            # integrate every tick even during active input.
+            return
+
+        if abs(self._scroll_velocity) > SCROLL_MIN_VELOCITY:
+            # Inertia: exponential friction decay.
+            decay = math.exp(-SCROLL_FRICTION * dt)
+            avg_v = self._scroll_velocity * (1.0 + decay) * 0.5
+            self.scroll_phase += avg_v * dt
+            self._scroll_velocity *= decay
+        else:
+            # Magnetic snap. Target is the nearest slot boundary, but the
+            # half-way decision boundary is shifted toward the travel
+            # direction by `SCROLL_SNAP_DIRECTION_BIAS * step` so a partial
+            # crossing in the direction we were already heading commits
+            # forward instead of pulling back.
+            self._scroll_velocity = 0.0
+            step_px = self._smooth_scroll_axis_step_px()
+            half = step_px * 0.5
+            bias = SCROLL_SNAP_DIRECTION_BIAS * step_px
+            direction = self._scroll_travel_dir
+            if direction > 0:
+                # Boundary lowered to (0.5 - bias_frac) of one slot.
+                threshold = half - bias
+                target = step_px if self.scroll_phase >= threshold else 0.0
+            elif direction < 0:
+                threshold = -(half - bias)
+                target = -step_px if self.scroll_phase <= threshold else 0.0
+            else:
+                # No recorded direction: pure nearest-slot.
+                if self.scroll_phase >= half:
+                    target = step_px
+                elif self.scroll_phase <= -half:
+                    target = -step_px
+                else:
+                    target = 0.0
+
+            distance = self.scroll_phase - target
+            if abs(distance) <= SCROLL_SETTLE_PX:
+                # Land cleanly. If target was a slot boundary the commit
+                # below will reduce phase back to 0.
+                self.scroll_phase = target
+                committed_now = self._smooth_scroll_commit_phase()
+                self._smooth_scroll_clamp()
+                if committed_now:
+                    self.scroll_update()
+                self._smooth_scroll_redraw()
+                self._scroll_animating = False
+                self._scroll_last_tick_time = 0.0
+                self._scroll_travel_dir = 0
+                self._scroll_wheel_mode = False
+                return
+            ease = 1.0 - math.exp(-SCROLL_SNAP_RATE * dt)
+            self.scroll_phase -= distance * ease
+
+        committed = self._smooth_scroll_commit_phase()
+        self._smooth_scroll_clamp()
+        if committed:
+            self.scroll_update()
+        self._smooth_scroll_redraw()
+
+    def _get_trackpad_sensitivity(self) -> float:
+        """Pixels of finger travel required to advance one asset slot.
+
+        Higher values produce slower scrolling. Read from addon preferences
+        so users (notably on macOS) can tune trackpad speed.
+        """
+        try:
+            prefs = bpy.context.preferences.addons[_ADDON_PACKAGE].preferences
+            value = float(
+                getattr(
+                    prefs,
+                    "trackpad_scroll_sensitivity",
+                    SCROLL_TRACKPAD_SENSITIVITY_DEFAULT,
+                )
+            )
+            if value < 1.0:
+                value = 1.0
+            return value
+        except (KeyError, AttributeError):
+            return SCROLL_TRACKPAD_SENSITIVITY_DEFAULT
+
+    def _handle_scroll_event(self, context, event) -> bool:
+        """Centralized scroll input handler.
+
+        Consumes wheel and trackpad events whenever the cursor is over the
+        asset bar panel, mapping them to discrete slot steps based on the
+        current layout (single-row -> horizontal, multi-row -> vertical).
+
+        Trackpad input feeds the smooth-scroll phase continuously and lets
+        the timer-driven inertia + magnetic snap take over after release.
+        Wheel input still commits one full step per tick (cancelling any
+        in-flight animation).
+
+        Returns True if the event was a scroll input that we should consume
+        (RUNNING_MODAL); False to let the caller fall through to other
+        handlers / pass the event through.
+        """
+        # Only react to scroll-class events.
+        if event.type != "TRACKPADPAN" and event.type not in _WHEEL_EVENT_TYPES:
+            return False
+
+        # Only when the pointer is on the asset bar.
+        if not self.panel.is_in_rect(self.mouse_x, self.mouse_y):
+            return False
+
+        # Layout-driven axis. We never mix the two axes so wheel and trackpad
+        # cannot both step the bar at the same time.
+        vertical = self.hcount > 1
+        slot_per_step = self.wcount if vertical else 1
+
+        # Reset accumulated state if the layout's scrolling axis changed
+        # since the last event (leftover travel must not bleed across axes).
+        if self._trackpad_axis_vertical != vertical:
+            self._trackpad_axis_vertical = vertical
+            self.scroll_phase = 0.0
+            self._scroll_velocity = 0.0
+            self._scroll_animating = False
+            self._scroll_travel_dir = 0
+
+        # On Blender versions without GPU scissor we can't clip partial rows,
+        # so smooth-scroll rows would visibly spill outside the bar. Fall
+        # back to immediate integer-row stepping for wheel events and just
+        # ignore trackpad pan (which has no natural discrete equivalent).
+        if not SMOOTH_SCROLL_SUPPORTED:
+            if event.type == "TRACKPADPAN":
+                # Accumulate trackpad delta into whole-slot steps without
+                # animating phase. We still respect the user's sensitivity.
+                dx = event.mouse_x - event.mouse_prev_x
+                dy = event.mouse_y - event.mouse_prev_y
+                axis_delta = float(dy) if abs(dy) >= abs(dx) else float(-dx)
+                sensitivity = self._get_trackpad_sensitivity()
+                self._legacy_trackpad_accum = (
+                    getattr(self, "_legacy_trackpad_accum", 0.0) + axis_delta
+                )
+                steps_committed = 0
+                while self._legacy_trackpad_accum >= sensitivity:
+                    self._legacy_trackpad_accum -= sensitivity
+                    steps_committed += 1
+                while self._legacy_trackpad_accum <= -sensitivity:
+                    self._legacy_trackpad_accum += sensitivity
+                    steps_committed -= 1
+                if steps_committed:
+                    self.scroll_offset += steps_committed * slot_per_step
+                    self.scroll_update()
+                    if context.region is not None:
+                        context.region.tag_redraw()
+                return True
+
+            steps = 1 if event.type in _WHEEL_FORWARD else -1
+            self.scroll_offset += steps * slot_per_step
+            self.scroll_update()
+            if context.region is not None:
+                context.region.tag_redraw()
+            return True
+
+        if event.type == "TRACKPADPAN":
+            dx = event.mouse_x - event.mouse_prev_x
+            dy = event.mouse_y - event.mouse_prev_y
+            # Accept input from either axis - the user can side-swipe to
+            # scroll a multi-row grid, or vertical-swipe a single-row bar.
+            # Pick the dominant axis of this event so diagonal motion is
+            # counted once, not summed.
+            #
+            # Natural-scroll convention (content follows the finger):
+            #   swipe up   (dy > 0) -> forward
+            #   swipe left (dx < 0) -> forward
+            # Both axes map to the same logical "forward" regardless of
+            # whether the layout is single-row or multi-row.
+            if abs(dy) >= abs(dx):
+                axis_delta = float(dy)
+            else:
+                axis_delta = float(-dx)
+
+            # Map raw pixels into "scroll-axis pixels" via the user's
+            # sensitivity preference: travelling `sensitivity` finger-pixels
+            # equals one slot of bar movement (`button_size` pixels of phase).
+            sensitivity = self._get_trackpad_sensitivity()
+            step_px = self._smooth_scroll_axis_step_px()
+            phase_delta = (axis_delta / sensitivity) * step_px
+
+            self._smooth_scroll_apply_input(phase_delta, time.time())
+        else:
+            # Wheel event. Discrete notches don't carry a continuous pixel
+            # delta, so feeding `step_px` straight into the smooth pipeline
+            # would let `_smooth_scroll_commit_phase` consume the whole slot
+            # in the same event and visually teleport. Instead we inject a
+            # one-shot velocity: the timer integrates phase from 0 -> step_px
+            # over multiple frames (inertia), then magnetic snap finishes the
+            # row alignment. Multiple rapid notches stack velocity (capped),
+            # so a fast spin coasts proportionally further.
+            steps = 1 if event.type in _WHEEL_FORWARD else -1
+            step_px = self._smooth_scroll_axis_step_px()
+            notch_v = step_px * SCROLL_WHEEL_NOTCH_VELOCITY
+            v_cap = step_px * SCROLL_WHEEL_NOTCH_VELOCITY * SCROLL_WHEEL_MAX_NOTCH_STACK
+            now = time.time()
+            # Reset stale velocity if it points the other way or we've been
+            # idle long enough that the previous spin has settled.
+            time_since_input = now - self._scroll_last_input_time
+            if (
+                steps * self._scroll_velocity < 0
+                or time_since_input > SCROLL_INPUT_GAP * 4
+            ):
+                self._scroll_velocity = 0.0
+            self._scroll_velocity += steps * notch_v
+            # Clamp magnitude so a held wheel doesn't accelerate forever.
+            if self._scroll_velocity > v_cap:
+                self._scroll_velocity = v_cap
+            elif self._scroll_velocity < -v_cap:
+                self._scroll_velocity = -v_cap
+            self._scroll_travel_dir = steps
+            self._scroll_animating = True
+            self._scroll_wheel_mode = True
+            self._scroll_last_input_time = now
+            if self._scroll_last_tick_time == 0.0:
+                self._scroll_last_tick_time = now
+            if context.region is not None:
+                context.region.tag_redraw()
+        return True
 
     def search_by_author(self, asset_index):
         """Search for assets by the author of the selected asset."""
         history_step = search.get_active_history_step()
         sr = history_step.get("search_results", [])
         asset_data = sr[asset_index]
+        author = asset_data.get("author")
+        if author is None:
+            return True
         author_id = asset_data["author"]["id"]
         if author_id is None:
             return True
@@ -3937,7 +5151,7 @@ class BlenderKitAssetBarOperator(BL_UI_OT_draw_operator):
 
         # For author-type cards, check if asset type picker is enabled
         if asset_data.get("assetType") == "author":
-            preferences = bpy.context.preferences.addons[__package__].preferences
+            preferences = bpy.context.preferences.addons[_ADDON_PACKAGE].preferences
             if (
                 preferences.experimental_features
                 and preferences.author_asset_type_picker
@@ -4140,21 +5354,13 @@ class BlenderKitAssetBarOperator(BL_UI_OT_draw_operator):
         # Update UI properties
         for prop_name, value in ui_state["ui_props"].items():
             if hasattr(ui_props, prop_name):
-                # strings need to be quoted
-                if isinstance(value, str):
-                    exec(f"ui_props.{prop_name} = '{value}'")
-                else:
-                    exec(f"ui_props.{prop_name} = {value}")
+                setattr(ui_props, prop_name, value)
 
         # Update search type specific properties
         search_props = utils.get_search_props()
         for prop_name, value in ui_state["search_props"].items():
             if hasattr(search_props, prop_name):
-                # strings need to be quoted
-                if isinstance(value, str):
-                    exec(f"search_props.{prop_name} = '{value}'")
-                else:
-                    exec(f"search_props.{prop_name} = {value}")
+                setattr(search_props, prop_name, value)
 
         # Restore active filter chips for this tab
         active_tab = global_vars.TABS["tabs"][tab_index]
@@ -4227,7 +5433,7 @@ class BlenderKitAssetBarOperator(BL_UI_OT_draw_operator):
     # endregion tab management
 
 
-def handle_bkclientjs_get_asset(task: search.client_tasks.Task):
+def handle_bkclientjs_get_asset(task: "search.client_tasks.Task"):
     """Handle incoming bkclientjs/get_asset task after the user asked for download in online gallery. How it goes:
     1. set search in the history
     2. set the results in the history step
@@ -4267,6 +5473,29 @@ def handle_bkclientjs_get_asset(task: search.client_tasks.Task):
     if asset_bar_operator and asset_bar_operator.area:
         search.load_preview(parsed_asset_data)
         asset_bar_operator.update_image(parsed_asset_data["assetBaseId"])
+        asset_bar_operator.area.tag_redraw()
+
+
+def refresh_comments_for_asset(asset_id):
+    """Refresh the asset bar tooltip's comment text once comments arrive.
+
+    Called from comments_utils.handle_get_comments_task() after a lazy
+    fetch finishes. Only updates the UI when the currently hovered asset
+    matches the one whose comments just downloaded.
+    """
+    if asset_bar_operator is None:
+        return
+    active_index = getattr(asset_bar_operator, "active_index", -1)
+    if active_index < 0:
+        return
+    sr = search.get_search_results()
+    if not sr or active_index >= len(sr):
+        return
+    asset_data = sr[active_index]
+    if asset_data.get("assetBaseId") != asset_id:
+        return
+    asset_bar_operator.update_comments_for_validators(asset_data)
+    if asset_bar_operator.area:
         asset_bar_operator.area.tag_redraw()
 
 

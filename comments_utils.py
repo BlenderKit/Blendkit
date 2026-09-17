@@ -18,21 +18,73 @@
 
 import logging
 
-from . import client_tasks, global_vars
+from . import client_lib, client_tasks, global_vars
 
 
 bk_logger = logging.getLogger(__name__)
+
+
+# Track in-flight / already-requested comment fetches so we don't hammer the
+# backend when the asset bar tooltip is hovered repeatedly. Cleared on error
+# so a subsequent hover can retry.
+_requested_comment_ids: set = set()
 
 
 ### COMMENTS
 def handle_get_comments_task(task: client_tasks.Task):
     """Handle incoming task which downloads comments on asset."""
     if task.status == "error":
+        # allow a future hover to retry this asset
+        asset_id = task.data.get("asset_id") if isinstance(task.data, dict) else None
+        if asset_id is not None:
+            _requested_comment_ids.discard(asset_id)
         return bk_logger.warning("failed to get comments: %s", task.message)
     if task.status == "finished":
         comments = task.result["results"]
-        store_comments_local(task.data["asset_id"], comments)
+        asset_id = task.data["asset_id"]
+        store_comments_local(asset_id, comments)
+        # Refresh the asset bar tooltip and any open popup card so the
+        # "Loading comments..." placeholder gets replaced as soon as the
+        # data arrives — without waiting for the next hover/redraw.
+        try:
+            from .asset_bar import asset_bar_op
+
+            asset_bar_op.refresh_comments_for_asset(asset_id)
+        except Exception as e:
+            bk_logger.debug("Could not refresh asset bar comments: %s", e)
+        try:
+            import bpy
+
+            for window in bpy.context.window_manager.windows:
+                for area in window.screen.areas:
+                    area.tag_redraw()
+        except Exception:
+            pass
         return
+
+
+def request_comments_if_needed(asset_id, api_key=""):
+    """Lazily request comments for an asset.
+
+    Returns the cached comments if present. If they are not cached and we
+    haven't already issued a request for this asset, fires one off via the
+    Go client. Subsequent calls for the same asset are no-ops until the
+    response (or an error) arrives, which prevents the asset bar tooltip
+    from issuing one HTTP request per hover and hitting the backend
+    rate-limit (100 req/min) on validator search-result pages.
+    """
+    cached = get_comments_local(asset_id)
+    if cached is not None:
+        return cached
+    if asset_id in _requested_comment_ids:
+        return None
+    _requested_comment_ids.add(asset_id)
+    try:
+        client_lib.get_comments(asset_id, api_key)
+    except Exception as e:
+        _requested_comment_ids.discard(asset_id)
+        bk_logger.warning("Requesting comments for %s failed: %s", asset_id, e)
+    return None
 
 
 def handle_create_comment_task(task: client_tasks.Task):

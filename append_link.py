@@ -40,6 +40,62 @@ def find_layer_collection(layer_collection, collection_name):
     return None
 
 
+def get_nested_collections(collection):
+    """Return a set with all collections nested under the given collection (recursively).
+
+    The passed collection itself is not included in the returned set.
+    """
+    nested = set()
+    stack = list(collection.children)
+    while stack:
+        child = stack.pop()
+        if child in nested:
+            continue
+        nested.add(child)
+        stack.extend(child.children)
+    return nested
+
+
+def nest_stray_collections_into_asset(
+    asset_collection, collections_before, target_collection_name=""
+):
+    """Move collections that were appended next to the asset collection inside it.
+
+    When a collection is appended, Blender also appends collections it depends on
+    (for example collections referenced by geometry-nodes "Collection Info"
+    nodes). Those dependency collections get linked next to the asset collection
+    (in the active/scene collection) instead of inside it. This relinks every
+    such newly appended collection as a child of the asset collection so the
+    whole asset stays contained in a single collection.
+    """
+    asset_hierarchy = {asset_collection} | get_nested_collections(asset_collection)
+
+    containers = [bpy.context.scene.collection]  # type: ignore[union-attr]
+    active = bpy.context.view_layer.active_layer_collection  # type: ignore[union-attr]
+    if active is not None:
+        containers.append(active.collection)
+    if target_collection_name:
+        target = bpy.data.collections.get(target_collection_name)
+        if target is not None:
+            containers.append(target)
+
+    seen = set()
+    for container in containers:
+        if container is None or container in seen or container is asset_collection:
+            continue
+        seen.add(container)
+        for child in list(container.children):
+            if child in collections_before:
+                continue  # collection already existed before the append
+            if child in asset_hierarchy:
+                continue  # the asset collection itself or already nested inside it
+            container.children.unlink(child)
+            if asset_collection.children.find(child.name) == -1:
+                asset_collection.children.link(child)
+                asset_hierarchy.add(child)
+                asset_hierarchy.update(get_nested_collections(child))
+
+
 def append_brush(file_name, brushname=None, link=False, fake_user=True):
     """append a brush"""
     brushes_before = bpy.data.brushes[:]
@@ -92,15 +148,69 @@ def append_nodegroup(
     Returns:
         tuple: (nodegroup, added_to_editor) - The nodegroup and whether it was added to an editor
     """
+    nodegroups_before = set(bpy.data.node_groups[:])
     with bpy.data.libraries.load(file_name, link=link, relative=True) as (
         data_from,
         data_to,
     ):
-        for g in data_from.node_groups:
-            if nodegroupname is None or g.strip() == nodegroupname.strip():
-                data_to.node_groups = [g]
-                nodegroupname = g
-    nodegroup = bpy.data.node_groups[nodegroupname]
+        available = list(data_from.node_groups)
+        matched = None
+        if nodegroupname is not None:
+            target = nodegroupname.strip()
+            # 1) exact (whitespace-tolerant) match
+            for g in available:
+                if g.strip() == target:
+                    matched = g
+                    break
+            # 2) case-insensitive match
+            if matched is None:
+                for g in available:
+                    if g.strip().lower() == target.lower():
+                        matched = g
+                        break
+            # 3) prefix match (Blender may truncate long IDs to 63 chars)
+            if matched is None:
+                for g in available:
+                    gs = g.strip()
+                    if target.startswith(gs) or gs.startswith(target):
+                        matched = g
+                        break
+        # 4) fall back to the first node group in the file. The asset's display
+        # name often does not match the actual node group name inside the
+        # .blend, so without this fallback nothing would be appended.
+        if matched is None and available:
+            matched = available[0]
+            bk_logger.warning(
+                f"append_nodegroup: no node group named '{nodegroupname}' in "
+                f"{file_name}; falling back to first available '{matched}'. "
+                f"Available: {available}"
+            )
+        if matched is not None:
+            data_to.node_groups = [matched]
+            nodegroupname = matched
+    # Resolve the actually appended nodegroup datablock. Blender may rename it
+    # (e.g., adding ".001" on name collision or truncating long names), so we
+    # cannot rely on a direct name lookup. Prefer the post-load data_to list
+    # (in newer Blender versions it contains the loaded ID datablocks), and
+    # fall back to diffing against the pre-load set.
+    nodegroup = None
+    try:
+        loaded = list(data_to.node_groups)
+        if loaded and not isinstance(loaded[0], str):
+            nodegroup = loaded[0]
+    except Exception:
+        nodegroup = None
+    if nodegroup is None:
+        new_nodegroups = [
+            ng for ng in bpy.data.node_groups if ng not in nodegroups_before
+        ]
+        if new_nodegroups:
+            nodegroup = new_nodegroups[-1]
+        elif nodegroupname is not None and nodegroupname in bpy.data.node_groups:
+            nodegroup = bpy.data.node_groups[nodegroupname]
+    if nodegroup is None:
+        raise KeyError(f"Failed to append nodegroup '{nodegroupname}' from {file_name}")
+    nodegroupname = nodegroup.name
     nodegroup.use_fake_user = fake_user
 
     # Create target object automatically for geometry nodegroups when no target is provided
@@ -604,7 +714,7 @@ def append_objects(
         except Exception as e:
             reports.add_report(
                 f"append_objects.1: {str(e)}",
-                3,
+                timeout=3,
                 type="ERROR",
             )
             raise e
@@ -614,6 +724,10 @@ def append_objects(
         if collection_name is None:
             bk_logger.warning("collection_name is None")
             collection_name = ""
+        # Snapshot existing collections so we can detect dependency collections
+        # (e.g. geometry-nodes "Collection Info" sources) that get appended
+        # alongside the asset and linked next to it instead of inside it.
+        collections_before = set(bpy.data.collections)
         bpy.ops.wm.append(filename=collection_name, directory=path)
 
         # fc = utils.get_fake_context(bpy.context, area_type='VIEW_3D')
@@ -621,27 +735,45 @@ def append_objects(
 
         return_obs = []
         to_hidden_collection = []
-        hidden_objects = []
-        appended_collection = None
+        hidden_viewport_states = dict()
+        appended_collection = bpy.data.collections.get(collection_name)
+        if appended_collection is not None:
+            appended_collection["is_blenderkit_asset"] = True
+            # Dependency collections (e.g. geometry-nodes "Collection Info"
+            # sources) get appended next to the asset collection instead of
+            # inside it. Nest such stray collections inside the asset collection
+            # so the whole asset stays contained in a single collection.
+            nest_stray_collections_into_asset(
+                appended_collection, collections_before, collection
+            )
+        # Collections that came in nested inside the appended asset collection
+        # are preserved as-is (not flattened/hidden) further below.
+        appended_nested_collections = set()
+        if appended_collection is not None:
+            appended_nested_collections = get_nested_collections(appended_collection)
         main_object = None
         # first get at least one parent for sure
         for ob in bpy.context.scene.objects:  # type: ignore[union-attr]
             if ob.select_get() and not ob.parent:
                 main_object = ob
                 ob.location = location
-            if (
-                ob.hide_viewport or ob.hide_render
-            ):  # saved assets only retain hide render state
-                hidden_objects.append(ob)
+            # Store original hide_viewport state only
+            if ob.hide_viewport:
+                hidden_viewport_states[ob] = True
         # do once again to ensure hidden objects are hidden
         for ob in bpy.context.scene.objects:  # type: ignore[union-attr]
             if ob.select_get():
                 return_obs.append(ob)
-                # check for object that should be hidden
-                if ob.users_collection[0].name == collection_name:
-                    appended_collection = ob.users_collection[0]
-                    appended_collection["is_blenderkit_asset"] = True
-                    if not ob.parent:
+                ob_collection = ob.users_collection[0]
+                # Keep objects that already live inside the appended asset
+                # collection - either directly or in one of its nested
+                # sub-collections. Only truly loose objects/collections are
+                # relocated to a hidden sub-collection below.
+                if (
+                    ob_collection == appended_collection
+                    or ob_collection in appended_nested_collections
+                ):
+                    if not ob.parent and ob_collection == appended_collection:
                         main_object = ob
                         ob.location = location
                 else:
@@ -702,7 +834,7 @@ def append_objects(
         except Exception as e:
             reports.add_report(
                 f"append_objects.2: {str(e)}",
-                3,
+                timeout=3,
                 type="ERROR",
             )
             raise e
@@ -711,14 +843,18 @@ def append_objects(
         if orig_active_collection:
             bpy.context.view_layer.active_layer_collection = orig_active_collection  # type: ignore[union-attr]
 
-        if hidden_objects:
-            # only unique objects
-            hidden_objects = list(set(hidden_objects))
-            for ob in hidden_objects:
-                ob.hide_set(True)
+        # Restore only the original hide_viewport state for objects that were hidden in the viewport
+        if hidden_viewport_states:
+            for ob in hidden_viewport_states:
+                try:
+                    ob.hide_viewport = True
+                except RuntimeError:
+                    # Object may not be in the active View Layer (e.g. in an
+                    # excluded collection), so hide_viewport is not applicable.
+                    pass
 
         utils.selection_set(sel)
-        # let collection also store info that it was created by BlenderKit, for purging reasons
+        # let collection also store info that it was created by Blendkit, for purging reasons
 
         return main_object, return_obs
 
@@ -744,7 +880,7 @@ def append_objects(
     except Exception as e:
         reports.add_report(
             f"append_objects.3: {str(e)}",
-            3,
+            timeout=3,
             type="ERROR",
         )
         raise e
@@ -788,7 +924,7 @@ def append_objects(
     except Exception as e:
         reports.add_report(
             f"append_objects.4: {str(e)}",
-            3,
+            timeout=3,
             type="ERROR",
         )
         raise e

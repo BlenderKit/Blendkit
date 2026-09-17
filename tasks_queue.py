@@ -130,6 +130,13 @@ def queue_worker():
                     fc = utils.get_fake_context(
                         bpy.context, area_type=task.fake_context_area
                     )
+                    if not fc.get("region"):
+                        bk_logger.debug(
+                            "skipping task %s: no %s area available for fake context",
+                            task.command,
+                            task.fake_context_area,
+                        )
+                        continue
                     if bpy.app.version < (4, 0, 0):
                         task.command(fc, *task.arguments)
                     else:
@@ -139,7 +146,7 @@ def queue_worker():
                     task.command(*task.arguments)
             except Exception:
                 bk_logger.exception(
-                    "task queue failed task: %s %s %s",
+                    "task queue failed task: %s %s",
                     task.command,
                     task.arguments[10:],
                 )

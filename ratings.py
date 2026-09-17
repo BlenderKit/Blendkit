@@ -17,11 +17,11 @@
 # ##### END GPL LICENSE BLOCK #####
 
 import logging
-import time
 
 import bpy
-from bpy.props import StringProperty
+from bpy.props import BoolProperty, IntProperty, StringProperty
 from bpy.types import Gizmo, GizmoGroup, Operator
+from bpy_extras import view3d_utils
 from mathutils import Matrix
 
 from . import (
@@ -30,14 +30,72 @@ from . import (
     global_vars,
     icons,
     ratings_utils,
+    reports,
     search,
     ui,
     ui_panels,
     utils,
+    download,
 )
 
 
 bk_logger = logging.getLogger(__name__)
+
+# Set by rating_nudge._show_rating_popup() right before invoking FastRateMenu with
+# from_nudge=True, so the operator rates this specific (not necessarily selected) asset.
+nudge_asset_data = None
+
+
+def _asset_under_cursor(context, event):
+    """Raycast/probe from the mouse and return (object, asset_data).
+
+    In the 3D viewport this raycasts into the scene; in the Outliner it probes
+    the element under the mouse. Walks up the parent chain from the hit object so
+    hierarchies and collection-instance empties resolve to the object that
+    carries asset_data. Returns (None, None) when the cursor is not over a
+    rateable asset.
+    """
+    region = context.region
+    rv3d = context.region_data
+    space = context.space_data
+    if region is None or space is None:
+        return None, None
+
+    hit = None
+    if space.type == "OUTLINER":
+        element = utils.get_outliner_element_under_mouse(
+            context.window,
+            context.area,
+            region,
+            event.mouse_region_x,
+            event.mouse_region_y,
+        )
+        if isinstance(element, bpy.types.Object):
+            hit = element
+        elif isinstance(element, bpy.types.Collection):
+            # Rate the collection-instance empty that references this collection.
+            for ob in context.view_layer.objects:
+                if ob.instance_collection is element:
+                    hit = ob
+                    break
+    elif space.type == "VIEW_3D" and rv3d is not None:
+        coord = (event.mouse_region_x, event.mouse_region_y)
+        view_vector = view3d_utils.region_2d_to_vector_3d(region, rv3d, coord)
+        ray_origin = view3d_utils.region_2d_to_origin_3d(region, rv3d, coord)
+        depsgraph = context.evaluated_depsgraph_get()
+        has_hit, _loc, _normal, _index, obj, _matrix = context.scene.ray_cast(
+            depsgraph, ray_origin, view_vector
+        )
+        if has_hit and obj is not None:
+            hit = obj.original
+
+    ob = hit
+    while ob is not None:
+        ad = utils.get_asset_data_from_ob(ob)
+        if ad:
+            return ob, ad
+        ob = ob.parent
+    return None, None
 
 
 def get_assets_for_rating():
@@ -67,6 +125,18 @@ asset_types = (
 )
 
 
+def _flagged_hint(rating) -> str:
+    """What the flag replaced, so undo's promise is concrete."""
+    replaced = []
+    if rating.didnt_use_replaced_quality:
+        replaced.append(f"{rating.didnt_use_replaced_quality:g}\u2605")
+    if rating.didnt_use_replaced_working_hours:
+        replaced.append(f"{rating.didnt_use_replaced_working_hours:g} h")
+    if replaced:
+        return f"Your {' / '.join(replaced)} rating was cleared - Undo restores it"
+    return "Marked as not used - undo below to rate"
+
+
 def draw_ratings_menu(self, context, layout):
     pcoll = icons.icon_collections["main"]
 
@@ -76,11 +146,13 @@ def draw_ratings_menu(self, context, layout):
             ui_panels.draw_login_progress(layout)
         else:
             layout.operator_context = "EXEC_DEFAULT"
-            layout.operator(
+            op_login = layout.operator(
                 "wm.blenderkit_login",
                 text="Login to Rate and Comment assets",
                 icon="URL",
-            ).signup = False
+            )
+            op_login.signup = False
+            op_login.placement = "rating_prompt"
         return
 
     col = layout.column()
@@ -96,6 +168,18 @@ def draw_ratings_menu(self, context, layout):
     if profile and len(profile.firstName) > 0:
         profile_name = " " + profile.firstName
 
+    # Mutual exclusivity, drawn not explained: a flagged asset's rating
+    # controls are disabled (the server would refuse the score anyway -
+    # flag and rating can never both exist).
+    rating_state = ratings_utils.get_rating_local(self.asset_id)
+    flagged = rating_state is not None and rating_state.didnt_use
+    outer = col
+    if flagged:
+        row.label(text=_flagged_hint(rating_state), icon="INFO")
+    col = col.column()
+    col.enabled = not flagged
+    row = col.row()
+
     row.label(text="Rate Quality:", icon="SOLO_ON")
     # row = col.row()
     # row.label(text='Please help the community by rating quality:')
@@ -104,6 +188,11 @@ def draw_ratings_menu(self, context, layout):
     row.prop(self, "rating_quality_ui", expand=True, icon_only=True, emboss=False)
     if self.rating_quality > 0:
         row.label(text=f"    Thanks{profile_name}!", icon="FUND")
+
+    # Complexity ("working hours") rating is hidden for add-ons - it confuses
+    # regular users and doesn't map well to installable tools.
+    if self.asset_type == "addon":
+        return
 
     col.separator()
     col.separator()
@@ -138,6 +227,40 @@ def draw_ratings_menu(self, context, layout):
         row = col.row()
         row.label(text=f"Thanks{profile_name}, you are amazing!", icon="FUND")
 
+    draw_didnt_use_control(outer, self.asset_id)
+
+
+# The NotUsedMenu target: Blender menus draw without arguments, so the last
+# ratings UI drawn for an asset parks its id here for the menu to read.
+active_not_used_asset_id = ""
+
+
+def draw_didnt_use_control(layout, asset_id):
+    """The "Didn't use it" flag control: one dropdown for every state,
+    like on the My downloads page. Never disabled: on a rated asset the menu
+    warns that a pick replaces the rating, and undo restores it."""
+    global active_not_used_asset_id
+    active_not_used_asset_id = asset_id
+    ratings_utils.ensure_not_used_reasons()
+    ratings_utils.ensure_didnt_use(asset_id)
+
+    rating = ratings_utils.get_rating_local(asset_id)
+    flagged = rating is not None and rating.didnt_use
+
+    layout.separator()
+    row = layout.row()
+    if flagged:
+        text = rating.didnt_use_reason or "I didn't use this asset"
+        row.menu(NotUsedMenu.bl_idname, text=text, icon="CHECKMARK")
+    else:
+        row.menu(NotUsedMenu.bl_idname, text="I didn't use this asset")
+    if rating is not None and rating.didnt_use_error:
+        # The refusal right under the control that caused it - the corner
+        # report overlay is out of sight of this popup.
+        error_row = layout.row()
+        error_row.alert = True
+        error_row.label(text=rating.didnt_use_error, icon="ERROR")
+
 
 class FastRateMenu(Operator, ratings_utils.RatingProperties):
     """Rating of the assets, also directly from the asset bar - without need to download assets"""
@@ -146,38 +269,78 @@ class FastRateMenu(Operator, ratings_utils.RatingProperties):
     bl_label = "Ratings"
     bl_options = {"REGISTER", "UNDO", "INTERNAL"}
 
+    from_nudge: BoolProperty(  # type: ignore[valid-type]
+        name="From rating nudge",
+        description="Opened automatically to ask the user to rate a downloaded asset",
+        default=False,
+        options={"SKIP_SAVE"},
+    )
+
     @classmethod
     def poll(cls, context):
         return True
 
     def draw(self, context):
+        ui_panels.set_overlay_panel_active()
         # when rating gets recieved while the window is already open, we need to prefill.
         self.prefill_ratings()
 
         layout = self.layout
+        if self.from_nudge and self.message:
+            box = layout.box()
+            box.label(text=self.message, icon="SOLO_ON")
         layout.label(text=f"Rating of the {self.asset_type}: {self.asset_data['name']}")
         draw_ratings_menu(self, context, layout)
         layout.template_icon(icon_value=self.img.preview.icon_id, scale=12)
 
+    def invoke(self, context, event):
+        # When triggered from the 3D viewport (e.g. via the shortcut), prefer the
+        # asset under the mouse cursor so the user can rate any visible asset -
+        # not just the active object (which is usually the last imported one).
+        self._hovered_ob, self._hovered_asset_data = _asset_under_cursor(context, event)
+        return self.execute(context)
+
     def execute(self, context):
         ui_props = bpy.context.window_manager.blenderkitUI
         # get asset id
-        if ui_props.active_index > -1:
+        if self.from_nudge and nudge_asset_data is not None:
+            # Rate the specific asset the nudge targets, regardless of selection.
+            self.asset_data = dict(nudge_asset_data)
+            self.asset_id = self.asset_data["id"]
+            self.asset_type = self.asset_data["assetType"]
+        elif ui_props.active_index > -1:
             sr = search.get_search_results()
+            if ui_props.active_index >= len(sr):
+                bk_logger.warning(
+                    "FastRateMenu: active_index %d out of bounds for search results of length %d",
+                    ui_props.active_index,
+                    len(sr),
+                )
+                return {"CANCELLED"}
             self.asset_data = dict(sr[ui_props.active_index])
             self.asset_id = self.asset_data["id"]
             self.asset_type = self.asset_data["assetType"]
         else:
-            if bpy.context.view_layer.objects.active is not None:
+            # Prefer the asset under the mouse cursor (captured in invoke), then
+            # fall back to the active object's asset data.
+            ob = getattr(self, "_hovered_ob", None)
+            ad = getattr(self, "_hovered_asset_data", None)
+            if ob is None:
                 ob = utils.get_active_model()
-                ad = ob.get("asset_data")
-                if ad:
-                    self.asset_data = ad
-                    self.asset_id = self.asset_data["id"]
-                    self.asset_type = self.asset_data["assetType"]
-                self.asset = ob
+                ad = utils.get_asset_data_from_ob(ob)
+            if ad:
+                self.asset_data = ad
+                self.asset_id = self.asset_data["id"]
+                self.asset_type = self.asset_data["assetType"]
+            self.asset = ob
         if self.asset_id == "":
             return {"CANCELLED"}
+
+        # Add-ons can only be rated once they are installed.
+        if self.asset_type == "addon":
+            if not download.is_addon_installed(self.asset_data):
+                reports.add_report("Install the add-on before rating it.", type="INFO")
+                return {"CANCELLED"}
 
         wm = context.window_manager
 
@@ -187,11 +350,6 @@ class FastRateMenu(Operator, ratings_utils.RatingProperties):
         if self.asset_type != "author":
             ratings_utils.ensure_rating(self.asset_id)
             self.prefill_ratings()
-
-        # Update last popup activity time to prevent shortcut interference
-        from . import ui_panels
-
-        ui_panels.last_time_dropdown_active = time.time()
 
         if self.asset_type in ("model", "scene"):
             # spawn a wider one for validators for the enum buttons
@@ -204,7 +362,7 @@ class SetBookmark(bpy.types.Operator):
     """Add or remove bookmarking of the asset.\nShortcut: hover over asset in the asset bar and press 'B'."""
 
     bl_idname = "wm.blenderkit_bookmark_asset"
-    bl_label = "BlenderKit bookmark assets"
+    bl_label = "Blendkit bookmark assets"
     bl_options = {"REGISTER", "UNDO", "INTERNAL"}
 
     asset_id: StringProperty(  # type: ignore[valid-type]
@@ -330,7 +488,7 @@ class RatingStarWidget(Gizmo):
 
 
 def should_be_rated(ob) -> bool:
-    ad = ob.get("asset_data")
+    ad = utils.get_asset_data_from_ob(ob)
     if ad is None:
         return False
     rating = ratings_utils.get_rating_local(ad["id"])
@@ -361,7 +519,8 @@ class RatingStarWidgetGroup(GizmoGroup):
         ob = utils.get_active_model()
         gz = self.gizmos.new(RatingStarWidget.bl_idname)
         props = gz.target_set_operator("wm.blenderkit_menu_rating_upload")
-        props.asset_id = ob["asset_data"]["assetBaseId"]
+        ad = utils.get_asset_data_from_ob(ob)
+        props.asset_id = ad["assetBaseId"] if ad else ""
         gz.color = 0.5, 0.5, 0.0
         gz.alpha = 0.5
 
@@ -385,9 +544,106 @@ class RatingStarWidgetGroup(GizmoGroup):
         gz.matrix_basis = Matrix.Translation(loc) @ R @ Matrix.Diagonal(scale.to_4d())
 
 
+class SetNotUsed(bpy.types.Operator):
+    """Mark the asset as one you did not use, or undo that.\nMutually exclusive with rating - the flag is refused while your rating stands"""
+
+    bl_idname = "wm.blenderkit_not_used"
+    bl_label = "I didn't use this asset"
+    bl_options = {"REGISTER", "INTERNAL"}
+
+    asset_id: StringProperty(  # type: ignore[valid-type]
+        name="Asset Base Id",
+        description="Unique id of the asset (hidden)",
+        default="",
+        options={"SKIP_SAVE"},
+    )
+    reason_id: IntProperty(  # type: ignore[valid-type]
+        name="Reason",
+        description="Server id of the picked reason; -1 means no particular reason",
+        default=-1,
+        options={"SKIP_SAVE"},
+    )
+    undo: BoolProperty(  # type: ignore[valid-type]
+        name="Undo",
+        description="Clear the flag - I did use it after all",
+        default=False,
+        options={"SKIP_SAVE"},
+    )
+
+    def execute(self, context):
+        ratings_utils.store_didnt_use_error(self.asset_id, None)
+        if self.undo:
+            # A pick that replaced a rating undoes through the rating API -
+            # re-rating clears the flag server-side, numbers included.
+            if not ratings_utils.restore_replaced_scores(self.asset_id):
+                client_lib.send_didnt_use(self.asset_id, False)
+        else:
+            reason_id = self.reason_id if self.reason_id >= 0 else None
+            # Consent came from the menu: its header warns "This replaces
+            # your rating" whenever a rating stands.
+            ratings_utils.remember_replaced_scores(self.asset_id)
+            client_lib.send_didnt_use(
+                self.asset_id, True, reason_id, replace_rating=True
+            )
+        return {"FINISHED"}
+
+
+class NotUsedMenu(bpy.types.Menu):
+    """Reason picker for the "Didn't use it" flag - one click saves,
+    picking another reason just changes it, undo lives at the bottom."""
+
+    bl_idname = "OBJECT_MT_blenderkit_not_used"
+    bl_label = "Why didn't you use it?"
+
+    def draw(self, context):
+        layout = self.layout
+        asset_id = active_not_used_asset_id
+        rating = ratings_utils.get_rating_local(asset_id)
+        flagged = rating is not None and rating.didnt_use
+        rated = rating is not None and (
+            bool(rating.quality) or bool(rating.working_hours)
+        )
+        current_reason_id = rating.didnt_use_reason_id if flagged else None
+
+        if rated and not flagged:
+            # The consequence, stated where the eyes already are - picking a
+            # reason below replaces the rating (undo restores it).
+            layout.label(text="This replaces your rating", icon="INFO")
+            layout.separator()
+
+        op = layout.operator(
+            SetNotUsed.bl_idname,
+            text="No particular reason",
+            icon="CHECKMARK" if flagged and current_reason_id is None else "NONE",
+        )
+        op.asset_id = asset_id
+        for reason in global_vars.NOT_USED_REASONS or []:
+            op = layout.operator(
+                SetNotUsed.bl_idname,
+                text=reason["label"],
+                icon="CHECKMARK" if reason["id"] == current_reason_id else "NONE",
+            )
+            op.asset_id = asset_id
+            op.reason_id = reason["id"]
+        if flagged:
+            layout.separator()
+            has_memory = bool(
+                rating.didnt_use_replaced_quality
+                or rating.didnt_use_replaced_working_hours
+            )
+            undo_text = (
+                "Undo - restore my rating" if has_memory else "Undo - I did use it"
+            )
+            op = layout.operator(SetNotUsed.bl_idname, text=undo_text, icon="X")
+            op.asset_id = asset_id
+            op.undo = True
+
+
 classes = (
     FastRateMenu,
     SetBookmark,
+    SetNotUsed,
+    NotUsedMenu,
     RatingStarWidget,
     RatingStarWidgetGroup,
     ratings_utils.RatingProperties,

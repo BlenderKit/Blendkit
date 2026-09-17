@@ -23,7 +23,15 @@ from typing import Any
 import bpy
 from bpy.props import BoolProperty, FloatVectorProperty, IntProperty, StringProperty
 
-from . import colors, global_vars, keymap_utils, paths, search, ui_bgl, utils
+from . import (
+    colors,
+    global_vars,
+    keymap_utils,
+    paths,
+    search,
+    ui_bgl,
+    utils,
+)
 
 
 draw_time = 0
@@ -85,18 +93,35 @@ def draw_text_block(
         ui_bgl.draw_text(l, x, ytext, font_size, color)
 
 
+def get_large_thumbnail_path(asset_data) -> str:
+    """Cache path of the large thumbnail file in the search temp dir (may not exist yet)."""
+    thumbnail = asset_data.get("thumbnail")
+    if not thumbnail:
+        return ""
+    ui_props = bpy.context.window_manager.blenderkitUI
+    # Use the asset's own type, not the currently active UI asset type: these can
+    # differ (e.g. the rating nudge popup rates an asset outside the current search).
+    asset_type = asset_data.get("assetType") or ui_props.asset_type
+    directory = paths.get_temp_dir(f"{asset_type.lower()}_search")
+    if not directory:
+        return ""
+    return os.path.join(directory, thumbnail)
+
+
 def get_large_thumbnail_image(asset_data):
     """Get thumbnail image from asset data"""
     ui_props = bpy.context.window_manager.blenderkitUI
     iname = utils.previmg_name(ui_props.active_index, fullsize=True)
-    directory = paths.get_temp_dir(f"{ui_props.asset_type.lower()}_search")
-    tpath = os.path.join(directory, asset_data["thumbnail"])
-    # if asset_data['assetType'] == 'hdr':
-    #     tpath = os.path.join(directory, asset_data['thumbnail'])
+    tpath = get_large_thumbnail_path(asset_data)
     image_ready = global_vars.DATA["images available"].get(tpath)
-    if image_ready is False or not asset_data["thumbnail"]:
+    # "images available" is only populated while thumbnails download in the current
+    # session; fall back to the cached file on disk so previously downloaded thumbnails
+    # (e.g. for a rating nudge) still show instead of a permanent "loading" placeholder.
+    if image_ready is None and tpath and os.path.exists(tpath):
+        image_ready = True
+    if image_ready is False or not tpath:
         tpath = paths.get_addon_thumbnail_path("thumbnail_not_available.jpg")
-    if image_ready is None:
+    elif image_ready is None:
         tpath = paths.get_addon_thumbnail_path("thumbnail_notready.jpg")
 
     img = utils.get_hidden_image(tpath, iname, colorspace="")
@@ -134,14 +159,19 @@ def get_full_thumbnail_variant(asset_data, variant: str):
     file_name = os.path.basename(file_url)
     tpath = os.path.join(directory, file_name)
 
-    # Load the image into Blender
-    if os.path.exists(tpath):
-        img = utils.get_hidden_image(tpath, file_name, colorspace="")
-        bk_logger.debug(f"{variant} thumbnail loaded from path: {tpath}")
-        return img
+    # Check if the download succeeded/failed via the images available dict
+    image_ready = global_vars.DATA["images available"].get(tpath)
+    if image_ready is False:
+        bk_logger.debug(f"{variant} thumbnail download failed: {tpath}")
+        return None
+    if image_ready is None:
+        bk_logger.log(1, f"{variant} thumbnail not yet downloaded: {tpath}")
+        return None
 
-    bk_logger.info("Thumbnail file not found at path: %s", tpath)
-    return None
+    # Load the image into Blender (get_hidden_image handles missing files with a placeholder)
+    img = utils.get_hidden_image(tpath, file_name, colorspace="")
+    bk_logger.debug(f"{variant} thumbnail loaded from path: {tpath}")
+    return img
 
 
 def get_full_photo_thumbnail(asset_data):
@@ -217,7 +247,7 @@ class ParticlesDropDialog(bpy.types.Operator):
     """Tooltip"""
 
     bl_idname = "object.blenderkit_particles_drop"
-    bl_label = "BlenderKit particle plants object drop"
+    bl_label = "Blendkit particle plants object drop"
     bl_options = {"REGISTER", "INTERNAL"}
 
     asset_search_index: IntProperty(  # type: ignore[valid-type]
@@ -244,11 +274,16 @@ class ParticlesDropDialog(bpy.types.Operator):
         return True
 
     def draw(self, context):
+        # local import to avoid circular import (ui_panels imports ui)
+        from . import ui_panels
+
+        # this timer is there to not let double clicks through the popups down to the asset bar.
+        ui_panels.set_overlay_panel_active()
         layout = self.layout
         message = (
-            "This asset is a particle setup. BlenderKit can apply particles to the active/drag-drop object."
+            "This asset is a particle setup. Blendkit can apply particles to the active/drag-drop object."
             "The number of particles is calculated automatically, but if there are too many particles,"
-            " BlenderKit can do the following steps to make sure Blender continues to run:\n"
+            " Blendkit can do the following steps to make sure Blender continues to run:\n"
             "\n1.Switch to bounding box view of the particles."
             "\n2.Turn down number of particles that are shown in the view."
             "\n3.Hide the particle system completely from the 3D view."
@@ -285,7 +320,7 @@ class ParticlesDropDialog(bpy.types.Operator):
 # class MaterialDropDialog(bpy.types.Operator):
 #     """Tooltip"""
 #     bl_idname = "object.blenderkit_material_drop"
-#     bl_label = "BlenderKit material drop on linked objects"
+#     bl_label = "Blendkit material drop on linked objects"
 #     bl_options = {'REGISTER', 'INTERNAL'}
 #
 #     asset_search_index: IntProperty(name="Asset index",
@@ -349,8 +384,8 @@ class TransferBlenderkitData(bpy.types.Operator):
     """Regenerate cobweb"""
 
     bl_idname = "object.blenderkit_data_trasnfer"
-    bl_label = "Transfer BlenderKit data"
-    bl_description = "Transfer blenderKit metadata from one object to another when fixing uploads with wrong parenting"
+    bl_label = "Transfer Blendkit data"
+    bl_description = "Transfer Blendkit metadata from one object to another when fixing uploads with wrong parenting"
     bl_options = {"REGISTER", "UNDO"}
 
     def execute(self, context):
@@ -402,7 +437,7 @@ class AssetBarModalStarter(bpy.types.Operator):
     """Needed for starting asset bar with correct context"""
 
     bl_idname = "view3d.run_assetbar_start_modal"
-    bl_label = "BlenderKit assetbar modal starter"
+    bl_label = "Blendkit assetbar modal starter"
     bl_description = "Assetbar modal starter"
     bl_options = {"INTERNAL"}
 
@@ -451,7 +486,7 @@ class RunAssetBarWithContext(bpy.types.Operator):
     """This operator can run from a timer and assign a context to modal starter"""
 
     bl_idname = "view3d.run_assetbar_fix_context"
-    bl_label = "BlenderKit assetbar with fixed context"
+    bl_label = "Blendkit assetbar with fixed context"
     bl_description = "Run assetbar with fixed context"
     bl_options = {"INTERNAL"}
 

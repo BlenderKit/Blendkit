@@ -16,6 +16,7 @@
 #
 # ##### END GPL LICENSE BLOCK #####
 
+
 from __future__ import annotations
 
 import logging
@@ -23,19 +24,25 @@ import os
 import platform
 import random
 import sys
-import textwrap
 import time
 from typing import Any
 from urllib.parse import quote
 from webbrowser import open_new_tab
 
 import bpy
-from bpy.props import EnumProperty, FloatVectorProperty, IntProperty, StringProperty
+from bpy.props import (
+    BoolProperty,
+    EnumProperty,
+    FloatProperty,
+    FloatVectorProperty,
+    IntProperty,
+    StringProperty,
+)
 from bpy.types import Context, Menu, Panel, UILayout
 
+from .asset_bar import asset_bar_op
 from . import (
     addon_updater_ops,
-    asset_bar_op,
     autothumb,
     categories,
     client_lib,
@@ -51,14 +58,18 @@ from . import (
     ratings_utils,
     search,
     ui,
+    unlock_options,
     upload,
     utils,
 )
 
-
 ACCEPTABLE_ENGINES = ("CYCLES", "BLENDER_EEVEE", "BLENDER_EEVEE_NEXT")
 
 bk_logger = logging.getLogger(__name__)
+
+# Images currently being drawn by AssetPopupCard (protected from timer_image_cleanup).
+# Populated during draw(), cleared each timer_image_cleanup() cycle.
+_protected_images: set[str] = set()
 
 # Maximum length for manufacturer labels before truncation (e.g. "Ford motor company")
 MAX_MANUFACTURER_LABEL_LEN = 17
@@ -74,10 +85,26 @@ INVALID_TOKENS = {
 last_time_overlay_panel_active = 0.0
 
 
+def set_overlay_panel_active():
+    """Record the time a BlenderKit popup/panel/popover was last drawn.
+
+    This is read in asset_bar_op.py to cancel asset drag-drop and to ignore
+    keyboard shortcuts for a short window afterwards. Without it, click-through
+    events that pass through a popup down to the asset bar underneath would be
+    wrongly interpreted as clicks/double-clicks on the asset bar.
+
+    Every operator popup, dialog and popover that can appear over the asset bar
+    should call this at the start of its draw() method.
+    """
+    global last_time_overlay_panel_active
+    last_time_overlay_panel_active = time.time()
+
+
 def draw_not_logged_in(source, message="Please Login/Signup to use this feature"):
     title = "You aren't logged in"
 
     def draw_message(source, context):
+        set_overlay_panel_active()
         layout = source.layout
         utils.label_multiline(layout, text=message)
         draw_login_buttons(layout)
@@ -86,46 +113,63 @@ def draw_not_logged_in(source, message="Please Login/Signup to use this feature"
 
 
 def draw_upload_common(layout, props, asset_type, context):
-    asset_type_text = asset_type.lower()
     if asset_type == "MODEL":
-        url = paths.BLENDERKIT_MODEL_UPLOAD_INSTRUCTIONS_URL
+        url = paths.BLENDKIT_MODEL_UPLOAD_INSTRUCTIONS_URL
     if asset_type == "MATERIAL":
-        url = paths.BLENDERKIT_MATERIAL_UPLOAD_INSTRUCTIONS_URL
+        url = paths.BLENDKIT_MATERIAL_UPLOAD_INSTRUCTIONS_URL
     if asset_type == "BRUSH":
-        url = paths.BLENDERKIT_BRUSH_UPLOAD_INSTRUCTIONS_URL
+        url = paths.BLENDKIT_BRUSH_UPLOAD_INSTRUCTIONS_URL
     if asset_type == "SCENE":
-        url = paths.BLENDERKIT_SCENE_UPLOAD_INSTRUCTIONS_URL
+        url = paths.BLENDKIT_SCENE_UPLOAD_INSTRUCTIONS_URL
     if asset_type == "HDR":
-        asset_type_text = asset_type
-        url = paths.BLENDERKIT_HDR_UPLOAD_INSTRUCTIONS_URL
+        url = paths.BLENDKIT_HDR_UPLOAD_INSTRUCTIONS_URL
     if asset_type == "NODEGROUP":
-        asset_type_text = asset_type
-        url = ""  # paths.BLENDERKIT_NODEGROUP_UPLOAD_INSTRUCTIONS_URL
+        url = ""  # paths.BLENDKIT_NODEGROUP_UPLOAD_INSTRUCTIONS_URL
     if asset_type == "PRINTABLE":
         url = (
-            paths.BLENDERKIT_PRINTABLE_UPLOAD_INSTRUCTIONS_URL
+            paths.BLENDKIT_PRINTABLE_UPLOAD_INSTRUCTIONS_URL
         )  # Reuse model instructions since prints are similar
     if asset_type == "ADDON":
-        asset_type_text = asset_type
-        url = paths.BLENDERKIT_ADDON_UPLOAD_INSTRUCTIONS_URL
+        url = paths.BLENDKIT_ADDON_UPLOAD_INSTRUCTIONS_URL
     op = layout.operator(
         "wm.url_open", text=f"Read {asset_type} upload instructions", icon="QUESTION"
     )
-    op.url = url
+    op.url = paths.url_with_utm(url, "upload_docs") if url else url
 
     row = layout.row(align=True)
     if props.upload_state != "":
-        utils.label_multiline(
-            layout, text=props.upload_state, width=context.region.width
+        state_lower = props.upload_state.lower()
+        is_error = any(
+            k in state_lower
+            for k in (
+                "error",
+                "fail",
+                "exceed",
+                "denied",
+                "invalid",
+                "remaining",
+                "quota",
+            )
         )
+        if is_error:
+            box = layout.box()
+            box.alert = True
+            utils.label_multiline(
+                box,
+                text=props.upload_state,
+                icon="ERROR",
+                width=context.region.width,
+            )
+        else:
+            utils.label_multiline(
+                layout, text=props.upload_state, width=context.region.width
+            )
     if props.uploading:
         op = layout.operator("object.kill_bg_process", text="", icon="CANCEL")
         op.process_source = asset_type
         op.process_type = "UPLOAD"
         layout = layout.column()
         layout.enabled = False
-    # if props.upload_state.find('Error') > -1:
-    #     layout.label(text = props.upload_state)
 
     # PRE-RELEASED WARNING
     if props.is_private == "PUBLIC" and bpy.app.version_cycle != "release":
@@ -147,11 +191,22 @@ def draw_upload_common(layout, props, asset_type, context):
         op.metadata = True
         op.thumbnail = True
 
+    if utils.profile_is_validator():
+        op = layout.operator(
+            "object.blenderkit_dry_run_export",
+            text="Dry Run Export (validator)",
+            icon="CHECKBOX_HLT",
+        )
+        op.asset_type = asset_type
+
     if props.asset_base_id != "":
         op = layout.operator(
             "wm.blenderkit_url", text="Edit Details", icon="GREASEPENCIL"
         )
-        op.url = f"{paths.BLENDERKIT_USER_ASSETS_URL}/{props.asset_base_id}/?edit#"
+        op.url = paths.url_with_utm(
+            f"{paths.BLENDKIT_USER_ASSETS_URL}/{props.asset_base_id}/?edit#",
+            "uploads_edit",
+        )
 
         op = layout.operator(
             "object.blenderkit_upload", text="Reupload asset", icon="EXPORT"
@@ -165,14 +220,8 @@ def draw_upload_common(layout, props, asset_type, context):
         op.asset_type = asset_type
         op.reupload = False
 
-        # layout.label(text = 'asset id, overwrite only for reuploading')
         layout.label(text="asset has a version online.")
-        # row = layout.row()
-        # row.enabled = False
-        # row.prop(props, 'asset_base_id', icon='FILE_TICK')
-        # row = layout.row()
-        # row.enabled = False
-        # row.prop(props, 'id', icon='FILE_TICK')
+
     row = layout.row()
     if props.is_private == "PUBLIC" and props.category == "NONE":
         row.alert = True
@@ -193,11 +242,6 @@ def draw_upload_common(layout, props, asset_type, context):
         layout.prop(props, "license")
         layout.prop(props, "is_free", expand=True)
 
-    # row = layout.row()
-    # # Lock verification status editing in UI for all users; shown for info only.
-    # row.enabled = False
-    # row.prop(props, "verification_status", expand=True)
-
     prop_needed(layout, props, "name", props.name)
     if props.is_private == "PUBLIC":
         prop_needed(layout, props, "description", props.description)
@@ -210,14 +254,10 @@ def draw_upload_common(layout, props, asset_type, context):
 def prop_needed(layout, props, name, value: Any = "", is_not_filled: Any = ""):
     row = layout.row()
     if value == is_not_filled:
-        # row.label(text='', icon = 'ERROR')
-        icon = "ERROR"
         row.alert = True
-        row.prop(props, name)  # , icon=icon)
+        row.prop(props, name)  # , icon="ERROR")
         row.alert = False
     else:
-        # row.label(text='', icon = 'FILE_TICK')
-        icon = None
         row.prop(props, name)
 
 
@@ -239,6 +279,7 @@ class BLENDERKIT_OT_show_validation_popup(bpy.types.Operator):
         return {"FINISHED"}
 
     def draw(self, context):
+        set_overlay_panel_active()
         layout = self.layout
         clean_text = self.message.replace("\r\n", "\n").replace("\r", "\n")
         # Keep rendering even if the text is short or empty.
@@ -248,6 +289,128 @@ class BLENDERKIT_OT_show_validation_popup(bpy.types.Operator):
 
         for paragraph in clean_text.split("\n"):
             utils.label_multiline(layout, text=paragraph, width=480)
+
+
+class BLENDERKIT_OT_permissions_error_popup(bpy.types.Operator):
+    """Show a large centered dialog when Blendkit cannot write to the asset directory.
+    Dynamically updates to show success when the path is fixed.
+    """
+
+    bl_idname = "wm.blenderkit_permissions_error_popup"
+    bl_label = "Blendkit - Directory Permission Error"
+    bl_options = {"REGISTER", "INTERNAL"}
+
+    error_message: StringProperty(name="Error", default="", options={"SKIP_SAVE"})  # type: ignore
+    directory_path: StringProperty(name="Path", default="", options={"SKIP_SAVE"})  # type: ignore
+
+    def invoke(self, context, event):
+        wm = context.window_manager
+        try:
+            return wm.invoke_props_dialog(
+                self, width=600, confirm_text="Open Preferences"
+            )
+        except TypeError:
+            return wm.invoke_props_dialog(self, width=600)
+
+    def execute(self, context):
+        # Check if path is already fixed (e.g. user clicked Set Default Folder)
+        current_dir = context.preferences.addons[__package__].preferences.global_dir
+        current_dir = os.path.normpath(bpy.path.abspath(current_dir))
+        current_ok, _ = utils._check_dir_permissions(current_dir, "Global directory")
+        if not current_ok:
+            bpy.ops.preferences.addon_show(module=__package__)
+        return {"FINISHED"}
+
+    def draw(self, context):
+        set_overlay_panel_active()
+        layout = self.layout
+
+        # Light check for live UI — draw() runs on each redraw, avoid file I/O here
+        current_dir = context.preferences.addons[__package__].preferences.global_dir
+        current_dir = os.path.normpath(bpy.path.abspath(current_dir))
+        current_ok = os.path.isdir(current_dir)
+
+        if current_ok:
+            # === PATH IS NOW FIXED — show success ===
+            layout.separator()
+            row = layout.row()
+            row.scale_y = 2.0
+            row.alert = False
+            row.label(text="  Directory is now accessible!", icon="CHECKMARK")
+            layout.separator()
+            layout.label(text=f"Path: {current_dir}")
+            layout.separator()
+            layout.label(text="You can close this dialog now.")
+            return
+
+        # === PATH IS BROKEN — show big red warning ===
+        # Large red alert header
+        box_header = layout.box()
+        box_header.alert = True
+        row = box_header.row()
+        row.scale_y = 2.0
+        row.alignment = "CENTER"
+        row.label(text="  CANNOT ACCESS DOWNLOAD FOLDER  ", icon="ERROR")
+
+        layout.separator()
+
+        # Error details
+        clean_text = self.error_message.replace("\r\n", "\n").replace("\r", "\n")
+        for paragraph in clean_text.split("\n"):
+            if paragraph.strip():
+                utils.label_multiline(layout, text=paragraph, width=560)
+
+        layout.separator()
+
+        # === Fix options ===
+        box = layout.box()
+        box.label(text="How to fix this:", icon="TOOL_SETTINGS")
+        box.separator(factor=0.5)
+
+        # Option 1: Set default folder (show if parent dir exists)
+        default_dir = paths.default_global_dict()
+        default_parent = os.path.dirname(default_dir)
+        if os.path.isdir(default_dir) or os.path.isdir(default_parent):
+            row = box.row()
+            row.scale_y = 1.5
+            row.operator(
+                "wm.blenderkit_set_default_directory",
+                text=f"  Set Default Folder:  {default_dir}  ",
+                icon="CHECKMARK",
+            )
+            box.separator(factor=0.5)
+
+        # Option 2: Open preferences
+        col = box.column(align=True)
+        col.label(text="Or click 'Open Preferences' below to choose a folder manually.")
+
+        layout.separator()
+
+        # Current broken path
+        row = layout.row()
+        row.alert = True
+        row.label(text=f"Current folder: {self.directory_path}", icon="INFO")
+
+
+class BLENDERKIT_OT_set_default_directory(bpy.types.Operator):
+    """Set the Global Directory to the default blenderkit_data folder"""
+
+    bl_idname = "wm.blenderkit_set_default_directory"
+    bl_label = "Set Default Folder"
+    bl_options = {"REGISTER", "INTERNAL"}
+
+    def execute(self, context):
+        default_dir = paths.default_global_dict()
+        ok, message = utils._check_dir_permissions(default_dir, "Default directory")
+        if not ok:
+            self.report({"ERROR"}, f"Default folder is not writable: {message}")
+            return {"CANCELLED"}
+
+        preferences = context.preferences.addons[__package__].preferences
+        preferences.global_dir = default_dir
+        self.report({"INFO"}, f"Global directory set to: {default_dir}")
+        utils.restart_client_after_path_fix()
+        return {"FINISHED"}
 
 
 def draw_validated_manufacturer(
@@ -309,6 +472,50 @@ def draw_panel_hdr_upload(self, context):
         draw_upload_common(layout, props, "HDR", context)
 
 
+def draw_search_text_field(
+    layout: UILayout, ui_props: Any, context: bpy.types.Context
+) -> None:
+    """Draw the search text field and asset bar toggle for asset search panels."""
+    row = layout.row(align=True)
+
+    kwargs = {"text": "", "icon": "VIEWZOOM"}
+    if bpy.app.version >= (4, 2, 0):
+        kwargs["placeholder"] = "Search Blendkit"
+    row.prop(ui_props, "search_keywords", **kwargs)
+
+    if (context.region.width) > 700:
+        row.ui_units_x = 5 + int(context.region.width / 200)
+    search_field_width = bpy.context.preferences.addons[
+        __package__
+    ].preferences.search_field_width
+
+    has_search_keywords = ui_props.search_keywords != ""
+
+    if search_field_width > 0:
+        row.ui_units_x = search_field_width - has_search_keywords * 0.5
+
+    # if there are search keywords, draw an x icon to clear the search keywords
+    if has_search_keywords:
+        row.operator("view3d.blenderkit_clear_search_keywords", text="", icon="X")
+
+    shortcut = keymap_utils.get_shortcut_label(
+        "view3d.run_assetbar_fix_context", fallback=""
+    )
+    shortcut_hint = f"\nShortcut: {shortcut}" if shortcut else ""
+
+    if ui_props.assetbar_on:
+        icon = "HIDE_OFF"
+        ttip = f"Click to Hide Asset Bar.{shortcut_hint}"
+    else:
+        icon = "HIDE_ON"
+        ttip = f"Click to Show Asset Bar.{shortcut_hint}"
+
+    op = row.operator("view3d.blenderkit_asset_bar_widget", text="", icon=icon)
+    op.keep_running = False
+    op.do_search = False
+    op.tooltip = ttip
+
+
 def draw_panel_hdr_search(self, context):
     s = context.scene
     wm = context.window_manager
@@ -316,10 +523,9 @@ def draw_panel_hdr_search(self, context):
     ui_props = wm.blenderkitUI
 
     layout = self.layout
-    row = layout.row()
-    row.prop(ui_props, "search_keywords", text="", icon="VIEWZOOM")
-    draw_assetbar_show_hide(row, props)
-
+    draw_search_text_field(
+        layout, ui_props, context
+    )  # Ensure search field is drawn in HDR search panel
     utils.label_multiline(layout, text=props.report)
 
 
@@ -329,10 +535,9 @@ def draw_panel_addon_search(self, context):
     addon_props = wm.blenderkit_addon
 
     layout = self.layout
-    row = layout.row()
-    row.prop(ui_props, "search_keywords", text="", icon="VIEWZOOM")
-    draw_assetbar_show_hide(row, addon_props)
-
+    draw_search_text_field(
+        layout, ui_props, context
+    )  # Ensure search field is drawn in addon search panel
     utils.label_multiline(layout, text=addon_props.report)
 
 
@@ -342,10 +547,9 @@ def draw_panel_author_search(self, context):
     author_props = wm.blenderkit_author
 
     layout = self.layout
-    row = layout.row()
-    row.prop(ui_props, "search_keywords", text="", icon="VIEWZOOM")
-    draw_assetbar_show_hide(row, author_props)
-
+    draw_search_text_field(
+        layout, ui_props, context
+    )  # Ensure search field is drawn in author search panel
     utils.label_multiline(layout, text=author_props.report)
 
 
@@ -373,10 +577,11 @@ def draw_panel_nodegroup_search(self, context):
     ui_props = wm.blenderkitUI
 
     layout = self.layout
-    row = layout.row()
-    row.prop(ui_props, "search_keywords", text="", icon="VIEWZOOM")
-    draw_assetbar_show_hide(row, props)
-
+    draw_search_text_field(
+        layout,
+        ui_props,
+        context,
+    )  # Ensure search field is drawn in nodegroup search panel
     utils.label_multiline(layout, text=props.report)
 
 
@@ -387,11 +592,17 @@ def draw_common_filters(layout, ui_props):
         layout: The UI layout to draw in
         ui_props: The UI properties containing filter settings
     """
+    # All "Search filters" panels are shown as popovers over the asset bar,
+    # so record the redraw time to prevent click-through to the asset bar.
+    set_overlay_panel_active()
+
     layout.separator()
 
     row = layout.row()
     row.prop(ui_props, "search_bookmarks", text="Bookmarks", icon="BOOKMARKS")
     row.prop(ui_props, "own_only", icon="USER")
+    if ui_props.own_only:
+        layout.prop(ui_props, "own_verification_status", text="Status", icon="LOCKED")
     layout.prop(ui_props, "free_only")
     layout.prop(ui_props, "quality_limit", slider=True)
     layout.prop(ui_props, "search_license")
@@ -434,15 +645,41 @@ def draw_panel_model_upload(self, context):
             col = layout.column()
             prop_needed(col, props, "photo_thumbnail", props.photo_thumbnail)
 
+    # Wireframe thumbnail is an experimental feature. When enabled, the regular
+    # "Generate thumbnail" dialog exposes a Regular/Wireframe switch that renders
+    # into this slot. The wireframe thumbnail is optional and only uploaded when a
+    # valid image is provided here.
+    wire_upload_enabled = utils.experimental_enabled()
+
+    # Thumbnail previews. When the experimental wireframe feature is enabled show
+    # the regular and wireframe previews side by side so both can be reviewed at
+    # the same time; otherwise just show the regular preview.
+    preview_row = layout.row()
+    reg_preview = preview_row.column()
+    reg_preview.enabled = not props.is_generating_thumbnail
+    if wire_upload_enabled:
+        reg_preview.label(text="Regular")
+    draw_thumbnail_upload_panel(reg_preview, props)
+
+    if wire_upload_enabled:
+        wire_preview = preview_row.column()
+        wire_preview.enabled = not getattr(props, "is_generating_wire_thumbnail", False)
+        wire_preview.label(text="Wireframe")
+        draw_wire_thumbnail_upload_panel(wire_preview, props)
+
     col = layout.column()
 
     if props.is_generating_thumbnail:
         col.enabled = False
 
-    draw_thumbnail_upload_panel(col, props)
-
     prop_needed(col, props, "thumbnail", props.thumbnail)
-    if bpy.context.scene.render.engine in ACCEPTABLE_ENGINES:
+    # Thumbnail generation relies on the background thumbnailer which requires
+    # Blender 4.2+, so only expose the button on supported versions.
+    if bpy.context.scene.render.engine in ACCEPTABLE_ENGINES and bpy.app.version >= (
+        4,
+        2,
+        0,
+    ):
         col.operator_context = "INVOKE_DEFAULT"
         op = col.operator(
             "object.blenderkit_generate_thumbnail",
@@ -450,26 +687,11 @@ def draw_panel_model_upload(self, context):
             icon="IMAGE",
         )
 
-    # DISABLED WIRE THUMBNAIL FOR NOW
-    # TODO: re-enable later, when the shaders are fixed for it.
-    user_preferences = bpy.context.preferences.addons[__package__].preferences
-    wire_upload_enabled = getattr(
-        user_preferences, "enable_wire_thumbnail_upload", False
-    )
     if wire_upload_enabled:
-        layout.prop(props, "wire_thumbnail_will_upload_on_website")
-        if not props.wire_thumbnail_will_upload_on_website:
-            draw_wire_thumbnail_upload_panel(layout, props)
-            col = layout.column()
-            if getattr(props, "is_generating_wire_thumbnail", False):
-                col.enabled = False
-            prop_needed(col, props, "wire_thumbnail", props.wire_thumbnail)
-            if bpy.context.scene.render.engine in ACCEPTABLE_ENGINES:
-                col.operator(
-                    "object.blenderkit_generate_wireframe_thumbnail",
-                    text="Generate wire thumbnail",
-                    icon="IMAGE",
-                )
+        col = layout.column()
+        if getattr(props, "is_generating_wire_thumbnail", False):
+            col.enabled = False
+        col.prop(props, "wire_thumbnail")
 
     if props.is_generating_thumbnail:
         row = layout.row(align=True)
@@ -527,53 +749,14 @@ def draw_panel_scene_upload(self, context):
     props = s.blenderkit
 
     layout = self.layout
-    # if bpy.app.debug_value != -1:
-    #     layout.label(text='Scene upload not Implemented')
-    #     return
+
     draw_upload_common(layout, props, "SCENE", context)
 
-    #    layout = layout.column()
-
-    # row = layout.row()
-
-    # if props.dimensions[0] + props.dimensions[1] == 0 and props.face_count == 0:
-    #     icon = 'ERROR'
-    #     layout.operator("object.blenderkit_auto_tags", text='Auto fill tags', icon=icon)
-    # else:
-    #     layout.operator("object.blenderkit_auto_tags", text='Auto fill tags')
-
     col = layout.column()
-    # if props.is_generating_thumbnail:
-    #     col.enabled = False
+
     draw_thumbnail_upload_panel(col, props)
 
     prop_needed(col, props, "thumbnail", props.has_thumbnail, False)
-    # if bpy.context.scene.render.engine == 'CYCLES':
-    #     col.operator("object.blenderkit_generate_thumbnail", text='Generate thumbnail', icon='IMAGE_COL')
-
-    # # DISABLED WIRE THUMBNAIL FOR NOW
-    # # TODO: re-enable later, when the shaders are fixed for it.
-    # layout.prop(props, "wire_thumbnail_will_upload_on_website")
-    # if not props.wire_thumbnail_will_upload_on_website:
-    #     draw_wire_thumbnail_upload_panel(layout, props)
-    #     col = layout.column()
-    #     prop_needed(col, props, "wire_thumbnail", props.wire_thumbnail)
-    #     if bpy.context.scene.render.engine in ACCEPTABLE_ENGINES:
-    #         col.operator(
-    #             "object.blenderkit_generate_wireframe_thumbnail",
-    #             text="Generate wire thumbnail",
-    #             icon="IMAGE",
-    #         )
-
-    # row = layout.row(align=True)
-    # if props.is_generating_thumbnail:
-    #     row = layout.row(align=True)
-    #     row.label(text = props.thumbnail_generating_state)
-    #     op = row.operator('object.kill_bg_process', text="", icon='CANCEL')
-    #     op.process_source = 'MODEL'
-    #     op.process_type = 'THUMBNAILER'
-    # elif props.thumbnail_generating_state != '':
-    #    utils.label_multiline(layout, text = props.thumbnail_generating_state)
 
     layout.prop(props, "style")
     layout.prop(props, "production_level")
@@ -586,28 +769,6 @@ def draw_panel_scene_upload(self, context):
     row.prop(props, "work_hours")
 
 
-def draw_assetbar_show_hide(layout, props):
-    s = bpy.context.scene
-    ui_props = bpy.context.window_manager.blenderkitUI
-
-    shortcut = keymap_utils.get_shortcut_label(
-        "view3d.run_assetbar_fix_context", fallback=""
-    )
-    shortcut_hint = f"\nShortcut: {shortcut}" if shortcut else ""
-
-    if ui_props.assetbar_on:
-        icon = "HIDE_OFF"
-        ttip = f"Click to Hide Asset Bar.{shortcut_hint}"
-    else:
-        icon = "HIDE_ON"
-        ttip = f"Click to Show Asset Bar.{shortcut_hint}"
-
-    op = layout.operator("view3d.blenderkit_asset_bar_widget", text="", icon=icon)
-    op.keep_running = False
-    op.do_search = False
-    op.tooltip = ttip
-
-
 def draw_panel_model_search(self, context):
     wm = bpy.context.window_manager
     props = wm.blenderkit_models
@@ -615,9 +776,7 @@ def draw_panel_model_search(self, context):
 
     layout = self.layout
 
-    row = layout.row()
-    row.prop(ui_props, "search_keywords", text="", icon="VIEWZOOM")
-    draw_assetbar_show_hide(row, props)
+    draw_search_text_field(layout, ui_props, context)
 
     icon = "NONE"
     if props.report == "You need Full plan to get this item.":
@@ -625,7 +784,26 @@ def draw_panel_model_search(self, context):
     utils.label_multiline(layout, text=props.report, icon=icon)
     if props.report == "You need Full plan to get this item.":
         layout.operator("wm.url_open", text="Get Full plan", icon="URL").url = (
-            paths.BLENDERKIT_PLANS_URL
+            paths.url_with_utm(paths.BLENDKIT_PLANS_URL, "premium_wall_panel")
+        )
+
+
+def draw_panel_printable_search(self, context):
+    wm = bpy.context.window_manager
+    props = wm.blenderkit_printables
+    ui_props = wm.blenderkitUI
+
+    layout = self.layout
+
+    draw_search_text_field(layout, ui_props, context)
+
+    icon = "NONE"
+    if props.report == "You need Full plan to get this item.":
+        icon = "ERROR"
+    utils.label_multiline(layout, text=props.report, icon=icon)
+    if props.report == "You need Full plan to get this item.":
+        layout.operator("wm.url_open", text="Get Full plan", icon="URL").url = (
+            paths.url_with_utm(paths.BLENDKIT_PLANS_URL, "premium_wall_panel")
         )
 
 
@@ -634,9 +812,7 @@ def draw_panel_scene_search(self, context):
     props = wm.blenderkit_scene
     ui_props = wm.blenderkitUI
     layout = self.layout
-    row = layout.row()
-    row.prop(ui_props, "search_keywords", text="", icon="VIEWZOOM")
-    draw_assetbar_show_hide(row, props)
+    draw_search_text_field(layout, ui_props, context)
     utils.label_multiline(layout, text=props.report)
     layout.separator()
 
@@ -648,35 +824,24 @@ def draw_model_context_menu(self, context):
     o = utils.get_active_model()
     if not o:
         return
-    if o.get("asset_data") is None:
+    ad = utils.get_asset_data_from_ob(o)
+    if ad is None:
         utils.label_multiline(
             layout,
-            text="To upload this asset to BlenderKit, go to the Find and Upload Assets panel.",
+            text="To upload this asset to Blendkit, go to the Find and Upload Assets panel.",
         )
         layout.prop(o, "name")
-
-    if o.get("asset_data") is not None:
-        ad = o["asset_data"]
+    else:
         layout.label(text=str(ad["name"]))
         if o.instance_type == "COLLECTION" and o.instance_collection is not None:
             layout.operator("object.blenderkit_bring_to_scene", text="Bring to scene")
 
         layout.label(text="Asset tools:")
         draw_asset_context_menu(self.layout, context, ad, from_panel=True)
-        # if 'rig' in ad['tags']:
-        #     # layout.label(text = 'can make proxy')
-        #     layout.operator('object.blenderkit_make_proxy', text = 'Make Armature proxy')
-    # fast upload, blocked by now
-    # else:
-    #     op = layout.operator("object.blenderkit_upload", text='Store as private', icon='EXPORT')
-    #     op.asset_type = 'MODEL'
-    #     op.fast = True
-    # fun override project, not finished
-    # layout.operator('object.blenderkit_color_corrector')
 
 
 class VIEW3D_PT_blenderkit_model_properties(Panel):
-    bl_category = "BlenderKit"
+    bl_category = "Blendkit"
     bl_idname = "VIEW3D_PT_blenderkit_model_properties"
     bl_space_type = "VIEW_3D"
     bl_region_type = "UI"
@@ -703,12 +868,11 @@ class VIEW3D_MT_blenderkit_model_properties(Menu):
 
 
 class NODE_PT_blenderkit_nodegroup_properties(Panel):
-    bl_category = "BlenderKit"
+    bl_category = "Blendkit"
     bl_idname = "NODE_PT_blenderkit_nodegroup_properties"
     bl_space_type = "NODE_EDITOR"
     bl_region_type = "UI"
     bl_label = "Selected Geonode tool"
-    # bl_context = "editmode"
 
     @classmethod
     def poll(cls, context):
@@ -726,7 +890,7 @@ class NODE_PT_blenderkit_nodegroup_properties(Panel):
         if et.get("asset_data") is None:
             utils.label_multiline(
                 layout,
-                text="To upload this asset to BlenderKit, go to the Find and Upload Assets panel.",
+                text="To upload this asset to Blendkit, go to the Find and Upload Assets panel.",
             )
             layout.prop(et, "name")
 
@@ -739,7 +903,7 @@ class NODE_PT_blenderkit_nodegroup_properties(Panel):
 
 
 class NODE_PT_blenderkit_material_properties(Panel):
-    bl_category = "BlenderKit"
+    bl_category = "Blendkit"
     bl_idname = "NODE_PT_blenderkit_material_properties"
     bl_space_type = "NODE_EDITOR"
     bl_region_type = "UI"
@@ -761,11 +925,10 @@ class NODE_PT_blenderkit_material_properties(Panel):
         layout = self.layout
 
         m = bpy.context.active_object.active_material
-        # o = bpy.context.active_object
         if m.get("asset_data") is None and m.blenderkit.id == "":
             utils.label_multiline(
                 layout,
-                text="To upload this asset to BlenderKit, go to the Find and Upload Assets panel.",
+                text="To upload this asset to Blendkit, go to the Find and Upload Assets panel.",
             )
             layout.prop(m, "name")
 
@@ -776,32 +939,20 @@ class NODE_PT_blenderkit_material_properties(Panel):
             layout.label(text="Asset tools:")
             draw_asset_context_menu(self.layout, context, ad, from_panel=True)
 
-        # fast upload, blocked by now
-        # else:
-        #     op = layout.operator("object.blenderkit_upload", text='Store as private', icon='EXPORT')
-        #     op.asset_type = 'MODEL'
-        #     op.fast = True
-        # fun override project, not finished
-        # layout.operator('object.blenderkit_color_corrector')
-
 
 def draw_rating_asset(self, context, layout, index=0):
     ### draws single asset rating.
     # Todo: resolve multiple objects for display, now the props are on respective panel, which isn't great.
 
     col = layout.box()
-    # split = layout.split(factor=0.5)
-    # col1 = split.column()
-    # col2 = split.column()
-    # print('%s_search' % asset['asset_data']['assetType'])
-    directory = paths.get_temp_dir("%s_search" % self.asset_data["assetType"])
+
+    directory = paths.get_temp_dir(f"{self.asset_data['assetType']}_search")
     tpath = os.path.join(directory, self.asset_data["thumbnail_small"])
     for image in bpy.data.images:
         if image.filepath == tpath:
-            # split = row.split(factor=1.0, align=False)
             col.template_icon(icon_value=image.preview.icon_id, scale=6.0)
             break
-        # layout.label(text = '', icon_value=image.preview.icon_id, scale = 10)
+
     col.label(text=self.asset_data["name"])
     ratings.draw_ratings_menu(
         bpy.context.window_manager.blenderkit_ratings[index], context, col
@@ -809,7 +960,7 @@ def draw_rating_asset(self, context, layout, index=0):
 
 
 class VIEW3D_PT_blenderkit_ratings(Panel, ratings_utils.RatingProperties):
-    bl_category = "BlenderKit"
+    bl_category = "Blendkit"
     bl_idname = "VIEW3D_PT_blenderkit_ratings"
     bl_space_type = "VIEW_3D"
     bl_region_type = "UI"
@@ -829,7 +980,7 @@ class VIEW3D_PT_blenderkit_ratings(Panel, ratings_utils.RatingProperties):
         assets = ratings.get_assets_for_rating()
         if len(assets) > 0:
             utils.label_multiline(
-                layout, text="Please help BlenderKit community by rating these assets:"
+                layout, text="Please help Blendkit community by rating these assets:"
             )
             ad = assets[0].get("asset_data")
             reference = bpy.context.window_manager.blenderkit_ratings[0]
@@ -846,7 +997,7 @@ def draw_login_progress(layout):
 
 
 class VIEW3D_PT_blenderkit_profile(Panel):
-    bl_category = "BlenderKit"
+    bl_category = "Blendkit"
     bl_idname = "VIEW3D_PT_blenderkit_profile"
     bl_space_type = "VIEW_3D"
     bl_region_type = "UI"
@@ -863,9 +1014,9 @@ class VIEW3D_PT_blenderkit_profile(Panel):
         layout.emboss = "NORMAL"
         user_preferences = bpy.context.preferences.addons[__package__].preferences
         if user_preferences.api_key != "":
-            layout.label(text="BlenderKit Profile", icon="USER")
+            layout.label(text="Blendkit Profile", icon="USER")
         else:
-            layout.label(text="BlenderKit Login", icon="USER")
+            layout.label(text="Blendkit Login", icon="USER")
 
     def draw(self, context):
         layout = self.layout
@@ -903,7 +1054,6 @@ class VIEW3D_PT_blenderkit_profile(Panel):
                     layout.label(text=f"Me: {me.firstName} {me.lastName}")
                 else:
                     layout.label(text=f"Me: {me.email}")
-                # layout.label(text='Email: %s' % (me['email']))
 
                 # plan information
                 if me.currentPlanName is not None:
@@ -921,7 +1071,9 @@ class VIEW3D_PT_blenderkit_profile(Panel):
                     if me.currentPlanName == "Free":
                         layout.operator(
                             "wm.url_open", text="Change plan", icon="URL"
-                        ).url = paths.BLENDERKIT_PLANS_URL
+                        ).url = paths.url_with_utm(
+                            paths.BLENDKIT_PLANS_URL, "profile_change_plan"
+                        )
 
                 # STORAGE STATISTICS
                 if (
@@ -942,7 +1094,7 @@ class VIEW3D_PT_blenderkit_profile(Panel):
                     row.label(text=size_str)
 
             layout.operator("wm.url_open", text="See my uploads", icon="URL").url = (
-                paths.BLENDERKIT_USER_ASSETS_URL
+                paths.url_with_utm(paths.BLENDKIT_USER_ASSETS_URL, "profile_my_uploads")
             )
 
         draw_login_buttons(layout)
@@ -953,13 +1105,13 @@ class VIEW3D_PT_blenderkit_profile(Panel):
 
 
 class MarkNotificationRead(bpy.types.Operator):
-    """Mark notification as read here and also on BlenderKit server"""
+    """Mark notification as read here and also on Blendkit server"""
 
     bl_idname = "wm.blenderkit_mark_notification_read"
     bl_label = "Mark notification as read"
     bl_options = {"REGISTER", "UNDO", "INTERNAL"}
 
-    notification_id: bpy.props.IntProperty(  # type: ignore[valid-type]
+    notification_id: IntProperty(  # type: ignore[valid-type]
         name="Id", description="notification id", default=-1
     )
 
@@ -978,7 +1130,7 @@ class MarkNotificationRead(bpy.types.Operator):
 
 
 class MarkAllNotificationsRead(bpy.types.Operator):
-    """Mark all notifications as read here and also on BlenderKit server"""
+    """Mark all notifications as read here and also on Blendkit server"""
 
     bl_idname = "wm.blenderkit_mark_notifications_read_all"
     bl_label = "Mark all notifications as read"
@@ -1007,11 +1159,11 @@ class NotificationOpenTarget(bpy.types.Operator):
     bl_description = "Open notification target and mark notification as read"
     bl_options = {"REGISTER", "UNDO", "INTERNAL"}
 
-    tooltip: bpy.props.StringProperty(default="Open a web page")  # type: ignore[valid-type]
-    url: bpy.props.StringProperty(  # type: ignore[valid-type]
+    tooltip: StringProperty(default="Open a web page")  # type: ignore[valid-type]
+    url: StringProperty(  # type: ignore[valid-type]
         default="Runs search and displays the asset bar at the same time"
     )
-    notification_id: bpy.props.IntProperty(  # type: ignore[valid-type]
+    notification_id: IntProperty(  # type: ignore[valid-type]
         name="Id", description="notification id", default=-1
     )
 
@@ -1031,7 +1183,7 @@ class UpvoteComment(bpy.types.Operator):
     """Up or downvote comment"""
 
     bl_idname = "wm.blenderkit_upvote_comment"
-    bl_label = "BlenderKit up-downvote comment"
+    bl_label = "Blendkit up-downvote comment"
     bl_options = {"REGISTER", "UNDO", "INTERNAL"}
 
     asset_id: StringProperty(  # type: ignore[valid-type]
@@ -1041,9 +1193,9 @@ class UpvoteComment(bpy.types.Operator):
         options={"SKIP_SAVE"},
     )
 
-    comment_id: bpy.props.IntProperty(name="Id", description="comment id", default=-1)  # type: ignore[valid-type]
+    comment_id: IntProperty(name="Id", description="comment id", default=-1)  # type: ignore[valid-type]
 
-    flag: bpy.props.StringProperty(  # type: ignore[valid-type]
+    flag: StringProperty(  # type: ignore[valid-type]
         name="flag", description="Upvote/downvote comment", default="like"
     )
 
@@ -1072,7 +1224,7 @@ class SetPrivateComment(bpy.types.Operator):
     """Set comment private or public"""
 
     bl_idname = "wm.blenderkit_is_private_comment"
-    bl_label = "BlenderKit set comment or thread private or public"
+    bl_label = "Blendkit set comment or thread private or public"
     bl_options = {"REGISTER", "UNDO", "INTERNAL"}
 
     asset_id: StringProperty(  # type: ignore[valid-type]
@@ -1082,9 +1234,9 @@ class SetPrivateComment(bpy.types.Operator):
         options={"SKIP_SAVE"},
     )
 
-    comment_id: bpy.props.IntProperty(name="Id", description="comment id", default=-1)  # type: ignore[valid-type]
+    comment_id: IntProperty(name="Id", description="comment id", default=-1)  # type: ignore[valid-type]
 
-    is_private: bpy.props.BoolProperty(  # type: ignore[valid-type]
+    is_private: BoolProperty(  # type: ignore[valid-type]
         name="Is private",
         description="set comment/thread private or public",
         default=False,
@@ -1108,45 +1260,11 @@ class SetPrivateComment(bpy.types.Operator):
         return {"FINISHED"}
 
 
-# class DeleteComment(bpy.types.Operator):
-#     """Delete comment on BlenderKit server"""
-#     bl_idname = "wm.blenderkit_delete_comment"
-#     bl_label = "BlenderKit delete comment"
-#     bl_options = {'REGISTER', 'UNDO', 'INTERNAL'}
-#
-#     asset_id: StringProperty(
-#         name="Asset Base Id",
-#         description="Unique id of the asset (hidden)",
-#         default="",
-#         options={'SKIP_SAVE'})
-#
-#     comment_id: bpy.props.IntProperty(
-#         name="Id",
-#         description="comment id",
-#         default=-1)
-#
-#     # flag: bpy.props.StringProperty(
-#     #     name="flag",
-#     #     description="Like/dislike comment",
-#     #     default="like")
-#
-#     @classmethod
-#     def poll(cls, context):
-#         return True
-#
-#     def execute(self, context):
-#         user_preferences = bpy.context.preferences.addons['blenderkit'].preferences
-#         api_key = user_preferences.api_key
-#         comments_utils.send_comment_delete_to_thread(asset_id=self.asset_id, comment_id=self.comment_id,# flag=self.flag,
-#                                                    api_key=api_key)
-#         return {'FINISHED'}
-
-
 class PostComment(bpy.types.Operator):
-    """Post a comment to BlenderKit server"""
+    """Post a comment to Blendkit server"""
 
     bl_idname = "wm.blenderkit_post_comment"
-    bl_label = "BlenderKit post a new comment"
+    bl_label = "Blendkit post a new comment"
     bl_options = {"REGISTER", "UNDO", "INTERNAL"}
 
     asset_id: StringProperty(  # type: ignore[valid-type]
@@ -1156,7 +1274,7 @@ class PostComment(bpy.types.Operator):
         options={"SKIP_SAVE"},
     )
 
-    comment_id: bpy.props.IntProperty(  # type: ignore[valid-type]
+    comment_id: IntProperty(  # type: ignore[valid-type]
         name="Reply to Id", description="reply to comment id", default=0
     )
 
@@ -1197,10 +1315,20 @@ class PostComment(bpy.types.Operator):
         comments_utils.store_comments_local(self.asset_id, comments)
 
         # Send to server
+        is_validation = (
+            self.comment_id == 0
+            and ui_props.new_comment_is_validation
+            and utils.profile_is_validator()
+        )
         client_lib.create_comment(
-            self.asset_id, ui_props.new_comment, api_key, self.comment_id
+            self.asset_id,
+            ui_props.new_comment,
+            api_key,
+            self.comment_id,
+            is_validation,
         )
         ui_props.new_comment = ""
+        ui_props.new_comment_is_validation = True
         return {"FINISHED"}
 
 
@@ -1213,11 +1341,8 @@ def draw_notification(self, notification, width=600):
     if target is None:
         target = {}
     target_string = target.get("string", "")
-    notification_string = notification.get("string", "")
     firstline = f"{actor} {verb} {target_string}"
-    # firstline = f"{notification_string}"
     box1 = box.box()
-    # row = box1.row()
 
     split_last = 0.7
     if notification["description"]:
@@ -1233,18 +1358,8 @@ def draw_notification(self, notification, width=600):
         )
 
     if notification["target"]:
-        # row = layout.row()
-        # split = row.split(factor=.8)
-        # split.label(text='')
-        # split = split.split()
-        # split = rows[-1].split(factor=0.8)
-        # split = split.split()
-        # split.alignment = 'RIGHT'
-        # row = split.row(align = True)
         row = rows[-1]
         row = row.row(align=False)
-
-        # row = row.split(factor = 0.7)
 
         op = row.operator(
             "wm.blenderkit_open_notification_target", text="Open page", icon="HIDE_OFF"
@@ -1252,7 +1367,7 @@ def draw_notification(self, notification, width=600):
         op.tooltip = "Open the browser on the asset page to comment"
         op.url = global_vars.SERVER + notification["target"]["url"]
         op.notification_id = notification["id"]
-        # split =
+
         op = row.operator(
             "wm.blenderkit_mark_notification_read", text="", icon="CANCEL"
         )
@@ -1279,10 +1394,10 @@ def draw_notifications(self, context, width=600):
 
 
 class LogoStatus(bpy.types.Operator):
-    """BlenderKit status"""
+    """Blendkit status"""
 
     bl_idname = "wm.logo_status"
-    bl_label = "BLENDERKIT STATUS"
+    bl_label = "BLENDKIT STATUS"
     bl_options = {"REGISTER", "UNDO"}
 
     logo: StringProperty(name="logo", default="logo_offline")  # type: ignore[valid-type]
@@ -1292,10 +1407,10 @@ class ShowNotifications(bpy.types.Operator):
     """Show notifications"""
 
     bl_idname = "wm.show_notifications"
-    bl_label = "Show BlenderKit notifications"
+    bl_label = "Show Blendkit notifications"
     bl_options = {"REGISTER", "UNDO"}
 
-    notification_id: bpy.props.IntProperty(  # type: ignore[valid-type]
+    notification_id: IntProperty(  # type: ignore[valid-type]
         name="Id", description="notification id", default=-1
     )
 
@@ -1304,6 +1419,7 @@ class ShowNotifications(bpy.types.Operator):
         return True
 
     def draw(self, context):
+        set_overlay_panel_active()
         draw_notifications(self, context, width=600)
 
     def execute(self, context):
@@ -1312,11 +1428,11 @@ class ShowNotifications(bpy.types.Operator):
 
 
 class VIEW3D_PT_blenderkit_notifications(Panel):
-    bl_category = "BlenderKit"
+    bl_category = "Blendkit"
     bl_idname = "VIEW3D_PT_blenderkit_notifications"
     bl_space_type = "VIEW_3D"
     bl_region_type = "UI"
-    bl_label = "BlenderKit Notifications"
+    bl_label = "Blendkit Notifications"
 
     @classmethod
     def poll(cls, context):
@@ -1330,11 +1446,11 @@ class VIEW3D_PT_blenderkit_notifications(Panel):
 
 
 class VIEW3D_PT_blenderkit_login(Panel):
-    bl_category = "BlenderKit"
+    bl_category = "Blendkit"
     bl_idname = "VIEW3D_PT_blenderkit_login"
     bl_space_type = "VIEW_3D"
     bl_region_type = "UI"
-    bl_label = "BlenderKit Login"
+    bl_label = "Blendkit Login"
     bl_options = {"DEFAULT_CLOSED"}
 
     @classmethod
@@ -1373,10 +1489,16 @@ def draw_panel_material_upload(self, context):
 
     prop_needed(row, props, "thumbnail", props.has_thumbnail, False)
 
-    if bpy.context.scene.render.engine in ACCEPTABLE_ENGINES:
+    # Thumbnail generation relies on the background thumbnailer which requires
+    # Blender 4.2+, so only expose the button on supported versions.
+    if bpy.context.scene.render.engine in ACCEPTABLE_ENGINES and bpy.app.version >= (
+        4,
+        2,
+        0,
+    ):
         layout.operator(
             "object.blenderkit_generate_material_thumbnail",
-            text="Render thumbnail with Cycles",
+            text="Render thumbnail",
             icon="EXPORT",
         )
     if props.is_generating_thumbnail:
@@ -1389,13 +1511,6 @@ def draw_panel_material_upload(self, context):
         utils.label_multiline(layout, text=props.thumbnail_generating_state)
 
     layout.prop(props, "style")
-    # if props.style == 'OTHER':
-    #     layout.prop(props, 'style_other')
-    # layout.prop(props, 'engine')
-    # if props.engine == 'OTHER':
-    #     layout.prop(props, 'engine_other')
-    # layout.prop(props,'shaders')#TODO autofill on upload
-    # row = layout.row()
 
     layout.prop(props, "pbr")
     layout.prop(props, "uv")
@@ -1404,12 +1519,6 @@ def draw_panel_material_upload(self, context):
 
     draw_validated_manufacturer(layout, mat)
 
-    # tname = "." + bpy.context.active_object.active_material.name + "_thumbnail"
-    # if props.has_thumbnail and bpy.data.textures.get(tname) is not None:
-    #     row = layout.row()
-    #     # row.scale_y = 1.5
-    #     row.template_preview(bpy.data.textures[tname], preview_id='test')
-
 
 def draw_panel_material_search(self, context):
     wm = context.window_manager
@@ -1417,19 +1526,8 @@ def draw_panel_material_search(self, context):
     ui_props = wm.blenderkitUI
 
     layout = self.layout
-    row = layout.row()
-    row.prop(ui_props, "search_keywords", text="", icon="VIEWZOOM")
-    draw_assetbar_show_hide(row, props)
+    draw_search_text_field(layout, ui_props, context)
     utils.label_multiline(layout, text=props.report)
-
-    # layout.prop(props, 'search_style')F
-    # if props.search_style == 'OTHER':
-    #     layout.prop(props, 'search_style_other')
-    # layout.prop(props, 'search_engine')
-    # if props.search_engine == 'OTHER':
-    #     layout.prop(props, 'search_engine_other')
-
-    # draw_panel_categories(self, context)
 
 
 def draw_panel_brush_upload(self, context):
@@ -1452,9 +1550,7 @@ def draw_panel_brush_search(self, context):
     ui_props = wm.blenderkitUI
 
     layout = self.layout
-    row = layout.row()
-    row.prop(ui_props, "search_keywords", text="", icon="VIEWZOOM")
-    draw_assetbar_show_hide(row, props)
+    draw_search_text_field(layout, ui_props, context)
 
     if not context.sculpt_object and not context.image_paint_object:
         utils.label_multiline(
@@ -1477,16 +1573,16 @@ def draw_login_buttons(layout, invoke=False):
         else:
             layout.operator_context = "EXEC_DEFAULT"
         if not utils.user_logged_in():
-            layout.operator("wm.blenderkit_login", text="Login", icon="URL").signup = (
-                False
-            )
-            layout.operator(
+            op_login = layout.operator("wm.blenderkit_login", text="Login", icon="URL")
+            op_login.signup = False
+            op_login.placement = "login_panel"
+            op_signup = layout.operator(
                 "wm.blenderkit_login", text="Sign up", icon="URL"
-            ).signup = True
+            )
+            op_signup.signup = True
+            op_signup.placement = "login_panel"
 
         else:
-            # layout.operator("wm.blenderkit_login", text="Login as someone else",
-            #                 icon='URL').signup = False
             layout.operator("wm.blenderkit_logout", text="Logout", icon="URL")
 
 
@@ -1506,55 +1602,91 @@ class OpenBlenderKitDiscord(bpy.types.Operator):
         return {"FINISHED"}
 
 
-def get_environment_info() -> str:
-    """Get formatted environment info for bug reports and clipboard."""
+def get_environment_info() -> dict:
+    info = {}
     ver = global_vars.VERSION
-    addon_ver = f"{ver[0]}.{ver[1]}.{ver[2]}.{ver[3]}"
-    blender_ver = bpy.app.version_string
-    os_info = f"{platform.system()} {platform.release()} ({platform.machine()})"
-    user_preferences = bpy.context.preferences.addons[__package__].preferences
-    proxy = user_preferences.proxy_which
-    python_ver = (
-        f"{sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}"
-    )
+    info["addon_version"] = f"{ver[0]}.{ver[1]}.{ver[2]}.{ver[3]}"
+    info["blender_version"] = bpy.app.version_string
+    info["python_version"] = sys.version
+    info["os"] = f"{platform.system()} {platform.release()} ({platform.machine()})"
+    info["proxy_which"] = bpy.context.preferences.addons[
+        __package__
+    ].preferences.proxy_which
+    info["proxy_address"] = bpy.context.preferences.addons[
+        __package__
+    ].preferences.proxy_address
+    info["trusted_ca_certs"] = bpy.context.preferences.addons[
+        __package__
+    ].preferences.trusted_ca_certs
+    info["ssl_context"] = bpy.context.preferences.addons[
+        __package__
+    ].preferences.ssl_context
+    info["ip_version"] = bpy.context.preferences.addons[
+        __package__
+    ].preferences.ip_version
+    return info
+
+
+def get_environment_info_string() -> str:
+    """Get formatted environment info for bug reports and clipboard."""
+    info = get_environment_info()
+    proxy = f"{info['proxy_which']}"
+    if info["proxy_which"] == "CUSTOM":
+        proxy += f" ({info['proxy_address']})"
     return (
-        f"- BlenderKit version: v{addon_ver}\n"
-        f"- Blender version: v{blender_ver} (from: )\n"
-        f"- Python version: {python_ver}\n"
-        f"- Operating system & architecture: {os_info}\n"
+        f"- Blendkit version: v{info['addon_version']}\n"
+        f"- Blender version: v{info['blender_version']} (from: )\n"
+        f"- Python version: {info['python_version']}\n"
+        f"- Operating system & architecture: {info['os']}\n"
         f"- Proxy setting: {proxy}\n"
-        f"- Using VPN, proxy, or firewall? "
+        f"- Trusted CA certs path: {info['trusted_ca_certs']}\n"
+        f"- SSL verification: {info['ssl_context']}\n"
+        f"- IP version: {info['ip_version']}\n"
+        "- Using VPN, proxy, or firewall? "
     )
 
 
 class CopyEnvironmentInfo(bpy.types.Operator):
-    """Copy BlenderKit and Blender version information to clipboard"""
+    """Copy the Blendkit and Blender versions, operating system, and other environment details to the clipboard.
+    Include this information in your bug report or support email to help us diagnose the issue"""  # fmt: skip
 
     bl_idname = "wm.blenderkit_copy_environment_info"
     bl_label = "Copy Environment Info"
 
     def execute(self, context):
-        context.window_manager.clipboard = get_environment_info()
-        self.report({"INFO"}, "Environment info copied to clipboard")
+        context.window_manager.clipboard = get_environment_info_string()
+        bk_logger.info("Environment info copied to clipboard")
         return {"FINISHED"}
 
 
 def get_report_bug_url() -> str:
-    """Build GitHub issue URL with pre-filled environment information."""
-    env_info = get_environment_info()
-    description_body = (
-        f"When I...\n\n### Environment Information - Bug happens on:\n{env_info}"
-    )
+    """Build GitHub issue URL with pre-filled environment information.
+    Do not set the title and description, we require the user to fill those fields manually.
+    File is located at: .github/ISSUE_TEMPLATE/report-prefilled.yaml
+    """
+
+    info = get_environment_info()
+    proxy = f"{info['proxy_which']}"
+    if info["proxy_which"] == "CUSTOM":
+        proxy += f" ({info['proxy_address']})"
+
     return (
         "https://github.com/BlenderKit/blenderkit/issues/new"
-        f"?template=bug-report.yaml"
-        f"&title={quote('BlenderKit bug: ')}"
-        f"&description={quote(description_body)}"
+        f"?template=report-prefilled.yaml"
+        f"&blendkit_version={quote(info['addon_version'])}"
+        f"&blender_version={quote(info['blender_version'])}"
+        f"&operating_system={quote(info['os'])}"
+        f"&python_version={quote(info['python_version'])}"
+        f"&proxy={quote(proxy)}"
+        f"&ip_version={quote(info['ip_version'])}"
+        f"&ssl_context={quote(info['ssl_context'])}"
+        f"&trusted_ca_certs={quote(info['trusted_ca_certs'])}"
     )
 
 
 class ReportBug(bpy.types.Operator):
-    """Open GitHub issue page with pre-filled environment information"""
+    """Open a prefilled GitHub issue in your browser. The report includes Blendkit and Blender versions,
+    operating system info, and other environment details which help us diagnose your problem"""  # fmt: skip
 
     bl_idname = "wm.blenderkit_report_bug"
     bl_label = "Report a Bug"
@@ -1565,7 +1697,7 @@ class ReportBug(bpy.types.Operator):
 
 
 class VIEW3D_PT_blenderkit_advanced_model_search(Panel):
-    bl_category = "BlenderKit"
+    bl_category = "Blendkit"
     bl_idname = "VIEW3D_PT_blenderkit_advanced_model_search"
     bl_parent_id = "VIEW3D_PT_blenderkit_unified"
     bl_space_type = "VIEW_3D"
@@ -1578,12 +1710,13 @@ class VIEW3D_PT_blenderkit_advanced_model_search(Panel):
         ui_props = bpy.context.window_manager.blenderkitUI
         if not global_vars.CLIENT_RUNNING:
             return False
-        return ui_props.down_up == "SEARCH" and ui_props.asset_type in (
-            "MODEL",
-            "PRINTABLE",
-        )
+        return ui_props.down_up == "SEARCH" and ui_props.asset_type == "MODEL"
 
     def draw_layout(self, layout):
+        # Shown as a popover over the asset bar — record redraw time to
+        # prevent click-through to the asset bar.
+        set_overlay_panel_active()
+
         wm = bpy.context.window_manager
         props = wm.blenderkit_models
         ui_props = wm.blenderkitUI
@@ -1593,12 +1726,14 @@ class VIEW3D_PT_blenderkit_advanced_model_search(Panel):
         row = layout.row()
         row.prop(ui_props, "search_bookmarks", text="Bookmarks", icon="BOOKMARKS")
         row.prop(ui_props, "own_only", icon="USER")
-        row = layout.row()
-        layout.prop(ui_props, "free_only")
+        if ui_props.own_only:
+            layout.prop(
+                ui_props, "own_verification_status", text="Status", icon="LOCKED"
+            )
 
-        if ui_props.asset_type == "MODEL":
-            layout.prop(props, "search_style")
-            layout.prop(props, "search_geometry_nodes", text="Geometry Nodes")
+        layout.prop(ui_props, "free_only")  # free first
+        layout.prop(props, "search_style")
+        layout.prop(props, "search_geometry_nodes", text="Geometry Nodes")
 
         # DESIGN YEAR
         layout.prop(props, "search_design_year", text="Designed in Year")
@@ -1607,45 +1742,41 @@ class VIEW3D_PT_blenderkit_advanced_model_search(Panel):
             row.prop(props, "search_design_year_min", text="Min")
             row.prop(props, "search_design_year_max", text="Max")
 
-        if ui_props.asset_type == "MODEL":
-            # POLYCOUNT
-            layout.prop(props, "search_polycount", text="Poly Count ")
-            if props.search_polycount:
-                row = layout.row(align=True)
-                row.prop(props, "search_polycount_min", text="Min")
-                row.prop(props, "search_polycount_max", text="Max")
+        # POLYCOUNT
+        layout.prop(props, "search_polycount", text="Poly Count ")
+        if props.search_polycount:
+            row = layout.row(align=True)
+            row.prop(props, "search_polycount_min", text="Min")
+            row.prop(props, "search_polycount_max", text="Max")
 
-            # TEXTURE RESOLUTION
-            layout.prop(props, "search_texture_resolution", text="Texture Resolutions")
-            if props.search_texture_resolution:
-                row = layout.row(align=True)
-                row.prop(props, "search_texture_resolution_min", text="Min")
-                row.prop(props, "search_texture_resolution_max", text="Max")
+        # TEXTURE RESOLUTION
+        layout.prop(props, "search_texture_resolution", text="Texture Resolutions")
+        if props.search_texture_resolution:
+            row = layout.row(align=True)
+            row.prop(props, "search_texture_resolution_min", text="Min")
+            row.prop(props, "search_texture_resolution_max", text="Max")
 
-            # FILE SIZE
-            layout.prop(props, "search_file_size", text="File Size (MB)")
-            if props.search_file_size:
-                row = layout.row(align=True)
-                row.prop(props, "search_file_size_min", text="Min")
-                row.prop(props, "search_file_size_max", text="Max")
+        # FILE SIZE
+        layout.prop(props, "search_file_size", text="File Size (MB)")
+        if props.search_file_size:
+            row = layout.row(align=True)
+            row.prop(props, "search_file_size_min", text="Min")
+            row.prop(props, "search_file_size_max", text="Max")
 
-            # AGE
-            layout.prop(props, "search_condition", text="Condition")
-            layout.prop(props, "search_animated", text="Animated")
-            layout.prop(ui_props, "quality_limit", slider=True)
+        # AGE
+        layout.prop(props, "search_condition", text="Condition")
+        layout.prop(props, "search_animated", text="Animated")
+        layout.prop(ui_props, "quality_limit", slider=True)
 
         # LICENSE
         layout.prop(ui_props, "search_license")
 
-        if ui_props.asset_type == "MODEL":
-            # LIMIT BLENDER VERSION
-            layout.prop(
-                ui_props, "search_blender_version", text="Asset's Blender Version"
-            )
-            if ui_props.search_blender_version:
-                row = layout.row(align=True)
-                row.prop(ui_props, "search_blender_version_min", text="Min")
-                row.prop(ui_props, "search_blender_version_max", text="Max")
+        # LIMIT BLENDER VERSION
+        layout.prop(ui_props, "search_blender_version", text="Asset's Blender Version")
+        if ui_props.search_blender_version:
+            row = layout.row(align=True)
+            row.prop(ui_props, "search_blender_version_min", text="Min")
+            row.prop(ui_props, "search_blender_version_max", text="Max")
 
         # NSFW filter
         layout.prop(preferences, "nsfw_filter")
@@ -1657,15 +1788,8 @@ class VIEW3D_PT_blenderkit_advanced_model_search(Panel):
         self.draw_layout(self.layout)
 
 
-def draw_panel_printable_upload(self, context):
-    """Draw upload panel for printable assets"""
-    layout = self.layout
-    props = utils.get_upload_props()
-    draw_upload_common(layout, props, "PRINTABLE", context)
-
-
 class VIEW3D_PT_blenderkit_advanced_material_search(Panel):
-    bl_category = "BlenderKit"
+    bl_category = "Blendkit"
     bl_idname = "VIEW3D_PT_blenderkit_advanced_material_search"
     bl_parent_id = "VIEW3D_PT_blenderkit_unified"
     bl_space_type = "VIEW_3D"
@@ -1681,6 +1805,10 @@ class VIEW3D_PT_blenderkit_advanced_material_search(Panel):
         return ui_props.down_up == "SEARCH" and ui_props.asset_type == "MATERIAL"
 
     def draw_layout(self, layout):
+        # Shown as a popover over the asset bar — record redraw time to
+        # prevent click-through to the asset bar.
+        set_overlay_panel_active()
+
         wm = bpy.context.window_manager
         props = wm.blenderkit_mat
         ui_props = wm.blenderkitUI
@@ -1690,6 +1818,10 @@ class VIEW3D_PT_blenderkit_advanced_material_search(Panel):
         row = layout.row()
         row.prop(ui_props, "search_bookmarks", text="Bookmarks", icon="BOOKMARKS")
         row.prop(ui_props, "own_only", icon="USER")
+        if ui_props.own_only:
+            layout.prop(
+                ui_props, "own_verification_status", text="Status", icon="LOCKED"
+            )
 
         layout.label(text="Texture:")
         col = layout.column()
@@ -1720,7 +1852,7 @@ class VIEW3D_PT_blenderkit_advanced_material_search(Panel):
 
 
 class VIEW3D_PT_blenderkit_advanced_scene_search(Panel):
-    bl_category = "BlenderKit"
+    bl_category = "Blendkit"
     bl_idname = "VIEW3D_PT_blenderkit_advanced_scene_search"
     bl_parent_id = "VIEW3D_PT_blenderkit_unified"
     bl_space_type = "VIEW_3D"
@@ -1743,7 +1875,7 @@ class VIEW3D_PT_blenderkit_advanced_scene_search(Panel):
 
 
 class VIEW3D_PT_blenderkit_advanced_HDR_search(Panel):
-    bl_category = "BlenderKit"
+    bl_category = "Blendkit"
     bl_idname = "VIEW3D_PT_blenderkit_advanced_HDR_search"
     bl_parent_id = "VIEW3D_PT_blenderkit_unified"
     bl_space_type = "VIEW_3D"
@@ -1775,7 +1907,7 @@ class VIEW3D_PT_blenderkit_advanced_HDR_search(Panel):
 
 
 class VIEW3D_PT_blenderkit_advanced_brush_search(Panel):
-    bl_category = "BlenderKit"
+    bl_category = "Blendkit"
     bl_idname = "VIEW3D_PT_blenderkit_advanced_brush_search"
     bl_parent_id = "VIEW3D_PT_blenderkit_unified"
     bl_space_type = "VIEW_3D"
@@ -1797,7 +1929,7 @@ class VIEW3D_PT_blenderkit_advanced_brush_search(Panel):
 
 
 class VIEW3D_PT_blenderkit_advanced_nodegroup_search(Panel):
-    bl_category = "BlenderKit"
+    bl_category = "Blendkit"
     bl_idname = "VIEW3D_PT_blenderkit_advanced_nodegroup_search"
     bl_parent_id = "VIEW3D_PT_blenderkit_unified"
     bl_space_type = "VIEW_3D"
@@ -1818,7 +1950,7 @@ class VIEW3D_PT_blenderkit_advanced_nodegroup_search(Panel):
 
 
 class VIEW3D_PT_blenderkit_advanced_addon_search(Panel):
-    bl_category = "BlenderKit"
+    bl_category = "Blendkit"
     bl_idname = "VIEW3D_PT_blenderkit_advanced_addon_search"
     bl_parent_id = "VIEW3D_PT_blenderkit_unified"
     bl_space_type = "VIEW_3D"
@@ -1841,10 +1973,12 @@ class VIEW3D_PT_blenderkit_advanced_addon_search(Panel):
         # Add installed filter for addons
         row = layout.row()
         row.prop(addon_props, "search_installed", text="Installed Only")
+        row = layout.row()
+        row.prop(addon_props, "search_compatible_only", text="Compatible Only")
 
 
 class VIEW3D_PT_blenderkit_advanced_author_search(Panel):
-    bl_category = "BlenderKit"
+    bl_category = "Blendkit"
     bl_idname = "VIEW3D_PT_blenderkit_advanced_author_search"
     bl_parent_id = "VIEW3D_PT_blenderkit_unified"
     bl_space_type = "VIEW_3D"
@@ -1865,7 +1999,7 @@ class VIEW3D_PT_blenderkit_advanced_author_search(Panel):
 
 
 class VIEW3D_PT_blenderkit_advanced_printable_search(Panel):
-    bl_category = "BlenderKit"
+    bl_category = "Blendkit"
     bl_idname = "VIEW3D_PT_blenderkit_advanced_printable_search"
     bl_parent_id = "VIEW3D_PT_blenderkit_unified"
     bl_space_type = "VIEW_3D"
@@ -1889,7 +2023,7 @@ class VIEW3D_PT_blenderkit_advanced_printable_search(Panel):
 
 
 class VIEW3D_PT_blenderkit_categories(Panel):
-    bl_category = "BlenderKit"
+    bl_category = "Blendkit"
     bl_idname = "VIEW3D_PT_blenderkit_categories"
     bl_space_type = "VIEW_3D"
     bl_region_type = "UI"
@@ -1907,8 +2041,7 @@ class VIEW3D_PT_blenderkit_categories(Panel):
     def draw(self, context):
         # measure time since last dropdown activation/ mouse hover e.t.c.
         # this is then used in asset_bar_op.py to cancel asset drag drop if the time is too small and thus means double clicking.
-        global last_time_overlay_panel_active
-        last_time_overlay_panel_active = time.time()
+        set_overlay_panel_active()
         draw_panel_categories(self.layout, context)
 
 
@@ -1917,13 +2050,12 @@ def draw_scene_import_settings(self, context):
     props = wm.blenderkit_scene
     layout = self.layout
     layout.prop(props, "switch_after_append")
-    # layout.label(text='Import method:')
     row = layout.row()
     row.prop(props, "append_link", expand=True, icon_only=False)
 
 
 class VIEW3D_PT_blenderkit_import_settings(Panel):
-    bl_category = "BlenderKit"
+    bl_category = "Blendkit"
     bl_idname = "VIEW3D_PT_blenderkit_import_settings"
     bl_space_type = "VIEW_3D"
     bl_region_type = "UI"
@@ -1955,8 +2087,6 @@ class VIEW3D_PT_blenderkit_import_settings(Panel):
             if props.randomize_rotation:
                 layout.prop(props, "randomize_rotation_amount")
             layout.prop(props, "perpendicular_snap")
-            # if props.perpendicular_snap:
-            #     layout.prop(props,'perpendicular_snap_threshold')
 
             layout.label(text="Import method:")
             row = layout.row()
@@ -1985,11 +2115,10 @@ class VIEW3D_PT_blenderkit_import_settings(Panel):
             "BRUSH",
         ]:
             layout.prop(preferences, "unpack_files")
-            layout.prop(preferences, "write_asset_metadata")
+            layout.prop(preferences, "create_asset_library")
             layout.prop(preferences, "resolution")
         elif ui_props.asset_type in ["HDR"]:
             layout.prop(preferences, "resolution")
-        # layout.prop(props, 'unpack_files')
 
         # general settings
         # show toggle for clipboard scan
@@ -2016,7 +2145,7 @@ def deferred_set_name(props, expected_obj_name):
 
 
 class VIEW3D_PT_blenderkit_unified(Panel):
-    bl_category = "BlenderKit"
+    bl_category = "Blendkit"
     bl_idname = "VIEW3D_PT_blenderkit_unified"
     bl_space_type = "VIEW_3D"
     bl_region_type = "UI"
@@ -2050,18 +2179,11 @@ class VIEW3D_PT_blenderkit_unified(Panel):
             return
 
         row = layout.row()
-        # row.scale_x = 1.6
-        # row.scale_y = 1.6
-        #
         row.prop(ui_props, "down_up", expand=True, icon_only=False)
-        # row.label(text='')
-        # row = row.split().row()
-        # layout.alert = True
-        # layout.alignment = 'CENTER'
+
         row = layout.row(align=True)
         row.scale_x = 1.6
         row.scale_y = 1.6
-        # split = row.split(factor=.
 
         expand_icon = "TRIA_DOWN"
         if ui_props.asset_type_fold:
@@ -2077,16 +2199,12 @@ class VIEW3D_PT_blenderkit_unified(Panel):
             split = split.row()
             split.scale_x = 8
             split.scale_y = 1.6
-            # split = row
-            # split = layout.row()
         else:
             split = split.column()
 
         split.prop(
             ui_props, "asset_type", expand=True, icon_only=ui_props.asset_type_fold
         )
-        # row = layout.column(align = False)
-        # layout.prop(ui_props, 'asset_type', expand=False, text='')
 
         if user_preferences.login_attempt:
             draw_login_progress(layout)
@@ -2098,11 +2216,6 @@ class VIEW3D_PT_blenderkit_unified(Panel):
         ):
             draw_login_buttons(layout)
             layout.separator()
-        # if bpy.data.filepath == '':
-        #     layout.alert = True
-        #    utils.label_multiline(layout, text="It's better to save your file first.", width=w)
-        #     layout.alert = False
-        #     layout.separator()
 
         if ui_props.down_up == "SEARCH":
             self.draw_search(context, layout, ui_props)
@@ -2117,7 +2230,7 @@ class VIEW3D_PT_blenderkit_unified(Panel):
             layout.prop(search_props, "unrated_quality_only")
             layout.prop(search_props, "unrated_wh_only")
 
-        if ui_props.asset_type == "MODEL" or ui_props.asset_type == "PRINTABLE":
+        if ui_props.asset_type == "MODEL":
             return draw_panel_model_search(self, context)
 
         if ui_props.asset_type == "SCENE":
@@ -2134,6 +2247,9 @@ class VIEW3D_PT_blenderkit_unified(Panel):
 
         if ui_props.asset_type == "NODEGROUP":
             return draw_panel_nodegroup_search(self, context)
+
+        if ui_props.asset_type == "PRINTABLE":
+            return draw_panel_printable_search(self, context)
 
         if ui_props.asset_type == "ADDON":
             return draw_panel_addon_search(self, context)
@@ -2185,11 +2301,13 @@ class VIEW3D_PT_blenderkit_unified(Panel):
 
         if ui_props.asset_type == "ADDON":
             layout.label(text="Add-on uploads are managed through")
-            layout.label(text="the BlenderKit website.")
+            layout.label(text="the Blendkit website.")
             op = layout.operator(
-                "wm.url_open", text="Go to BlenderKit Website", icon="URL"
+                "wm.url_open", text="Go to Blendkit Website", icon="URL"
             )
-            op.url = paths.BLENDERKIT_ADDON_UPLOAD_INSTRUCTIONS_URL
+            op.url = paths.url_with_utm(
+                paths.BLENDKIT_ADDON_UPLOAD_INSTRUCTIONS_URL, "upload_docs"
+            )
             return
 
         if ui_props.asset_type == "AUTHOR":
@@ -2198,10 +2316,10 @@ class VIEW3D_PT_blenderkit_unified(Panel):
 
 
 class BlenderKitWelcomeOperator(bpy.types.Operator):
-    """Login online on BlenderKit webpage"""
+    """Login online on Blendkit webpage"""
 
     bl_idname = "wm.blenderkit_welcome"
-    bl_label = "Welcome to BlenderKit!"
+    bl_label = "Welcome to Blendkit!"
     bl_options = {"REGISTER", "UNDO", "INTERNAL"}
 
     step: IntProperty(  # type: ignore[valid-type]
@@ -2213,24 +2331,15 @@ class BlenderKitWelcomeOperator(bpy.types.Operator):
         return True
 
     def draw(self, context):
+        set_overlay_panel_active()
         layout = self.layout
         if self.step == 0:
-            user_preferences = bpy.context.preferences.addons[__package__].preferences
-
-            # message = "BlenderKit connects from Blender to an online, " \
-            #           "community built shared library of models, " \
-            #           "materials, and brushes. " \
-            #           "Use addon preferences to set up where files will be saved in the Global directory setting."
-            #
-            # utils.label_multiline(layout, text=message, width=300)
-
             layout.template_icon(icon_value=self.img.preview.icon_id, scale=18)
 
-            # utils.label_multiline(layout, text="\n Let's start by searching for some cool materials?", width=300)
             op = layout.operator(
                 "wm.url_open", text="Watch Video Tutorial", icon="QUESTION"
             )
-            op.url = paths.BLENDERKIT_MANUAL_URL
+            op.url = paths.BLENDKIT_MANUAL_URL
 
         else:
             message = "Operator Tutorial called with invalid step"
@@ -2303,14 +2412,14 @@ class OpenAssetDirectory(OpenSystemDirectory):
 
 
 class OpenAddonDirectory(OpenSystemDirectory):
-    """Open the directory in which the BlenderKit add-on is installed. Move one level up and delete it to hard-uninstall the add-on"""
+    """Open the directory in which the Blendkit add-on is installed. Move one level up and delete it to hard-uninstall the add-on"""
 
     bl_idname = "wm.blenderkit_open_addon_directory"
     bl_label = "Open global directory"
 
 
 class OpenGlobalDirectory(OpenSystemDirectory):
-    """Open the BlenderKit's Global directory. This is the directory where BlenderKit stores downloaded assets. It also contains Client binary and log files"""
+    """Open the Blendkit's Global directory. This is the directory where Blendkit stores downloaded assets. It also contains Client binary and log files"""
 
     bl_idname = "wm.blenderkit_open_global_directory"
     bl_label = "Open global directory"
@@ -2324,7 +2433,7 @@ class OpenClientLog(OpenSystemDirectory):
 
 
 class OpenTempDirectory(OpenSystemDirectory):
-    """Open BlenderKit's temporary directory. This is the directory where thumbnails and other temporary files are stored"""
+    """Open Blendkit's temporary directory. This is the directory where thumbnails and other temporary files are stored"""
 
     bl_idname = "wm.blenderkit_open_temp_directory"
     bl_label = "Open temp directory"
@@ -2337,11 +2446,11 @@ class BLENDERKIT_OT_hdr_thumbnail_tune(bpy.types.Operator):
     bl_label = "Edit Thumbnail Before Upload"
     bl_options = {"REGISTER", "INTERNAL"}
 
-    use_custom_tone: bpy.props.BoolProperty(  # type: ignore[valid-type]
+    use_custom_tone: BoolProperty(  # type: ignore[valid-type]
         name="Use Custom Thumbnail Tone",
         default=False,
     )
-    exposure: bpy.props.FloatProperty(  # type: ignore[valid-type]
+    exposure: FloatProperty(  # type: ignore[valid-type]
         name="Exposure",
         default=0.0,
         min=-5.0,
@@ -2351,7 +2460,7 @@ class BLENDERKIT_OT_hdr_thumbnail_tune(bpy.types.Operator):
         precision=3,
         step=1,
     )
-    gamma: bpy.props.FloatProperty(  # type: ignore[valid-type]
+    gamma: FloatProperty(  # type: ignore[valid-type]
         name="Gamma",
         default=1.0,
         min=0.2,
@@ -2364,19 +2473,19 @@ class BLENDERKIT_OT_hdr_thumbnail_tune(bpy.types.Operator):
 
     _preview_image_prefix = "blenderkit_hdr_thumbnail_preview_"
     _created_preview_names: set[str] = set()
-    preview_image_name: bpy.props.StringProperty(  # type: ignore[valid-type]
+    preview_image_name: StringProperty(  # type: ignore[valid-type]
         name="Preview Image Name",
         default="",
         options={"SKIP_SAVE", "HIDDEN"},
     )
     _preview_error = ""
 
-    trigger_upload: bpy.props.BoolProperty(  # type: ignore[valid-type]
+    trigger_upload: BoolProperty(  # type: ignore[valid-type]
         name="Trigger Upload",
         default=False,
         options={"SKIP_SAVE"},
     )
-    upload_reupload: bpy.props.BoolProperty(  # type: ignore[valid-type]
+    upload_reupload: BoolProperty(  # type: ignore[valid-type]
         name="Reupload",
         default=False,
         options={"SKIP_SAVE"},
@@ -2434,6 +2543,7 @@ class BLENDERKIT_OT_hdr_thumbnail_tune(bpy.types.Operator):
         return True
 
     def draw(self, context):
+        set_overlay_panel_active()
         layout = self.layout
         layout.prop(self, "use_custom_tone")
         col = layout.column(align=True)
@@ -2525,14 +2635,13 @@ def draw_asset_context_menu(
     if from_panel and global_vars.BKIT_AUTHORS is not None and author_id is not None:
         author = global_vars.BKIT_AUTHORS.get(author_id)
         if author is not None:
-            # utils.p('author:', a)
             op = layout.operator("wm.url_open", text="Open Author's Website")
             if author.aboutMeUrl:
                 op.url = author.aboutMeUrl
             else:
                 op.url = paths.get_author_gallery_url(author.id)
             op = layout.operator(
-                "view3d.blenderkit_search", text="Show Assets By Author"
+                "view3d.blenderkit_search", text="Show Assets by Author"
             )
             op.keywords = ""
             op.author_id = str(author_id)
@@ -2542,20 +2651,20 @@ def draw_asset_context_menu(
     op.tooltip = "Search for similar assets in the library.\nShortcut: hover over asset in asset bar and press 'S'."
     op.keywords = search.get_search_similar_keywords(asset_data)
 
-    op = layout.operator("wm.url_open", text="See online", icon="URL")
+    op = layout.operator("wm.url_open", text="See Online", icon="URL")
     if (
         utils.user_is_owner(asset_data)
         and asset_data["verificationStatus"] != "validated"
     ):
-        op.url = (
-            f'{paths.BLENDERKIT_USER_ASSETS_URL}/{asset_data["assetBaseId"]}/?preview#'
+        op.url = paths.url_with_utm(
+            f'{paths.BLENDKIT_USER_ASSETS_URL}/{asset_data["assetBaseId"]}/?preview#',
+            "uploads_preview",
         )
     else:
         op.url = paths.get_asset_gallery_url(asset_data["id"])
         # TODO this is where validator should be able to go and see non-validated the assets in gallery,
         # by now there's nowhere to go.
 
-    # if asset_data["downloaded"] == 100:
     # enable opening the directory on drive
     dir_paths = paths.get_asset_directories(asset_data)
     if len(dir_paths) > 0 and os.path.exists(dir_paths[-1]):
@@ -2584,7 +2693,6 @@ def draw_asset_context_menu(
             else:
                 op.asset_index = ui_props.active_index
 
-            # op.asset_type = ui_props.asset_type
             op.model_location = aob.location
             op.model_rotation = aob.rotation_euler
             op.target_object = aob.name  # type: ignore
@@ -2592,15 +2700,10 @@ def draw_asset_context_menu(
             op.replace = True
             op.replace_resolution = False
 
-        # resolution replacement operator
-        # if asset_data['downloaded'] == 100: # only show for downloaded/used assets
-        # if ui_props.asset_type in ('MODEL', 'MATERIAL'):
-        #     layout.menu(OBJECT_MT_blenderkit_resolution_menu.bl_idname)
-
         if (
             ui_props.asset_type in ("MODEL", "MATERIAL", "HDR")
             and utils.get_param(asset_data, "textureResolutionMax") is not None
-            and utils.get_param(asset_data, "textureResolutionMax") > 512
+            and utils.get_param(asset_data, "textureResolutionMax", 0) > 512
         ):
             s = bpy.context.scene
 
@@ -2656,7 +2759,6 @@ def draw_asset_context_menu(
                 )
 
                 op.asset_index = ui_props.active_index
-                # op.asset_type = ui_props.asset_type
                 op.replace_resolution = True
                 op.replace = False
                 op.invoke_resolution = True
@@ -2675,8 +2777,6 @@ def draw_asset_context_menu(
                 op.max_resolution = asset_data.get(
                     "max_resolution", 0
                 )  # str(utils.get_param(asset_data, 'textureResolutionMax'))
-            # print('operator res ', resolution)
-            # op.resolution = resolution
 
     profile = global_vars.BKIT_PROFILE
     if profile is None:
@@ -2703,26 +2803,28 @@ def draw_asset_context_menu(
                 text="Edit Metadata (browser)",
                 icon="GREASEPENCIL",
             )
-            op.url = (
-                f'{paths.BLENDERKIT_USER_ASSETS_URL}/{asset_data["assetBaseId"]}/?edit#'
+            op.url = paths.url_with_utm(
+                f'{paths.BLENDKIT_USER_ASSETS_URL}/{asset_data["assetBaseId"]}/?edit#',
+                "uploads_edit",
             )
 
         row.operator_context = "INVOKE_DEFAULT"
 
-        if asset_data["assetType"] == "model":
-            op = layout.operator(
-                "object.blenderkit_regenerate_thumbnail",
-                text="Regenerate thumbnail",
-            )
-            op.asset_index = ui_props.active_index
-        elif asset_data["assetType"] == "material":
-            op = layout.operator(
-                "object.blenderkit_regenerate_material_thumbnail",
-                text="Regenerate thumbnail",
-            )
-            op.asset_index = ui_props.active_index
-            # op.asset_id = asset_data['id']
-            # op.asset_type = asset_data['assetType']
+        # Thumbnail regeneration relies on the background thumbnailer which
+        # requires Blender 4.2+, so only expose it on supported versions.
+        if bpy.app.version >= (4, 2, 0):
+            if asset_data["assetType"] == "model":
+                op = layout.operator(
+                    "object.blenderkit_regenerate_thumbnail",
+                    text="Regenerate Thumbnail",
+                )
+                op.asset_index = ui_props.active_index
+            elif asset_data["assetType"] == "material":
+                op = layout.operator(
+                    "object.blenderkit_regenerate_material_thumbnail",
+                    text="Regenerate Thumbnail",
+                )
+                op.asset_index = ui_props.active_index
 
     if author_id == profile.id:  # was not working because of wrong types
         row = layout.row()
@@ -2742,54 +2844,13 @@ def draw_asset_context_menu(
             text="Edit Asset Online",
             icon="GREASEPENCIL",
         )
-        op.url = f'{paths.BLENDERKIT_ASSETS_EDIT_URL}/{asset_data["assetBaseId"]}/'
+        op.url = f'{paths.BLENDKIT_ASSETS_EDIT_URL}/{asset_data["assetBaseId"]}/'
 
         # output asset debug info to console, for easier diagnostics
         op = layout.operator(
             "object.blenderkit_print_asset_debug", text="Print asset debug"
         )
         op.asset_id = asset_data["id"]
-
-
-# def draw_asset_resolution_replace(self, context, resolution):
-#     layout = self.layout
-#     ui_props = bpy.context.window_manager.blenderkitUI
-#
-#     op = layout.operator('scene.blenderkit_download', text=resolution)
-#     if ui_props.active_index == -3:
-#         # This happens if the command is called from addon panel
-#         o = utils.get_active_model()
-#         op.asset_base_id = o['asset_data']['assetBaseId']
-#
-#     else:
-#         op.asset_index = ui_props.active_index
-#
-#         op.asset_type = ui_props.asset_type
-#     if len(bpy.context.selected_objects) > 0:  # and ui_props.asset_type == 'MODEL':
-#         aob = bpy.context.active_object
-#         op.model_location = aob.location
-#         op.model_rotation = aob.rotation_euler
-#         op.target_object = aob.name
-#         op.material_target_slot = aob.active_material_index
-#     op.replace_resolution = True
-#     print('operator res ', resolution)
-#     op.resolution = resolution
-
-
-# class OBJECT_MT_blenderkit_resolution_menu(bpy.types.Menu):
-#     bl_label = "Replace Asset Resolution"
-#     bl_idname = "OBJECT_MT_blenderkit_resolution_menu"
-#
-#     def draw(self, context):
-#         ui_props = context.window_manager.blenderkitUI
-#
-#         # sr = global_vars.DATA['search results']
-#
-#         # sr = global_vars.DATA['search results']
-#         # asset_data = sr[ui_props.active_index]
-#
-#         for k in resolutions.resolution_props_to_server.keys():
-#             draw_asset_resolution_replace(self, context, k)
 
 
 class OBJECT_MT_blenderkit_asset_menu(bpy.types.Menu):
@@ -2815,7 +2876,7 @@ def numeric_to_str(s):
 
 
 def push_op_left(layout, strength=3):
-    for a in range(0, strength):
+    for _ in range(0, strength):
         layout.label(text="")
 
 
@@ -2896,6 +2957,49 @@ THUMBNAIL_MODE_ITEMS = [
 ]
 
 
+def _comment_sort_key(comment):
+    """Sortable key for a comment. Locally-posted comments use "just now" as
+    their date - treat those as the newest so they sort after real dates."""
+    date = comment.get("submitDate") or ""
+    if date == "just now" or date == "":
+        return "9999"
+    return date
+
+
+def order_comments_for_display(comments):
+    """Reorder comment threads according to the user's preference.
+
+    Comments arrive as a flat list where each top-level comment (level 0) is
+    followed by its replies. Replies are kept attached to their parent - only
+    the top-level threads are reordered by date.
+    """
+    order = bpy.context.preferences.addons[__package__].preferences.comments_order
+    return _order_comments(comments, order)
+
+
+def _order_comments(comments, order):
+    """Pure reordering of a flat comment list. See order_comments_for_display."""
+    if not comments:
+        return comments
+    if order == "default":
+        return comments
+
+    threads = []
+    for comment in comments:
+        if comment.get("level", 0) == 0 or not threads:
+            threads.append([comment])
+        else:
+            threads[-1].append(comment)
+    threads.sort(
+        key=lambda thread: _comment_sort_key(thread[0]), reverse=(order == "newest")
+    )
+
+    ordered = []
+    for thread in threads:
+        ordered.extend(thread)
+    return ordered
+
+
 class AssetPopupCard(bpy.types.Operator, ratings_utils.RatingProperties):
     """
     This is the popup card that appears when you click on an asset in the asset bar.
@@ -2903,7 +3007,7 @@ class AssetPopupCard(bpy.types.Operator, ratings_utils.RatingProperties):
     """
 
     bl_idname = "wm.blenderkit_asset_popup"
-    bl_label = "BlenderKit asset popup"
+    bl_label = "Blendkit asset popup"
 
     width = 800
 
@@ -2920,7 +3024,6 @@ class AssetPopupCard(bpy.types.Operator, ratings_utils.RatingProperties):
         return True
 
     def draw_menu(self, context, layout):
-        # layout = layout.column()
         draw_asset_context_menu(layout, context, self.asset_data, from_panel=False)
 
     def draw_property(
@@ -2944,7 +3047,6 @@ class AssetPopupCard(bpy.types.Operator, ratings_utils.RatingProperties):
         split = split.split()
         split.alignment = "LEFT"
         # split for questionmark:
-        # if url != "" and not emboss:
         split = split.split(factor=0.9)
         split.alignment = "LEFT"
         if operator_kwargs is None:
@@ -3049,17 +3151,13 @@ class AssetPopupCard(bpy.types.Operator, ratings_utils.RatingProperties):
                 row = box.row()
                 row.scale_y = 2
                 op = row.operator(
-                    "wm.blenderkit_url", text="See full description", icon="URL"
+                    "wm.blenderkit_url", text="See Full Description", icon="URL"
                 )
                 op.url = paths.get_asset_gallery_url(self.asset_data["assetBaseId"])
                 op.tooltip = "Read full description on website"
             box.separator()
 
     def draw_properties(self, layout, width=250):
-        # if type(self.asset_data['parameters']) == list:
-        #     mparams = utils.params_to_dict(self.asset_data['parameters'])
-        # else:
-        #     mparams = self.asset_data['parameters']
         mparams = self.asset_data["dictParameters"]
 
         pcoll = icons.icon_collections["main"]
@@ -3080,10 +3178,11 @@ class AssetPopupCard(bpy.types.Operator, ratings_utils.RatingProperties):
             box,
             "License",
             text,
-            # icon_value=icon.icon_id,
-            url=f"{global_vars.SERVER}/docs/licenses/",
-            tooltip="All BlenderKit assets are available for commercial use. \n"
-            "Click to read more about BlenderKit licenses on the website",
+            url=paths.url_with_utm(
+                f"{global_vars.SERVER}/docs/licenses/", "license_docs"
+            ),
+            tooltip="All Blendkit assets are available for commercial use. \n"
+            "Click to read more about Blendkit licenses on the website",
         )
 
         if upload.can_edit_asset(asset_data=self.asset_data):
@@ -3106,7 +3205,7 @@ class AssetPopupCard(bpy.types.Operator, ratings_utils.RatingProperties):
                 "to become awesome 3D artists",
                 "deleted": "You deleted this asset",
                 "validated": "Your asset passed our validation process, "
-                "and is now available to BlenderKit users",
+                "and is now available to Blendkit users",
                 "ready": "Your asset is validated and ready to be used by everyone",
             }
             self.draw_property(
@@ -3114,7 +3213,9 @@ class AssetPopupCard(bpy.types.Operator, ratings_utils.RatingProperties):
                 "Verification",
                 self.asset_data["verificationStatus"],
                 icon_value=icon.icon_id,
-                url=f"{global_vars.SERVER}/docs/validation-status/",
+                url=paths.url_with_utm(
+                    f"{global_vars.SERVER}/docs/validation-status/", "validation_docs"
+                ),
                 tooltip=verification_status_tooltips.get(
                     self.asset_data["verificationStatus"], "unknown status"
                 ),
@@ -3137,7 +3238,7 @@ class AssetPopupCard(bpy.types.Operator, ratings_utils.RatingProperties):
                 ress,
                 tooltip="Maximal resolution of textures in this asset.\n"
                 "Most texture asset have also lower resolutions generated.\n"
-                "Go to BlenderKit add-on import settings to set default resolution",
+                "Go to Blendkit add-on import settings to set default resolution",
             )
             # this would normally show only when theres's texture resolution parameter.
             # but this parameter wasn't always uploaded correctly, that's why we need to check also for others
@@ -3165,10 +3266,7 @@ class AssetPopupCard(bpy.types.Operator, ratings_utils.RatingProperties):
         )
 
         self.draw_asset_parameter(box, key="faceCount", pretext="Face count")
-        # self.draw_asset_parameter(box, key='thumbnailScale', pretext='Preview scale')
-        # self.draw_asset_parameter(box, key='purePbr', pretext='Pure PBR')
-        # self.draw_asset_parameter(box, key='productionLevel', pretext='Readiness')
-        # self.draw_asset_parameter(box, key='condition', pretext='Condition')
+
         if utils.profile_is_validator():
             self.draw_asset_parameter(box, key="materialStyle", pretext="Style")
             self.draw_asset_parameter(box, key="modelStyle", pretext="Style")
@@ -3178,46 +3276,17 @@ class AssetPopupCard(bpy.types.Operator, ratings_utils.RatingProperties):
             self.draw_property(box, "Size", text)
         if self.asset_data.get("filesSize"):
             fs = self.asset_data["filesSize"] * 1024
-            # multiply because the number is reduced when search is done to avoind C intiger limit with large files
+            # multiply because the number is reduced when search is done to avoid C integer limit with large files
             fsmb = fs // (1024 * 1024)
             fskb = fs % 1024
             if fsmb == 0:
                 self.draw_property(box, "Original size", f"{fskb} KB")
             else:
                 self.draw_property(box, "Original size", f"{fsmb} MB")
-        # Tags section
-        # row = box.row()
-        # letters_on_row = 0
-        # max_on_row = width / 10
-        # for tag in self.asset_data['tags']:
-        #     if tag in ('manifold', 'uv', 'non-manifold'):
-        #         # these are sometimes accidentally stored in the lib
-        #         continue
-        #
-        #     # row.emboss='NONE'
-        #     # we need to split wisely
-        #     remaining_row = (max_on_row - letters_on_row) / max_on_row
-        #     split_factor = (len(tag) / max_on_row) / remaining_row
-        #     row = row.split(factor=split_factor)
-        #     letters_on_row += len(tag)
-        #     if letters_on_row > max_on_row:
-        #         letters_on_row = len(tag)
-        #         row = box.row()
-        #         remaining_row = (max_on_row - letters_on_row) / max_on_row
-        #         split_factor = (len(tag) / max_on_row) / remaining_row
-        #         row = row.split(factor=split_factor)
-        #
-        #     op = row.operator('wm')
-        #     op = row.operator('view3d.blenderkit_search', text=tag)
-        #     op.tooltip = f'Search items with tag {tag}'
-        #     # build search string from description and tags:
-        #     op.keywords = f'+tags:{tag}'
-
-        # self.draw_property(box, 'Tags', self.asset_data['tags']) #TODO make them clickable!
 
         # Free/Full plan or private Access - with special handling for addons
         plans_tooltip = (
-            "BlenderKit has 2 plans:\n"
+            "Blendkit has 2 plans:\n"
             "  *  Free plan - more than 50% of all assets\n"
             "  *  Full plan - unlimited access to everything\n"
             "Click to go to subscriptions page"
@@ -3237,15 +3306,29 @@ class AssetPopupCard(bpy.types.Operator, ratings_utils.RatingProperties):
             if self.asset_data["isPrivate"]:
                 text = "Private"
                 self.draw_property(box, "Access", text, icon="LOCKED")
+            elif utils.profile_is_validator() and user_price and base_price:
+                text = f"${user_price} (was ${base_price})"
+                icon = pcoll["for_sale"]
+                self.draw_property(
+                    box,
+                    "Pricing (Validator)",
+                    text,
+                    icon_value=icon.icon_id,
+                )
+
             elif is_for_sale and not can_download and user_price and base_price:
-                text = f"${user_price} (Not purchased)"
+                if str(user_price) != str(base_price):
+                    text = f"${user_price} (was ${base_price})"
+                else:
+                    text = f"${base_price}"
+                text += " (Not purchased)"
                 icon = pcoll["for_sale"]
                 self.draw_property(
                     box,
                     "Price",
                     text,
                     icon_value=icon.icon_id,
-                    tooltip="This addon is for sale but you haven't purchased it yet.\nPrice shown is your price / base price",
+                    tooltip="This addon is for sale but you haven't purchased it yet.\nPrice shown is your discounted price / original price",
                 )
             elif is_for_sale and not can_download and base_price:
                 text = f"${base_price} (Not purchased)"
@@ -3276,7 +3359,9 @@ class AssetPopupCard(bpy.types.Operator, ratings_utils.RatingProperties):
                     text,
                     icon_value=icon.icon_id,
                     tooltip=plans_tooltip,
-                    url=paths.BLENDERKIT_PLANS_URL,
+                    url=paths.url_with_utm(
+                        paths.BLENDKIT_PLANS_URL, "asset_popup_access"
+                    ),
                 )
             else:
                 text = "Free"
@@ -3293,6 +3378,8 @@ class AssetPopupCard(bpy.types.Operator, ratings_utils.RatingProperties):
             dict_params = self.asset_data.get("dictParameters", {})
             min_version = dict_params.get("blenderVersionMin")
             max_version = dict_params.get("blenderVersionMax")
+            min_version_tuple = None
+            max_version_tuple = None
             if min_version:
                 min_version_tuple = tuple(map(int, min_version.split(".")))
             if max_version:
@@ -3354,7 +3441,9 @@ class AssetPopupCard(bpy.types.Operator, ratings_utils.RatingProperties):
                     text,
                     icon_value=icon.icon_id,
                     tooltip=plans_tooltip,
-                    url=paths.BLENDERKIT_PLANS_URL,
+                    url=paths.url_with_utm(
+                        paths.BLENDKIT_PLANS_URL, "asset_popup_access"
+                    ),
                 )
             else:
                 text = "Full plan"
@@ -3365,7 +3454,9 @@ class AssetPopupCard(bpy.types.Operator, ratings_utils.RatingProperties):
                     text,
                     icon_value=icon.icon_id,
                     tooltip=plans_tooltip,
-                    url=paths.BLENDERKIT_PLANS_URL,
+                    url=paths.url_with_utm(
+                        paths.BLENDKIT_PLANS_URL, "asset_popup_access"
+                    ),
                 )
 
         if utils.profile_is_validator():
@@ -3378,19 +3469,18 @@ class AssetPopupCard(bpy.types.Operator, ratings_utils.RatingProperties):
                 self.asset_data.get("dictParameters", {}).get("sexualizedContent"),
             )
 
-        from_newer, difference = utils.asset_from_newer_blender_version(self.asset_data)
-        if from_newer:
-            if difference == "major":
+        has_warning, difference = utils.asset_from_newer_blender_version(
+            self.asset_data
+        )
+        if has_warning:
+            warning = ""
+            if difference == "major_newer":
                 warning = (
                     f"{self.asset_data['sourceAppVersion']} - newer major version!"
                 )
             elif difference == "minor":
                 warning = (
                     f"{self.asset_data['sourceAppVersion']} - newer minor version!"
-                )
-            else:
-                warning = (
-                    f"{self.asset_data['sourceAppVersion']} - slightly newer version."
                 )
             box.alert = True
             self.draw_property(
@@ -3405,8 +3495,6 @@ class AssetPopupCard(bpy.types.Operator, ratings_utils.RatingProperties):
                 box,
                 "Blender version",
                 self.asset_data["sourceAppVersion"],
-                # icon='ERROR',
-                # tooltip='The version this asset was created in.',
             )
 
         # Add TwinBru specific parameters for material assets
@@ -3472,6 +3560,7 @@ class AssetPopupCard(bpy.types.Operator, ratings_utils.RatingProperties):
         author_box.scale_y = 0.6  # get text lines closer to each other
         author_box.label(text="Author")  # just one extra line to give spacing
         if hasattr(self, "gimg"):
+            _protected_images.add(self.gimg.name)
             author_left = author_box.split(factor=image_split)
             author_left.template_icon(icon_value=self.gimg.preview.icon_id, scale=7)
             self.gimg.gl_touch()
@@ -3493,8 +3582,8 @@ class AssetPopupCard(bpy.types.Operator, ratings_utils.RatingProperties):
             row.label(text="Please introduce yourself to the community!")
 
             op = col.operator("wm.blenderkit_url", text="Edit your profile")
-            op.url = f"{global_vars.SERVER}/profile"  # type: ignore[attr-defined]
-            op.tooltip = "Edit your profile on BlenderKit webpage"  # type: ignore[attr-defined]
+            op.url = paths.url_with_utm(f"{global_vars.SERVER}/profile", "profile_edit")  # type: ignore[attr-defined]
+            op.tooltip = "Edit your profile on Blendkit webpage"  # type: ignore[attr-defined]
 
         pcoll = icons.icon_collections["main"]
 
@@ -3503,7 +3592,7 @@ class AssetPopupCard(bpy.types.Operator, ratings_utils.RatingProperties):
 
         # AUTHOR's ASSETS SEARCH
         op = button_row.operator(
-            "view3d.blenderkit_search", text="Find Assets By Author", icon="VIEWZOOM"
+            "view3d.blenderkit_search", text="Find Assets by Author", icon="VIEWZOOM"
         )
         op.tooltip = "Search all assets by this author.\nShortcut: Hover over the asset in the asset bar and press 'A'."  # type: ignore[attr-defined]
         op.esc = True  # type: ignore[attr-defined]
@@ -3512,9 +3601,9 @@ class AssetPopupCard(bpy.types.Operator, ratings_utils.RatingProperties):
 
         button_row = button_row.row(align=True)
 
-        # AUTHOR's BLENDERKIT PROFILE
+        # AUTHOR's BLENDKIT PROFILE
         url = paths.get_author_gallery_url(author.id)
-        tooltip = "Go to author's profile on BlenderKit web.\nShortcut: Hover over asset in the asset bar and press 'P'."
+        tooltip = "Go to author's profile on Blendkit web.\nShortcut: Hover over asset in the asset bar and press 'P'."
         icon_value = pcoll["logo"].icon_id
         op = button_row.operator("wm.blenderkit_url", text="", icon_value=icon_value)
         op.url = url  # type: ignore[attr-defined]
@@ -3570,6 +3659,7 @@ class AssetPopupCard(bpy.types.Operator, ratings_utils.RatingProperties):
         box_thumbnail = layout.box()
 
         thumb_image = self._get_active_thumbnail()
+        _protected_images.add(thumb_image.name)
         box_thumbnail.scale_y = 0.4
         box_thumbnail.template_icon(
             icon_value=thumb_image.preview.icon_id, scale=width * 0.12
@@ -3616,7 +3706,6 @@ class AssetPopupCard(bpy.types.Operator, ratings_utils.RatingProperties):
                 )
             selector_col.separator()
 
-        # op = row.operator('view3d.asset_drag_drop', text='Drag & Drop from here', depress=True)
         # From here on, only ratings are drawn, which won't be displayed for private assets from now on.
 
         rc = self.asset_data.get("ratingsCount")
@@ -3627,7 +3716,9 @@ class AssetPopupCard(bpy.types.Operator, ratings_utils.RatingProperties):
             and rc.get("workingHours") is not None
         ):
             row = box_thumbnail.row()
-            row.alignment = "EXPAND"
+            is_addon = self.asset_data.get("assetType") == "addon"
+            # Add-ons show a single star metric - center it instead of spreading.
+            row.alignment = "CENTER" if is_addon else "EXPAND"
 
             # display_ratings = can_display_ratings(self.asset_data)
             show_rating_threshold = 0
@@ -3650,35 +3741,50 @@ class AssetPopupCard(bpy.types.Operator, ratings_utils.RatingProperties):
 
             pcoll = icons.icon_collections["main"]
 
-            row.emboss = "NONE"
-            op = row.operator(
-                "wm.blenderkit_tooltip", text=str(s), icon_value=pcoll["trophy"].icon_id
-            )
-            op.tooltip = (
-                "Asset score calculated from user ratings. \n\n"
-                "Score = average quality × median complexity × 10*\n\n *Happiness multiplier"
-            )
-            row.label(text="   ")
-
             tooltip_extension = f".\n\nRatings results are shown for assets with more than {show_rating_threshold} ratings"
+
+            row.emboss = "NONE"
+
+            # Add-ons show only the quality star - the score/complexity confuse
+            # regular users.
+            if not is_addon:
+                op = row.operator(
+                    "wm.blenderkit_tooltip",
+                    text=str(s),
+                    icon_value=pcoll["trophy"].icon_id,
+                )
+                op.tooltip = (
+                    "Asset score calculated from user ratings. \n\n"
+                    "Score = average quality × median complexity × 10*\n\n *Happiness multiplier"
+                )
+                row.label(text="   ")
+
             op = row.operator("wm.blenderkit_tooltip", text=str(q), icon="SOLO_ON")
             op.tooltip = (
                 f"Quality, average from {rc['quality']} rating{'' if rc['quality'] == 1 else 's'}"
                 f"{tooltip_extension if rcount <= show_rating_threshold else ''}"
             )
-            row.label(text="   ")
 
-            op = row.operator(
-                "wm.blenderkit_tooltip",
-                text=str(c),
-                icon_value=pcoll["dumbbell"].icon_id,
-            )
-            op.tooltip = (
-                f"Complexity, median from {rc['workingHours']} rating{'' if rc['workingHours'] == 1 else 's'}"
-                f"{tooltip_extension if rcount <= show_rating_threshold else ''}"
-            )
+            if not is_addon:
+                row.label(text="   ")
 
-            if (
+                op = row.operator(
+                    "wm.blenderkit_tooltip",
+                    text=str(c),
+                    icon_value=pcoll["dumbbell"].icon_id,
+                )
+                op.tooltip = (
+                    f"Complexity, median from {rc['workingHours']} rating{'' if rc['workingHours'] == 1 else 's'}"
+                    f"{tooltip_extension if rcount <= show_rating_threshold else ''}"
+                )
+
+            if self.asset_data.get(
+                "assetType"
+            ) == "addon" and not download.is_addon_installed(self.asset_data):
+                pass  # add-ons can only be rated once installed
+            elif utils.user_is_owner(asset_data=self.asset_data):
+                pass  # do not ask creators to rate themselves
+            elif (
                 rcount <= show_rating_prompt_threshold
                 and self.rating_quality == 0
                 and self.rating_work_hours == 0
@@ -3689,7 +3795,6 @@ class AssetPopupCard(bpy.types.Operator, ratings_utils.RatingProperties):
                 box_thumbnail.label(
                     text=f"This asset has only {rcount} rating{'' if rcount == 1 else 's'}, please rate."
                 )
-                # box_thumbnail.label(text=f"Please rate this asset.")
 
         row = box_thumbnail.row()
         row.alert = False
@@ -3701,14 +3806,17 @@ class AssetPopupCard(bpy.types.Operator, ratings_utils.RatingProperties):
                 ui_props,
                 "drag_init_button",
                 icon="MOUSE_LMB_DRAG",
-                text="Click / Drag from here",
+                text="Click / Drag from Here",
                 emboss=True,
             )
         else:
+            variant = unlock_options.get_unlock_variant()
             op = layout.operator(
-                "wm.blenderkit_url", text="Unlock this asset", icon="UNLOCKED"
+                "wm.blenderkit_url", text=variant.button_text, icon="UNLOCKED"
             )
-            op.url = f'{global_vars.SERVER}/get-blenderkit/{self.asset_data["id"]}/?from_addon=True'
+            op.url = paths.get_unlock_asset_url(
+                self.asset_data["id"], "asset_unlock_panel", variant.identifier
+            )
 
     def draw_menu_desc_author(self, context, layout, width=330):
         box = layout.column()
@@ -3731,17 +3839,6 @@ class AssetPopupCard(bpy.types.Operator, ratings_utils.RatingProperties):
 
         # author
         self.draw_author_area(context, box, width=width)
-
-        # self.draw_author_area(context, box, width=width)
-        #
-        # col = box.column_flow(columns=2)
-        # self.draw_menu(context, col)
-        #
-        #
-        # # self.draw_description(box, width=int(width))
-        # self.draw_properties(box, width=int(width))
-
-        # define enum flags
 
     def draw_titlebar(self, context, layout):
         top_drag_bar = layout.box()
@@ -3775,9 +3872,8 @@ class AssetPopupCard(bpy.types.Operator, ratings_utils.RatingProperties):
             op.category_browse = global_vars.DATA["active_category_browse"][
                 ui_props.asset_type
             ][-1]
-            # but enables to direclty browse the category clicked.
+            # but enables to directly browse the category clicked.
             op.category_search = c
-            # name_row.label(text='>')
 
         name_row.label(text=aname)
         push_op_left(name_row, strength=1)
@@ -3798,11 +3894,16 @@ class AssetPopupCard(bpy.types.Operator, ratings_utils.RatingProperties):
         split = split.split()
         op = split.operator(
             "wm.blenderkit_post_comment",
-            text="post comment",
+            text="Post Comment",
             icon_value=pcoll["post_comment"].icon_id,
         )
         op.asset_id = self.asset_data["assetBaseId"]
         op.comment_id = comment_id
+
+        # Replies inherit the thread's type, so the choice only exists when
+        # starting a new thread.
+        if comment_id == 0 and utils.profile_is_validator():
+            layout.row().prop(ui_props, "new_comment_is_validation")
 
         layout.separator()
 
@@ -3869,12 +3970,11 @@ class AssetPopupCard(bpy.types.Operator, ratings_utils.RatingProperties):
             if l["flag"] == "removal":
                 removal = True
 
-        # row = box.row()
         split = split.split()
         split_like = split.split(factor=0.5)
         sub_like = split_like.row()
         sub_like.enabled = utils.user_logged_in() and not user_liked
-        # split1.emboss = 'NONE'
+
         op = sub_like.operator(
             "wm.blenderkit_upvote_comment", text=str(likes), icon="TRIA_UP"
         )
@@ -3900,6 +4000,7 @@ class AssetPopupCard(bpy.types.Operator, ratings_utils.RatingProperties):
             text=comment["comment"],
             width=width * (1 - 0.05 * comment["level"]),
             use_urls=True,
+            max_lines=1000000,
         )
 
         if utils.profile_is_validator():
@@ -3910,9 +4011,6 @@ class AssetPopupCard(bpy.types.Operator, ratings_utils.RatingProperties):
             row.alert = False
             op = row.operator("wm.url_open", text="", icon="GREASEPENCIL")
             op.url = f'{global_vars.SERVER}/bksecretadmin/django_comments_xtd/xtdcomment/{comment["id"]}/change/'  # type: ignore
-            # row.alert = True
-            # op = row.operator("wm.url_open", text="", icon='CANCEL')
-            # op.url = f'{global_vars.SERVER}/bksecretadmin/django_comments_xtd/xtdcomment/{comment["id"]}/delete/'
 
         if utils.user_logged_in():
             # row = rows[-1]
@@ -3927,11 +4025,8 @@ class AssetPopupCard(bpy.types.Operator, ratings_utils.RatingProperties):
             )
             op.comment_id = comment["id"]  # type: ignore
 
-        # box.label(text=str(comment['flags']))
-
     def draw(self, context):
-        global last_time_overlay_panel_active
-        last_time_overlay_panel_active = time.time()
+        set_overlay_panel_active()
 
         layout = self.layout
         # top draggable bar with name of the asset
@@ -3945,23 +4040,31 @@ class AssetPopupCard(bpy.types.Operator, ratings_utils.RatingProperties):
 
         self.draw_thumbnail_box(left_column, width=int(self.width * split_ratio))
 
-        if not utils.user_is_owner(asset_data=self.asset_data) and self.asset_data.get(
-            "assetType"
-        ) not in ("addon", "author"):
-            # Draw ratings, but not for owners of assets - doesn't make sense.
-            # also addons and authors are excluded.
+        if utils.user_is_owner(asset_data=self.asset_data):
+            pass  # do not draw ratings for owners of assets - doesn't make sense
+        elif self.asset_data.get("assetType") == "author":
+            pass  # authors are excluded from rating
+        elif self.asset_data.get("assetType") == "addon":
+            # Add-ons can only be rated once they are installed.
+            if download.is_addon_installed(self.asset_data):
+                ratings_box = left_column.box()
+                self.prefill_ratings()
+                ratings.draw_ratings_menu(self, context, ratings_box)
+            else:
+                explanation_box = left_column.box()
+                col = explanation_box.column()
+                col.row().label(text="Install the add-on to rate it.", icon="INFO")
+        else:  # draw ratings for all other assets
             ratings_box = left_column.box()
             self.prefill_ratings()
             ratings.draw_ratings_menu(self, context, ratings_box)
+
         # self.draw_description(left_column, width = int(self.width*split_ratio))
         # right split
         split_right = split_left.split()
         self.draw_menu_desc_author(
             context, split_right, width=int(self.width * (1 - split_ratio))
         )
-
-        # else:
-        #     ratings_box.label('Here you should find ratings, but you can not rate your own assets ;)')
 
         tip_box = layout.box()
         tip_box.label(text=self.tip)
@@ -3972,7 +4075,7 @@ class AssetPopupCard(bpy.types.Operator, ratings_utils.RatingProperties):
         comments = global_vars.DATA.get("asset comments", {})
         self.comments = comments.get(self.asset_data["assetBaseId"], [])
         if self.comments is not None:
-            for comment in self.comments:
+            for comment in order_comments_for_display(self.comments):
                 self.draw_comment(context, layout, comment, width=self.width)
                 if ui_props.reply_id == comment["id"]:
                     self.draw_comment_response(context, layout, comment["id"])
@@ -4006,8 +4109,6 @@ class AssetPopupCard(bpy.types.Operator, ratings_utils.RatingProperties):
 
         self.asset_type = asset_data["assetType"]
         self.asset_id = asset_data["id"]
-        # self.tex = utils.get_hidden_texture(self.img)
-        # self.tex.update_tag()
 
         author_id = int(asset_data["author"]["id"])
         author = global_vars.BKIT_AUTHORS.get(author_id)
@@ -4030,13 +4131,25 @@ class AssetPopupCard(bpy.types.Operator, ratings_utils.RatingProperties):
         # get comments
         api_key = user_preferences.api_key
         if asset_data.get("assetType") != "author":
-            comments = comments_utils.get_comments_local(asset_data["assetBaseId"])
-            # if comments is None:
+            # always get fresh comments for the asset, as they can change frequently
             client_lib.get_comments(asset_data["assetBaseId"], api_key)
+            comments = global_vars.DATA.get("asset comments", {}).get(
+                asset_data["assetBaseId"], []
+            )
 
-            # TODO: SHOULD BE DONE ONCE COMMENTS TASK IS RETURNED - HOW TO INVOKE REFRESH FROM HANDLE_GET_COMMENTS_TASK
-            comments = global_vars.DATA.get("asset comments", {})
-            self.comments = comments.get(asset_data["assetBaseId"], [])
+            # # Lazy / dedup'd fetch — avoid hammering the rate-limited backend
+            # # when many tooltips/popups open in quick succession.
+            # comments = comments_utils.request_comments_if_needed(
+            #     asset_data["assetBaseId"], api_key
+            # )
+
+            # If the request just went out the cache will still be empty here;
+            # the asset bar / next popup will pick it up once it arrives.
+            if comments is None:
+                comments = global_vars.DATA.get("asset comments", {}).get(
+                    asset_data["assetBaseId"], []
+                )
+            self.comments = comments
         else:
             self.comments = []
 
@@ -4044,13 +4157,12 @@ class AssetPopupCard(bpy.types.Operator, ratings_utils.RatingProperties):
 
 
 class OBJECT_MT_blenderkit_login_menu(bpy.types.Menu):
-    bl_label = "BlenderKit login/signup:"
+    bl_label = "Blendkit login/signup:"
     bl_idname = "OBJECT_MT_blenderkit_login_menu"
 
     def draw(self, context):
         layout = self.layout
 
-        # utils.label_multiline(layout, text=message)
         draw_login_buttons(layout)
 
 
@@ -4058,10 +4170,10 @@ class SetCommentReplyId(bpy.types.Operator):
     """Set comment reply ID, setting to which comment it is replied to and where the input box should be shown."""
 
     bl_idname = "view3d.blenderkit_set_comment_reply_id"
-    bl_label = "BlenderKit Set Comment reply ID"
+    bl_label = "Blendkit Set Comment reply ID"
     bl_options = {"REGISTER", "UNDO", "INTERNAL"}
 
-    comment_id: bpy.props.IntProperty(  # type: ignore[valid-type]
+    comment_id: IntProperty(  # type: ignore[valid-type]
         name="Category", description="set this category active", default=0
     )
 
@@ -4072,27 +4184,26 @@ class SetCommentReplyId(bpy.types.Operator):
     def execute(self, context):
         ui_props = bpy.context.window_manager.blenderkitUI
         ui_props.reply_id = self.comment_id
-        # print(f'changed reply id to {self.comment_id}')
         return {"FINISHED"}
 
 
 class SetCategoryOperatorOrigin(bpy.types.Operator):
     bl_idname = "view3d.blenderkit_set_category_origin"
-    bl_label = "BlenderKit Set Active Category"
+    bl_label = "Blendkit Set Active Category"
     bl_options = {"REGISTER", "UNDO", "INTERNAL"}
 
-    category_browse: bpy.props.StringProperty(  # type: ignore[valid-type]
+    category_browse: StringProperty(  # type: ignore[valid-type]
         name="Category browse",
         description="set this category active for browsing",
         default="",
     )
-    category_search: bpy.props.StringProperty(  # type: ignore[valid-type]
+    category_search: StringProperty(  # type: ignore[valid-type]
         name="Category search",
         description="set this category active for search",
         default="",
     )
 
-    asset_type: bpy.props.StringProperty(  # type: ignore[valid-type]
+    asset_type: StringProperty(  # type: ignore[valid-type]
         name="Asset Type", description="asset type", default="MODEL"
     )
 
@@ -4103,8 +4214,11 @@ class SetCategoryOperatorOrigin(bpy.types.Operator):
     def execute(self, context):
         acat = global_vars.DATA["active_category_browse"][self.asset_type]
         if self.category_browse == "":
-            acat.remove(acat[-1])
-        elif self.category_browse == acat[-1]:
+            # Go up to the parent category. Keep at least the root entry
+            # to avoid IndexError on subsequent acat[-1] access.
+            if len(acat) > 1:
+                acat.pop()
+        elif acat and self.category_browse == acat[-1]:
             # don't change category if it is the same
             pass
         else:
@@ -4180,13 +4294,14 @@ class PopupDialog(bpy.types.Operator):
     """Small popup dialog to inform user."""
 
     bl_idname = "wm.blenderkit_popup_dialog"
-    bl_label = "BlenderKit message:"
+    bl_label = "Blendkit message:"
     bl_options = {"REGISTER", "INTERNAL"}
 
-    message: bpy.props.StringProperty(default="")  # type: ignore[valid-type]
-    width: bpy.props.IntProperty(default=300)  # type: ignore[valid-type]
+    message: StringProperty(default="")  # type: ignore[valid-type]
+    width: IntProperty(default=300)  # type: ignore[valid-type]
 
     def draw(self, context):
+        set_overlay_panel_active()
         layout = self.layout
         row = layout.row()
         row.label(text=self.message)
@@ -4202,24 +4317,29 @@ class UrlPopupDialog(bpy.types.Operator):
     """Show a popup asking the user to subscribe or log in to access the locked asset"""
 
     bl_idname = "wm.blenderkit_url_dialog"
-    bl_label = "BlenderKit message:"
+    bl_label = "Blendkit message:"
     bl_options = {"REGISTER", "INTERNAL"}
 
-    url: bpy.props.StringProperty(name="Url", description="url", default="")  # type: ignore[valid-type]
+    url: StringProperty(name="Url", description="url", default="")  # type: ignore[valid-type]
 
-    link_text: bpy.props.StringProperty(  # type: ignore[valid-type]
+    link_text: StringProperty(  # type: ignore[valid-type]
         name="Url", description="url", default="Go to website"
     )
 
-    message: bpy.props.StringProperty(name="Text", description="text", default="")  # type: ignore[valid-type]
+    header: StringProperty(name="Header", description="header", default="")  # type: ignore[valid-type]
 
-    width: bpy.props.IntProperty(name="width", description="width", default=300)  # type: ignore[valid-type]
+    message: StringProperty(name="Text", description="text", default="")  # type: ignore[valid-type]
+
+    width: IntProperty(name="width", description="width", default=300)  # type: ignore[valid-type]
 
     def draw(self, context):
+        set_overlay_panel_active()
         layout = self.layout
         row = layout.row()
-        utils.label_multiline(layout, text=self.message, width=300)
+        if self.header:
+            row.label(text=self.header)
         row.operator("view3d.close_popup_button", text="", icon="CANCEL")
+        utils.label_multiline(layout, text=self.message, width=300, align="CENTER")
 
         layout.active_default = True
         op = layout.operator("wm.url_open", text=self.link_text, icon="QUESTION")
@@ -4228,16 +4348,16 @@ class UrlPopupDialog(bpy.types.Operator):
                 text = "purchased"
             else:
                 text = "subscribed"
-            utils.label_multiline(
-                layout,
-                text=f"Already {text}? Log in to access your account.",
-                width=300,
-            )
 
-            layout.operator_context = "EXEC_DEFAULT"
-            layout.operator(
-                "wm.blenderkit_login", text="Welcome Home", icon="URL"
-            ).signup = False
+            layout.separator()
+            login_row = layout.row(align=True)
+            login_row.active_default = False
+            login_row.operator_context = "EXEC_DEFAULT"
+            split = login_row.split(factor=0.6)
+            split.label(text=f"Already {text}?")
+            op_login = split.operator("wm.blenderkit_login", text="Log in", icon="USER")
+            op_login.signup = False
+            op_login.placement = "premium_popup"
         op.url = self.url
 
     def execute(self, context):
@@ -4249,32 +4369,37 @@ class LoginPopupDialog(bpy.types.Operator):
     """Popup a dialog which enables the user to log in after being logged out automatically."""
 
     bl_idname = "wm.blenderkit_login_dialog"
-    bl_label = "BlenderKit login"
+    bl_label = "Blendkit login"
     bl_options = {"REGISTER", "INTERNAL"}
 
-    message: bpy.props.StringProperty(  # type: ignore[valid-type]
+    message: StringProperty(  # type: ignore[valid-type]
         name="Message",
         description="",
         default="Your were logged out from . Please login again. ",
     )
 
-    link_text: bpy.props.StringProperty(  # type: ignore[valid-type]
-        name="Url", description="url", default="Login to BlenderKit"
+    link_text: StringProperty(  # type: ignore[valid-type]
+        name="Url", description="url", default="Login to Blendkit"
     )
 
-    # @classmethod
-    # def poll(cls, context):
-    #     return bpy.context.view_layer.objects.active is not None
+    placement: StringProperty(  # type: ignore[valid-type]
+        name="Placement",
+        description="Which add-on surface triggered the login, for web analytics",
+        default="login_dialog",
+    )
 
     def draw(self, context):
+        set_overlay_panel_active()
         layout = self.layout
         utils.label_multiline(layout, text=self.message, width=300)
 
         layout.active_default = True
         layout.operator_context = "EXEC_DEFAULT"
-        layout.operator(
+        op_login = layout.operator(
             "wm.blenderkit_login", text=self.link_text, icon="URL"
-        ).signup = False
+        )
+        op_login.signup = False
+        op_login.placement = self.placement
 
     def execute(self, context):
         return {"FINISHED"}
@@ -4290,11 +4415,11 @@ def draw_panel_categories(layout, context):
 
     search_props = utils.get_search_props()
     acat_search = search_props.search_category
-    # row = layout.row()
-    # row.prop(ui_props, 'asset_type', expand=True, icon_only=True)
+
     if global_vars.DATA.get("bkit_categories") == None:
         return
     col = layout.column(align=True)
+    acat = []
     if global_vars.DATA.get("active_category_browse") is not None:
         acat = global_vars.DATA["active_category_browse"][ui_props.asset_type]
         if len(acat) > 1:
@@ -4319,10 +4444,6 @@ def draw_panel_categories(layout, context):
             op.category_search = acat[-1]
 
     cats = categories.get_category(global_vars.DATA["bkit_categories"], cat_path=acat)
-    # draw freebies only in models parent category
-    # if ui_props.asset_type == 'MODEL' and len(acat) == 1:
-    #     op = col.operator('view3d.blenderkit_asset_bar_widget', text='freebies')
-    #     op.free_only = True
 
     for c in cats["children"]:
         if c["assetCount"] > 0 or (
@@ -4335,7 +4456,6 @@ def draw_panel_categories(layout, context):
                 or (utils.profile_is_validator() and user_preferences.categories_fix)
             ):
                 row = row.split(factor=0.8, align=True)
-            # row = split.split()
             ctext = "%s (%i)" % (c["name"], c["assetCount"])
 
             emboss = acat_search == c["slug"]
@@ -4351,25 +4471,14 @@ def draw_panel_categories(layout, context):
                 and c["assetCount"] > 15
                 or (utils.profile_is_validator() and user_preferences.categories_fix)
             ):
-                # row = row.split()
                 op = row.operator("view3d.blenderkit_set_category", text=">>")
                 op.asset_type = ui_props.asset_type
                 op.category_browse = c["slug"]
                 op.category_search = c["slug"]
 
-                # for c1 in c['children']:
-                #     if c1['assetCount']>0:
-                #         row = col.row()
-                #         split = row.split(percentage=.2)
-                #         row = split.split()
-                #         row = split.split()
-                #         ctext = '%s (%i)' % (c1['name'], c1['assetCount'])
-                #         op = row.operator('view3d.blenderkit_search', text=ctext)
-                #         op.category = c1['slug']
-
 
 class VIEW3D_PT_blenderkit_downloads(Panel):
-    bl_category = "BlenderKit"
+    bl_category = "Blendkit"
     bl_idname = "VIEW3D_PT_blenderkit_downloads"
     bl_space_type = "VIEW_3D"
     bl_region_type = "UI"
@@ -4413,11 +4522,6 @@ def header_search_draw(self, context):
         return
     if context.mode not in ("PAINT_TEXTURE", "OBJECT", "SCULPT", "POSE"):
         return
-    # hide search bar if overlays are hidden
-    # this was nice, but was then reported as a bug by some users, who didn't understand this behaviour.
-    # users tend to work also with overlays hidden, so this was not a good idea.
-    # if context.area.spaces[0].overlay.show_overlays == False:
-    #     return
 
     layout = self.layout
     wm = bpy.context.window_manager
@@ -4425,12 +4529,12 @@ def header_search_draw(self, context):
 
     props_dict = {
         "MODEL": wm.blenderkit_models,
-        "PRINTABLE": wm.blenderkit_models,  # PRINTABLE assets use same props as MODEL
         "MATERIAL": wm.blenderkit_mat,
         "BRUSH": wm.blenderkit_brush,
         "HDR": wm.blenderkit_HDR,
         "SCENE": wm.blenderkit_scene,
         "NODEGROUP": wm.blenderkit_nodegroup,
+        "PRINTABLE": wm.blenderkit_printables,
         "ADDON": wm.blenderkit_addon,
         "AUTHOR": wm.blenderkit_author,
     }
@@ -4451,11 +4555,7 @@ def header_search_draw(self, context):
     }
 
     asset_type_icon = icons_dict[ui_props.asset_type]
-    # pcoll = icons.icon_collections["main"]  # Removing this line since we moved it up
 
-    # the center snap menu is in edit and object mode if tool settings are off.
-    # if context.space_data.show_region_tool_header == True or context.mode[:4] not in ('EDIT', 'OBJE'):
-    # layout.separator_spacer()
     row = layout.row(align=True)
     row.scale_x = 0.9
 
@@ -4484,10 +4584,9 @@ def header_search_draw(self, context):
         icon_value=pcoll[ui_props.logo_status].icon_id,
         emboss=False,
     )
-    # row.label(text="", icon_value=pcoll[ui_props.logo_status].icon_id)
 
     layout = layout.row(align=True)
-    # layout.separator()
+
     if not global_vars.CLIENT_RUNNING:
         layout.label(text="Waiting for Client")
         return
@@ -4502,27 +4601,10 @@ def header_search_draw(self, context):
         icon_value=asset_type_icon if isinstance(asset_type_icon, int) else 0,
     )
 
-    row = layout.row()
-    if (context.region.width) > 700:
-        row.ui_units_x = 5 + int(context.region.width / 200)
-    search_field_width = bpy.context.preferences.addons[
-        __package__
-    ].preferences.search_field_width
+    draw_search_text_field(
+        layout, ui_props, context
+    )  # Ensure search field is drawn in HDR search panel
 
-    has_search_keywords = ui_props.search_keywords != ""
-
-    if search_field_width > 0:
-        row.ui_units_x = search_field_width - has_search_keywords * 0.5
-
-    # print(row.ui_units_x)
-
-    row.prop(ui_props, "search_keywords", text="", icon="VIEWZOOM")
-
-    # if there are search keywords, draw an x icon to clear the search keywords
-    if has_search_keywords:
-        layout.operator("view3d.blenderkit_clear_search_keywords", text="", icon="X")
-
-    draw_assetbar_show_hide(layout, props)
     layout.prop(ui_props, "search_bookmarks", text="", icon="BOOKMARKS")
     if (
         props.search_category == ui_props.asset_type.lower()
@@ -4614,19 +4696,11 @@ def header_search_draw(self, context):
             emboss=False,
         )
 
-    # elif ui_props.asset_type in ('BRUSH', 'SCENE'):
-    #     # this is just a placeholder so that the UI doesn't get out of alignment
-    #     row = layout.column()
-    #     row.enabled = False
-    #     row.ui_units_x = 1.5
-    #     row.label(text='', icon_value=icon_id)
-
     notifications = global_vars.DATA.get("bkit notifications")
     if notifications is not None and notifications.get("count", 0) > 0:
         layout.operator(
             "wm.show_notifications", text="", icon_value=pcoll["bell"].icon_id
         )
-        # layout.popover(panel="VIEW3D_PT_blenderkit_notifications", text="", icon_value=pcoll['bell'].icon_id)
 
     if utils.profile_is_validator():
         search_props = utils.get_search_props()
@@ -4635,6 +4709,7 @@ def header_search_draw(self, context):
 
 def ui_message(title, message):
     def draw_message(self, context):
+        set_overlay_panel_active()
         layout = self.layout
         utils.label_multiline(layout, text=message, width=400)
 
@@ -4649,17 +4724,17 @@ class NodegroupDropDialog(bpy.types.Operator):
     bl_options = {"REGISTER", "INTERNAL"}
 
     # Store the parameters needed for the download
-    asset_search_index: bpy.props.IntProperty(default=-1)  # type: ignore[valid-type]
-    target_object_name: bpy.props.StringProperty(default="")  # type: ignore[valid-type]
-    snapped_location: bpy.props.FloatVectorProperty(size=3)  # type: ignore[valid-type]
-    snapped_rotation: bpy.props.FloatVectorProperty(size=3)  # type: ignore[valid-type]
+    asset_search_index: IntProperty(default=-1)  # type: ignore[valid-type]
+    target_object_name: StringProperty(default="")  # type: ignore[valid-type]
+    snapped_location: FloatVectorProperty(size=3)  # type: ignore[valid-type]
+    snapped_rotation: FloatVectorProperty(size=3)  # type: ignore[valid-type]
 
     # Node editor positioning (when dropped in node editor)
-    node_x: bpy.props.FloatProperty(default=0.0)  # type: ignore[valid-type]
-    node_y: bpy.props.FloatProperty(default=0.0)  # type: ignore[valid-type]
+    node_x: FloatProperty(default=0.0)  # type: ignore[valid-type]
+    node_y: FloatProperty(default=0.0)  # type: ignore[valid-type]
 
     # Option for how to add the nodegroup
-    add_mode: bpy.props.EnumProperty(  # type: ignore[valid-type]
+    add_mode: EnumProperty(  # type: ignore[valid-type]
         name="Add Mode",
         description="How to add the nodegroup",
         items=[
@@ -4674,7 +4749,7 @@ class NodegroupDropDialog(bpy.types.Operator):
     )
 
     # Option for overwriting existing geometry nodes modifier
-    overwrite_modifier: bpy.props.BoolProperty(  # type: ignore[valid-type]
+    overwrite_modifier: BoolProperty(  # type: ignore[valid-type]
         name="Overwrite Last Geometry Nodes Modifier",
         description="Replace the last geometry nodes modifier instead of creating a new one (recommended to avoid recursion)",
         default=True,
@@ -4687,6 +4762,7 @@ class NodegroupDropDialog(bpy.types.Operator):
         return [mod for mod in target_obj.modifiers if mod.type == "NODES"]
 
     def draw(self, context):
+        set_overlay_panel_active()
         layout = self.layout
 
         # Get asset data for display
@@ -4818,6 +4894,8 @@ class NodegroupDropDialog(bpy.types.Operator):
 classes = (
     BLENDERKIT_OT_hdr_thumbnail_tune,
     BLENDERKIT_OT_show_validation_popup,
+    BLENDERKIT_OT_permissions_error_popup,
+    BLENDERKIT_OT_set_default_directory,
     SetCategoryOperatorOrigin,
     SetCategoryOperator,
     SetCategoryOperatorInPopupCard,
@@ -4825,8 +4903,6 @@ classes = (
     ClearSearchKeywords,
     SetCommentReplyId,
     VIEW3D_PT_blenderkit_profile,
-    # VIEW3D_PT_blenderkit_login,
-    # VIEW3D_PT_blenderkit_notifications,
     VIEW3D_PT_blenderkit_unified,
     VIEW3D_PT_blenderkit_advanced_model_search,
     VIEW3D_PT_blenderkit_advanced_material_search,
@@ -4851,9 +4927,7 @@ classes = (
     OpenGlobalDirectory,
     OpenClientLog,
     OpenTempDirectory,
-    # VIEW3D_PT_blenderkit_ratings,
     VIEW3D_PT_blenderkit_downloads,
-    # OBJECT_MT_blenderkit_resolution_menu,
     OBJECT_MT_blenderkit_asset_menu,
     OBJECT_MT_blenderkit_login_menu,
     AssetPopupCard,
@@ -4865,7 +4939,6 @@ classes = (
     UpvoteComment,
     SetPrivateComment,
     PostComment,
-    # DeleteComment,
     ShowNotifications,
     LogoStatus,
     NotificationOpenTarget,
@@ -4920,17 +4993,12 @@ def register_ui_panels():
         bpy.utils.register_class(c)
 
     bpy.types.VIEW3D_HT_tool_header.draw = header_draw
-    # bpy.types.VIEW3D_HT_tool_header.append(header_search_draw)
     bpy.types.VIEW3D_MT_editor_menus.append(header_search_draw_others)
     bpy.types.VIEW3D_MT_object_context_menu.append(object_context_draw)
-    # bpy.types.VIEW3D_PT_tools_active.prepend(header_search_draw_new)
 
 
 def unregister_ui_panels():
-    # bpy.types.VIEW3D_HT_tool_header.remove(header_search_draw)
     bpy.types.VIEW3D_MT_editor_menus.remove(header_search_draw_others)
     bpy.types.VIEW3D_MT_object_context_menu.remove(object_context_draw)
-    # bpy.types.VIEW3D_PT_tools_active.remove(header_search_draw_new)
     for c in classes:
-        # print('unregister', c)
         bpy.utils.unregister_class(c)

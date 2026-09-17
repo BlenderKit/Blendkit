@@ -17,6 +17,7 @@
 # ##### END GPL LICENSE BLOCK #####
 
 import logging
+import re
 from typing import Optional, Union
 
 # mainly update functions and callbacks for ratings properties, here to avoid circular imports.
@@ -60,6 +61,12 @@ def handle_get_rating_task(task: client_tasks.Task):
         return
 
     for rating in ratings:
+        # The API returns every user-editable rating, including historic
+        # vote types (competition, nodevember) this UI has no controls for -
+        # skip those instead of crashing the task-handling timer.
+        if rating["ratingType"] not in ("quality", "working_hours", "bookmarks"):
+            bk_logger.debug("Ignoring rating of type %s", rating["ratingType"])
+            continue
         store_rating_local(asset_id, rating["ratingType"], rating["score"])
 
 
@@ -97,8 +104,152 @@ def handle_send_rating_task(task: client_tasks.Task):
             task.message, type="ERROR", details=task.message_detailed
         )
     if task.status == "finished":
+        # Rating a flagged asset drops its "didn't use" flag server-side
+        # (rating wins) - mirror that locally so the menu doesn't lie.
+        data = task.data
+        if data.get("rating_type") in ("quality", "working_hours") and data.get(
+            "rating_value"
+        ):
+            rating = get_rating_local(data["asset_id"])
+            if rating is not None and rating.didnt_use:
+                store_didnt_use_local(data["asset_id"], didnt_use=False)
         if utils.profile_is_validator():
             return reports.add_report(task.message, type="VALIDATOR")
+
+
+def handle_get_not_used_reasons_task(task: client_tasks.Task):
+    """Cache the shared "didn't use it" reason choices in global_vars."""
+    if task.status == "created":
+        return
+    if task.status == "error":
+        return bk_logger.warning("%s task failed: %s", task.task_type, task.message)
+    global_vars.NOT_USED_REASONS = task.result["results"]
+
+
+def handle_get_didnt_use_task(task: client_tasks.Task):
+    """Save the asset's "didn't use" flag state into the local ratings store."""
+    if task.status == "created":
+        return
+    if task.status == "error":
+        return bk_logger.warning("%s task failed: %s", task.task_type, task.message)
+    reason = task.result.get("reason") or {}
+    store_didnt_use_local(
+        task.data["asset_id"],
+        didnt_use=task.result["didntUse"],
+        reason_label=reason.get("label"),
+        reason_id=reason.get("id"),
+    )
+
+
+def handle_send_didnt_use_task(task: client_tasks.Task):
+    """Apply the server-confirmed flag state; a refusal lands inline under
+    the control (the corner report overlay is out of the popup's sight)."""
+    if task.status == "created":
+        return
+    if task.status == "error":
+        store_didnt_use_error(task.data["asset_id"], _server_detail(task.message))
+        return reports.add_report(
+            task.message, type="ERROR", details=task.message_detailed
+        )
+    reason = task.result.get("reason") or {}
+    store_didnt_use_local(
+        task.data["asset_id"],
+        didnt_use=task.result["didntUse"],
+        reason_label=reason.get("label"),
+        reason_id=reason.get("id"),
+    )
+    reports.add_report(task.message)
+
+
+def store_didnt_use_local(
+    asset_id: str,
+    didnt_use: bool,
+    reason_label: Optional[str] = None,
+    reason_id: Optional[int] = None,
+):
+    rating = global_vars.RATINGS.get(asset_id, datas.AssetRating())
+    rating.didnt_use = didnt_use
+    rating.didnt_use_reason = reason_label
+    rating.didnt_use_reason_id = reason_id
+    rating.didnt_use_fetched = True
+    rating.didnt_use_error = None
+    if didnt_use:
+        # The server deleted the score ratings (flag and rating are mutually
+        # exclusive) - the local mirror must agree.
+        rating.quality = None
+        rating.working_hours = None
+    global_vars.RATINGS[asset_id] = rating
+
+
+def _server_detail(message: str) -> str:
+    """The server's own sentence out of the Client's error wrapper
+    ("send didnt-use: <detail> (403 Forbidden)").
+
+    Older Clients pass the raw JSON body through - pull the detail field out
+    rather than showing braces to the user."""
+    json_detail = re.search(r'"detail"\s*:\s*"([^"]+)"', message or "")
+    if json_detail:
+        return json_detail.group(1)
+    detail = re.sub(r"^send didnt-use: ", "", message or "")
+    detail = re.sub(r" \(\d{3} [^)]*\)$", "", detail)
+    return detail or "That didn't save - please try again."
+
+
+def store_didnt_use_error(asset_id: str, message: Optional[str]):
+    rating = global_vars.RATINGS.get(asset_id, datas.AssetRating())
+    rating.didnt_use_error = message
+    global_vars.RATINGS[asset_id] = rating
+
+
+def remember_replaced_scores(asset_id: str):
+    """Park the current scores on the rating before a "didn't use" pick
+    replaces them - session-local, so undo can restore the numbers."""
+    rating = global_vars.RATINGS.get(asset_id)
+    if rating is None:
+        return
+    if rating.quality or rating.working_hours:
+        rating.didnt_use_replaced_quality = rating.quality
+        rating.didnt_use_replaced_working_hours = rating.working_hours
+
+
+def restore_replaced_scores(asset_id: str) -> bool:
+    """Undo the rating half of a replacement: re-send the remembered scores
+    (the server clears the flag itself - rating wins) and mirror locally.
+    Returns False when there is nothing remembered."""
+    rating = global_vars.RATINGS.get(asset_id)
+    if rating is None:
+        return False
+    remembered = [
+        ("quality", rating.didnt_use_replaced_quality),
+        ("working_hours", rating.didnt_use_replaced_working_hours),
+    ]
+    if not any(value for _, value in remembered):
+        return False
+    for slug, value in remembered:
+        if not value:
+            continue
+        client_lib.send_rating(asset_id, slug, value)
+        setattr(rating, slug, value)
+    rating.didnt_use = False
+    rating.didnt_use_reason = None
+    rating.didnt_use_reason_id = None
+    rating.didnt_use_replaced_quality = None
+    rating.didnt_use_replaced_working_hours = None
+    return True
+
+
+def ensure_not_used_reasons():
+    """Fetch the reason choices once per session; [] marks the request as
+    made so a failure doesn't retrigger on every redraw."""
+    if global_vars.NOT_USED_REASONS is None:
+        global_vars.NOT_USED_REASONS = []
+        client_lib.get_not_used_reasons()
+
+
+def ensure_didnt_use(asset_id: str):
+    rating = get_rating_local(asset_id)
+    if rating is None or not rating.didnt_use_fetched:
+        client_lib.get_didnt_use(asset_id)
 
 
 def store_rating_local(
@@ -134,7 +285,7 @@ def ensure_rating(asset_id: str):
     if rating is None:
         client_lib.get_rating(asset_id)
         return
-    if not rating.quality_fetched or rating.working_hours_fetched:
+    if not rating.quality_fetched or not rating.working_hours_fetched:
         client_lib.get_rating(asset_id)
 
 
@@ -206,6 +357,7 @@ def update_quality_ui(self, context: Context):
         bpy.ops.wm.blenderkit_login(  # type: ignore
             "INVOKE_DEFAULT",
             message="Please login/signup to rate assets. Clicking OK takes you to web login.",
+            placement="rating_prompt",
         )
         return
 
@@ -219,13 +371,23 @@ def update_ratings_work_hours_ui(self, context: Context):
         bpy.ops.wm.blenderkit_login(  # type: ignore
             "INVOKE_DEFAULT",
             message="Please login/signup to rate assets. Clicking OK takes you to web login.",
+            placement="rating_prompt",
         )
         return
     self.rating_work_hours = float(self.rating_work_hours_ui)
 
 
+_stars_enum_items = []
+_stars_enum_cache_key = None
+
+
 def stars_enum_callback(self, context):
     """regenerates the enum property used to display rating stars, so that there are filled/empty stars correctly."""
+    global _stars_enum_items, _stars_enum_cache_key
+    key = int(self.rating_quality)
+    if key == _stars_enum_cache_key and _stars_enum_items:
+        return _stars_enum_items
+    _stars_enum_cache_key = key
     items = []
     for a in range(0, 11):
         if a == 0:
@@ -238,11 +400,28 @@ def stars_enum_callback(self, context):
         # has to have something before the number in the value, otherwise fails on registration.
 
         items.append((f"{a}", "  ", "", icon, a))
-    return items
+    _stars_enum_items = items
+    return _stars_enum_items
+
+
+_wh_enum_items = []
+_wh_enum_cache_key = None
 
 
 def wh_enum_callback(self, context):
-    """Regenerates working hours enum."""
+    """Regenerates working hours enum.
+
+    NOTE: The items list is stored in ``_wh_enum_items`` so that it is not
+    garbage-collected before Blender reads the icon IDs.  Without this,
+    Blender 5.1+ may render corrupted icons because it only keeps an
+    internal pointer to the returned data.
+    """
+    global _wh_enum_items, _wh_enum_cache_key
+    key = (self.asset_type, self.rating_work_hours)
+    if key == _wh_enum_cache_key and _wh_enum_items:
+        return _wh_enum_items
+    _wh_enum_cache_key = key
+
     if self.asset_type in ("model", "scene", "printable", "nodegroup"):
         possible_wh_values = [
             0,
@@ -301,7 +480,8 @@ def wh_enum_callback(self, context):
             # index of the item(last value) is multiplied by 10 to get always integer values that aren't zero
             items.append((f"{w}", "  ", "", icon.icon_id, int(w * 10)))
 
-    return items
+    _wh_enum_items = items
+    return _wh_enum_items
 
 
 class RatingProperties(PropertyGroup):

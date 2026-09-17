@@ -1,7 +1,7 @@
-"""Utility script to remove the dev junctions created by build_and_hardlink_addon_to_blenders.py.
+"""Utility script to remove the dev junctions/symlinks created by build_and_hardlink_addon_to_blenders.py.
 
-It scans all user Blender versions under AppData scripts/addons and removes the
-`blenderkit_dev_hl` entry only when it is a junction/symlink pointing back to this repo.
+It scans all user Blender versions and removes the `blenderkit_dev_hl` entry
+only when it is a junction/symlink pointing back to this repo.
 The intent is to avoid touching real installs or differently linked copies.
 """
 
@@ -10,22 +10,26 @@ import os
 import shutil
 import sys
 
-if sys.platform != "win32":
-    raise RuntimeError("This script only works on Windows currently.")
-
 THIS_REPO = os.path.abspath(os.path.join(os.path.dirname(__file__), "..")).replace(
     "\\", "/"
 )
 
-BLENDER_VERSIONS_PATH = os.path.expanduser(
-    "~/AppData/Roaming/Blender Foundation/Blender"
-).replace("\\", "/")
+if sys.platform == "win32":
+    BLENDER_VERSIONS_PATH = os.path.expanduser(
+        "~/AppData/Roaming/Blender Foundation/Blender"
+    ).replace("\\", "/")
+elif sys.platform == "darwin":
+    BLENDER_VERSIONS_PATH = os.path.expanduser("~/Library/Application Support/Blender")
+else:
+    BLENDER_VERSIONS_PATH = os.path.expanduser("~/.config/blender")
 
 RESULTING_ADDON_NAME = "blenderkit_dev_hl"
 
-ALL_VERSIONS = [
-    p.replace("\\", "/") for p in glob.glob(BLENDER_VERSIONS_PATH + "/*/scripts/addons")
-]
+ALL_VERSIONS = []
+for p in glob.glob(BLENDER_VERSIONS_PATH + "/*/scripts/addons"):
+    ALL_VERSIONS.append(p.replace("\\", "/"))
+for p in glob.glob(BLENDER_VERSIONS_PATH + "/*/extensions/user_default"):
+    ALL_VERSIONS.append(p.replace("\\", "/"))
 
 
 def _remove_existing(path: str) -> None:

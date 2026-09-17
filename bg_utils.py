@@ -17,7 +17,7 @@
 # ##### END GPL LICENSE BLOCK #####
 
 """Functions for background processes.
-Not used directly in BlenderKit addon, but in BlenderKit background processes.
+Not used directly in Blendkit addon, but in Blendkit background processes.
 """
 
 import logging
@@ -34,7 +34,7 @@ bk_logger = logging.getLogger(__name__)
 def download_asset_file(asset_data, resolution="blend", api_key=""):
     """This is a simple non-threaded way to download files for background thumbnail rerender and others."""
 
-    # make sure BlenderKit is enabled, needed for downloading.
+    # make sure Blendkit is enabled, needed for downloading.
     addon_utils.enable(
         "blenderkit", default_set=True, persistent=True, handle_error=None
     )

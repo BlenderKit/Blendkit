@@ -180,7 +180,7 @@ def analyze_image_is_true_hdr(image):
     imageHeight = size[1]
     tempBuffer = numpy.empty(imageWidth * imageHeight * 4, dtype=numpy.float32)
     image.pixels.foreach_get(tempBuffer)
-    image.blenderkit.true_hdr = numpy.amax(tempBuffer) > 1.05
+    image.blenderkit.true_hdr = bool(numpy.amax(tempBuffer) > 1.05)
 
 
 def _save_hdr_thumbnail_image(
@@ -202,7 +202,7 @@ def _save_hdr_thumbnail_image(
     pixel_count = image_width * image_height
     pixel_buffer = numpy.empty(pixel_count * 4, dtype=numpy.float32)
     hdr_image.pixels.foreach_get(pixel_buffer)
-    hdr_image.blenderkit.true_hdr = numpy.amax(pixel_buffer) > 1.05
+    hdr_image.blenderkit.true_hdr = bool(numpy.amax(pixel_buffer) > 1.05)
 
     source_image = hdr_image
     temp_image = None

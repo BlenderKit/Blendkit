@@ -19,7 +19,7 @@ jobs:
   Checks:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Install
         run: pip install -r devs/requirements.txt
       - name: ISORT
@@ -28,14 +28,14 @@ jobs:
       - name: BLACK
         run: python -m black . --check --diff
       - name: Server set to production
-        run: python3 -c 'from global_vars import SERVER; assert SERVER == "https://www.blenderkit.com"'
+        run: python3 -c 'from global_vars import SERVER; assert SERVER == "https://www.blendkit.com"'
       - name: Add-on Version set to ${{inputs.version}}
         run: python3 -c "import re; f = open('__init__.py'); version_init = re.search(r'\"version\":\s*\((.*?)\)', f.read()).group(1); f.close(); assert tuple(map(int, version_init.split(', '))) == tuple(map(int, '${{inputs.version}}'.split('.'))), f'Version mismatch of {version_init} and ${{inputs.version}}'"
 
   Release_checks:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Version set to ${{inputs.version}}
         run: python3 -c "import re; f = open('__init__.py'); version_init = re.search(r'\"version\":\s*\((.*?)\)', f.read()).group(1); f.close(); assert tuple(map(int, version_init.split(', '))) == tuple(map(int, '${{inputs.version}}'.split('.'))), f'Version mismatch of {version_init} and ${{inputs.version}}'"
 
@@ -43,24 +43,22 @@ jobs:
     needs: [Checks, Release_checks, TESTS]
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - name: Set up Go
-        uses: actions/setup-go@v5
-        with:
-          go-version-file: './client/go.mod'
-          cache-dependency-path: './client/go.sum'
-        id: go
+      - uses: actions/checkout@v7
+      - name: Checkout bk_proxor submodule
+        run: git submodule update --init bk_proxor
       - name: Build add-on
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: python dev.py build
       - name: Rename add-on
         run: mv out/blenderkit.zip out/blenderkit-v${{inputs.version}}.zip
       #- name: Generate Changelog
       #  run: echo "# Good things have arrived" > ${{ github.workspace }}-CHANGELOG.txt
       - name: Release
-        uses: softprops/action-gh-release@v1
+        uses: softprops/action-gh-release@v3
         with:
           draft: true # always draft, we want to check the release notes
-          name: BlenderKit v${{inputs.version}}${{ inputs.release_stage == 'gold' && '' || format('-{0}', inputs.release_stage) }}
+          name: Blendkit v${{inputs.version}}${{ inputs.release_stage == 'gold' && '' || format('-{0}', inputs.release_stage) }}
           prerelease: ${{ inputs.release_stage != 'gold' && 'true' || 'false' }}
           tag_name: v${{inputs.version}}
           #body_path: ${{ github.workspace }}-CHANGELOG.txt
@@ -71,7 +69,7 @@ jobs:
     outputs:
       matrix: ${{ steps.set-matrix.outputs.matrix }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - id: set-matrix
         run: python .github/make-tests-matrix.py >> $GITHUB_OUTPUT
 
@@ -82,16 +80,12 @@ jobs:
     strategy:
       matrix: ${{ fromJSON(needs.make-tests-matrix.outputs.matrix) }}
     steps:
-      - uses: actions/checkout@v4
-      - name: Set up Go
-        uses: actions/setup-go@v5
-        with:
-          go-version-file: './client/go.mod'
-          cache-dependency-path: './client/go.sum'
-        id: go
+      - uses: actions/checkout@v7
+      - name: Checkout bk_proxor submodule
+        run: git submodule update --init bk_proxor
       - name: Cache Blender
         id: blenderBinaryCache
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: /home/runner/blender
           key: blender-${{matrix.version}}-${{matrix.sha}}
@@ -106,4 +100,6 @@ jobs:
       - name: Add Blender to PATH
         run: ln -s /home/runner/blender/blender /home/runner/.local/bin/blender
       - name: TEST
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: python dev.py test --install-at /home/runner/.config/blender/${{matrix.version_x_y}}/scripts/addons

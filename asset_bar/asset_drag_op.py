@@ -29,9 +29,11 @@ from bpy.props import IntProperty, StringProperty
 from bpy_extras import view3d_utils
 from mathutils import Vector
 
-from . import (
+from .. import (
     bg_blender,
+    client_lib,
     colors,
+    unlock_options,
     download,
     global_vars,
     image_utils,
@@ -44,16 +46,24 @@ from . import (
     utils,
     viewport_utils,
 )
-from .bl_ui_widgets.bl_ui_button import BL_UI_Button
-from .bl_ui_widgets.bl_ui_drag_panel import BL_UI_Drag_Panel
-from .bl_ui_widgets.bl_ui_draw_op import BL_UI_OT_draw_operator
-from .bl_ui_widgets.bl_ui_image import BL_UI_Image
-
+from ..bl_ui_widgets.bl_ui_button import BL_UI_Button
+from ..bl_ui_widgets.bl_ui_drag_panel import BL_UI_Drag_Panel
+from ..bl_ui_widgets.bl_ui_draw_op import BL_UI_OT_draw_operator
+from ..bl_ui_widgets.bl_ui_image import BL_UI_Image
 
 bk_logger = logging.getLogger(__name__)
 
+# Addon root package name. We live in <addon>.asset_bar, but addon
+# preferences are registered under the top-level addon package.
+_ADDON_PACKAGE = __package__.rsplit(".", 1)[0]
+
 handler_2d = None
 handler_3d = None
+
+# Cached proxor data for download progress drawing (raw Python dicts, no GPU).
+# Keyed by assetBaseId → proxor dict or None if unavailable.
+_download_proxor_cache: dict[str, Optional[dict]] = {}
+_MISSING = object()  # sentinel for cache miss (distinct from cached None)
 
 
 DEFAULT_DRAG_THRESHOLD = 30  # pixels
@@ -103,6 +113,9 @@ def draw_callback_dragging(
     Returns:
         None
     """
+
+    if not self.drag:
+        return
 
     # Only draw 2D elements in the active region where the mouse is. Guard against destroyed operator.
     if not is_draw_cb_available(self, context):
@@ -193,6 +206,20 @@ def draw_callback_dragging(
 
         elif asset_type == "addon":
             main_message = "Drop to install addon"
+
+        # If hovering over a particle-system instance source, materials,
+        # nodegroups and models won't land here — explain why.
+        if getattr(self, "over_particle_instance", False) and asset_type in (
+            "material",
+            "nodegroup",
+            "model",
+            "printable",
+        ):
+            main_message = "Can't drop on particle instance"
+            secondary_message = "Drop onto the source object in the Outliner instead"
+            main_color = (1.0, 0.5, 0.5, 1.0)  # Error red
+            secondary_color = (0.8, 0.6, 0.6, 1.0)  # Light red
+            invalid_drop = True
 
     elif self.in_node_editor:
         if asset_type not in ["material", "nodegroup"]:
@@ -384,12 +411,69 @@ def draw_callback_3d_dragging(
         return
 
     if self.asset_data["assetType"] in ["model", "printable"]:
-        draw_bbox(
-            self.snapped_location,
-            self.snapped_rotation,
-            self.snapped_bbox_min,
-            self.snapped_bbox_max,
-        )
+        if self._proxor_handler is not None:
+            # Update proxor transform to match snapped placement
+            rot_euler = mathutils.Euler(self.snapped_rotation)
+            loc = Vector(self.snapped_location)
+            mat = mathutils.Matrix.Translation(loc) @ rot_euler.to_matrix().to_4x4()
+            self._proxor_handler._matrix = mat
+        else:
+            draw_bbox(
+                self.snapped_location,
+                self.snapped_rotation,
+                self.snapped_bbox_min,
+                self.snapped_bbox_max,
+            )
+
+
+def _load_proxor_for_download(asset_base_id: str) -> Optional[dict]:
+    """Load and cache proxor data for download progress drawing.
+
+    Returns the raw ``data`` dict from the .prxc file, or ``None`` if
+    unavailable.  Results are cached in ``_download_proxor_cache``; a
+    cached ``None`` is invalidated if the ``.prxc`` file appears on
+    disk later (common with on-demand fetch scheduled at drag start).
+    """
+    prxc_path = global_vars.DATA.get("prxc available", {}).get(asset_base_id)
+    cached = _download_proxor_cache.get(asset_base_id, _MISSING)
+    if cached is not _MISSING:
+        if cached is not None:
+            return cached
+        # Previously unavailable — recheck in case the on-demand fetch
+        # finished after the first miss.
+        if not prxc_path or not os.path.exists(prxc_path):
+            return None
+
+    if not prxc_path or not os.path.exists(prxc_path):
+        _download_proxor_cache[asset_base_id] = None
+        return None
+
+    try:
+        from ..bk_proxor import prx_format as proxor_prx_format
+
+        payload = proxor_prx_format.read_prx(prxc_path)
+        proxor_data = payload.get("data")
+        if not proxor_data:
+            _download_proxor_cache[asset_base_id] = None
+            return None
+
+        _download_proxor_cache[asset_base_id] = proxor_data
+        return proxor_data
+    except Exception:
+        bk_logger.debug(f"Failed to load proxor for download: {asset_base_id}")
+        _download_proxor_cache[asset_base_id] = None
+        return None
+
+
+def draw_proxor_download(
+    location: Vector,
+    rotation: Vector,
+    proxor_data: dict,
+    progress: Optional[float] = None,
+    color: Tuple[float, float, float, float] = colors.PURE_GREEN,
+) -> None:
+    """Draw full proxor (mesh, lines, points) during download."""
+    ui_bgl.draw_proxor_download(location, rotation, proxor_data, progress, color)
 
 
 def draw_bbox(
@@ -400,61 +484,8 @@ def draw_bbox(
     progress: Optional[float] = None,
     color: Tuple[float, float, float, float] = colors.PURE_GREEN,
 ) -> None:
-    rot_euler = mathutils.Euler(rotation)
-
-    side_min = Vector(bbox_min)
-    side_max = Vector(bbox_max)
-    v0 = Vector(side_min)
-    v1 = Vector((side_max.x, side_min.y, side_min.z))
-    v2 = Vector((side_max.x, side_max.y, side_min.z))
-    v3 = Vector((side_min.x, side_max.y, side_min.z))
-    v4 = Vector((side_min.x, side_min.y, side_max.z))
-    v5 = Vector((side_max.x, side_min.y, side_max.z))
-    v6 = Vector((side_max.x, side_max.y, side_max.z))
-    v7 = Vector((side_min.x, side_max.y, side_max.z))
-
-    arrow_x = side_min.x + (side_max.x - side_min.x) / 2
-    arrow_y = side_min.y - (side_max.x - side_min.x) / 2
-    v8 = Vector((arrow_x, arrow_y, side_min.z))
-
-    vertices = [v0, v1, v2, v3, v4, v5, v6, v7, v8]
-    for v in vertices:
-        v.rotate(rot_euler)
-        v += Vector(location)
-
-    lines = [
-        [0, 1],
-        [1, 2],
-        [2, 3],
-        [3, 0],
-        [4, 5],
-        [5, 6],
-        [6, 7],
-        [7, 4],
-        [0, 4],
-        [1, 5],
-        [2, 6],
-        [3, 7],
-        [0, 8],
-        [1, 8],
-    ]
-    ui_bgl.draw_lines(vertices, lines, color)
-    if progress is not None:
-        # Draw side fill quads based on progress along +Z of the local bbox
-        color = (color[0], color[1], color[2], 0.2)
-        progress = progress * 0.01
-        vz0 = (v4 - v0) * progress + v0
-        vz1 = (v5 - v1) * progress + v1
-        vz2 = (v6 - v2) * progress + v2
-        vz3 = (v7 - v3) * progress + v3
-        rects = (
-            (v0, v1, vz1, vz0),
-            (v1, v2, vz2, vz1),
-            (v2, v3, vz3, vz2),
-            (v3, v0, vz0, vz3),
-        )
-        for r in rects:
-            ui_bgl.draw_rect_3d(r, color)
+    """Draw a 3D wireframe bounding box."""
+    ui_bgl.draw_bbox(location, rotation, bbox_min, bbox_max, progress, color)
 
 
 def draw_callback_2d_progress(
@@ -486,8 +517,8 @@ def draw_callback_2d_progress(
         draw_progress(x, y - index * 30, f"{n}{tcom.lasttext}", tcom.progress)
         index += 1
     for report in reports.reports:
-        report.draw(x, y - index * 30)
-        index += 1
+        lines = report.draw(x, y - index * 30)
+        index += lines if lines else 1
         report.fade()
 
 
@@ -503,13 +534,27 @@ def draw_callback_3d_progress(
         if task.get("downloaders"):
             for d in task["downloaders"]:
                 if asset_data["assetType"] in ["model", "printable"]:
-                    draw_bbox(
-                        d["location"],
-                        d["rotation"],
-                        asset_data["bbox_min"],
-                        asset_data["bbox_max"],
-                        progress=task["progress"],
+                    asset_base_id = asset_data.get("assetBaseId", "")
+                    proxor_data = (
+                        _load_proxor_for_download(asset_base_id)
+                        if utils.proxor_enabled()
+                        else None
                     )
+                    if proxor_data is not None:
+                        draw_proxor_download(
+                            d["location"],
+                            d["rotation"],
+                            proxor_data,
+                            progress=task["progress"],
+                        )
+                    else:
+                        draw_bbox(
+                            d["location"],
+                            d["rotation"],
+                            asset_data["bbox_min"],
+                            asset_data["bbox_max"],
+                            progress=task["progress"],
+                        )
 
 
 def draw_progress(
@@ -533,6 +578,7 @@ def mouse_raycast(
     Optional[int],
     Optional[bpy.types.Object],
     Optional[mathutils.Matrix],
+    Optional[bpy.types.Object],
 ]:
     coord = mx, my
 
@@ -558,6 +604,7 @@ def mouse_raycast(
         face_index,
         obj,
         matrix,
+        raw_first_obj,
     ) = deep_ray_cast(ray_origin, vec)
 
     # backface snapping inversion
@@ -580,12 +627,14 @@ def mouse_raycast(
 
         snapped_rotation = snapped_normal.to_track_quat("Z", "Y").to_euler()
 
-        if props.randomize_rotation and snapped_normal.angle(up) < math.radians(10.0):
-            random_offset = (
-                props.offset_rotation_amount
-                + math.pi
-                + (random.random() - 0.5) * props.randomize_rotation_amount
-            )
+        if snapped_normal.angle(up) < math.radians(10.0):
+            # near-flat, up-facing surface: match the scene floor behavior,
+            # which applies a 180° flip so the model faces the same way.
+            random_offset = props.offset_rotation_amount + math.pi
+            if props.randomize_rotation:
+                random_offset += (
+                    random.random() - 0.5
+                ) * props.randomize_rotation_amount
         else:
             random_offset = (
                 props.offset_rotation_amount
@@ -604,6 +653,7 @@ def mouse_raycast(
         face_index,
         obj,
         matrix,
+        raw_first_obj,
     )
 
 
@@ -680,6 +730,7 @@ def deep_ray_cast(ray_origin: Vector, vec: Vector) -> Tuple[
     Optional[int],
     Optional[bpy.types.Object],
     Optional[mathutils.Matrix],
+    Optional[bpy.types.Object],
 ]:
     # this allows to ignore some objects, like objects with bounding box draw style or particle objects
     obj = None
@@ -693,7 +744,18 @@ def deep_ray_cast(ray_origin: Vector, vec: Vector) -> Tuple[
         obj,
         matrix,
     ) = bpy.context.scene.ray_cast(depsgraph, ray_origin, vec)
-    empty_set = False, Vector((0, 0, 0)), Vector((0, 0, 1)), None, None, None
+    # The raw (unfiltered) first hit is returned so the caller can detect
+    # hovering over a particle-system instance without a second scene ray_cast.
+    raw_first_obj = obj
+    empty_set = (
+        False,
+        Vector((0, 0, 0)),
+        Vector((0, 0, 1)),
+        None,
+        None,
+        None,
+        raw_first_obj,
+    )
     if not obj:
         return empty_set
     try_object = obj
@@ -721,18 +783,30 @@ def deep_ray_cast(ray_origin: Vector, vec: Vector) -> Tuple[
                 try_object,
                 try_matrix,
             )
+    if try_object is None:
+        return empty_set
     if not (obj.display_type == "BOUNDS" or object_in_particle_collection(try_object)):
-        return has_hit, snapped_location, snapped_normal, face_index, obj, matrix
+        return (
+            has_hit,
+            snapped_location,
+            snapped_normal,
+            face_index,
+            obj,
+            matrix,
+            raw_first_obj,
+        )
     return empty_set
 
 
-def object_in_particle_collection(o: bpy.types.Object) -> bool:
+def object_in_particle_collection(o: Optional[bpy.types.Object]) -> bool:
     """checks if an object is in a particle system as instance, to not snap to it and not to try to attach material."""
+    if o is None:
+        return False
     for p in bpy.data.particles:
         if p.render_type == "COLLECTION" and p.instance_collection:
-            if o in p.instance_collection.objects:
+            if o.name in p.instance_collection.objects:
                 return True
-        if p.render_type == "COLLECTION":
+        if p.render_type == "OBJECT":
             if p.instance_object == o:
                 return True
     return False
@@ -760,11 +834,32 @@ def get_node_tree(context: bpy.types.Context) -> bpy.types.NodeTree:
     return context.scene.compositing_node_group
 
 
+def _make_drag_status_fn(asset_type: str):
+    """Build a status-bar draw function shown in Blender's status bar during drag-drop."""
+    show_rotation = asset_type in ("model", "printable")
+
+    def _draw(header, context):
+        layout = header.layout
+        layout.label(text="Blendkit Drag-Drop")
+
+        layout.label(text="Place", icon="MOUSE_LMB")
+        layout.label(text="Cancel", icon="MOUSE_RMB")
+
+        if show_rotation:
+            layout.label(text="Rotate 10°", icon="MOUSE_MMB")
+            layout.label(text="1°", icon="EVENT_SHIFT")
+            layout.label(text="Snap 90°", icon="EVENT_CTRL")
+
+        layout.separator_spacer()
+
+    return _draw
+
+
 class AssetDragOperator(bpy.types.Operator):
     """Drag & drop assets into scene. Operator being drawn when dragging asset."""
 
     bl_idname = "view3d.asset_drag_drop"
-    bl_label = "BlenderKit asset drag drop"
+    bl_label = "Blendkit asset drag drop"
 
     asset_search_index: IntProperty(name="Active Index", default=0)  # type: ignore
 
@@ -827,8 +922,25 @@ class AssetDragOperator(bpy.types.Operator):
         self.steps = 0
         self.closed_assetbar = False
 
+        # Set when the cursor is over an object that is excluded from drag
+        # snapping because it is used as a particle-system instance. Used by
+        # draw_callback_dragging to explain to the user why a material/model
+        # can't be dropped on that object in the 3D view.
+        self.over_particle_instance = False
+
+        # Proxor draw handler for proxy mesh preview during drag
+        self._proxor_handler = None
+        # assetBaseId of a .prxc download kicked off at drag start but not
+        # yet available on disk. Polled in modal() and swapped in when
+        # the file lands in global_vars.DATA["prxc available"].
+        self._proxor_pending: Optional[str] = None
+
     def handlers_remove(self) -> None:
         """Remove all draw handlers."""
+        if self._proxor_handler is not None:
+            self._proxor_handler.remove()
+            self._proxor_handler = None
+        self._proxor_pending = None
         # Remove specific handlers for VIEW_3D and Outliner
         bpy.types.SpaceView3D.draw_handler_remove(self._handle_3d, "WINDOW")
 
@@ -836,6 +948,88 @@ class AssetDragOperator(bpy.types.Operator):
         for space_type, handler in self._handlers_universal.items():
             if handler:
                 getattr(bpy.types, space_type).draw_handler_remove(handler, "WINDOW")
+
+    def _install_proxor_handler_from_path(
+        self, asset_base_id: str, prxc_path: str
+    ) -> None:
+        """Build and install a :class:`ProxorLiteDrawHandler` from *prxc_path*.
+
+        On any failure the handler is torn down and ``self._proxor_handler``
+        is reset to ``None`` so the drag falls back to the green bbox.
+        """
+        try:
+            from ..bk_proxor import prx_format as proxor_prx_format
+            from ..bk_proxor._blender.draw import (
+                ProxorLiteDrawHandler,
+                default_draw_context,
+            )
+
+            payload = proxor_prx_format.read_prx(prxc_path)
+            proxor_data = payload.get("data")
+            if not proxor_data:
+                return
+
+            self._proxor_handler = ProxorLiteDrawHandler()
+            self._proxor_handler.draw_ctx = default_draw_context(
+                mesh_color_mode="CUSTOM",
+                custom_color=colors.PURE_GREEN,
+                mesh_shading_mode="FLAT",
+                use_gradient=True,
+                point_visibility=0.0,
+                line_thickness=0.0,
+            )
+            self._proxor_handler.set_payload(proxor_data)
+            self._proxor_handler.install()
+            bk_logger.debug(f"Proxor preview loaded for {asset_base_id}")
+        except Exception as e:
+            bk_logger.warning(f"Failed to load proxor preview: {e}")
+            # Ensure a partially-initialized handler is torn down
+            # (e.g. install() raised after set_payload() cached batches).
+            if self._proxor_handler is not None:
+                try:
+                    self._proxor_handler.remove()
+                except Exception:
+                    pass
+            self._proxor_handler = None
+
+    def _start_proxor_fetch(self, asset_base_id: str) -> None:
+        """Fire a single on-demand ``.prxc`` download for *asset_base_id*.
+
+        No-op if the asset has no ``.prxc`` URL. The download completes
+        asynchronously; :meth:`_poll_proxor_pending` swaps the handler in
+        once the file lands.
+        """
+        if not asset_base_id:
+            return
+        prxc_url = ""
+        for f in self.asset_data.get("files", []) or []:
+            if f.get("fileType") == "prxc" and f.get("downloadUrl"):
+                prxc_url = f["downloadUrl"]
+                break
+        if not prxc_url:
+            return
+        try:
+            asset_type = self.asset_data.get("assetType", "model")
+            tempdir = paths.get_temp_dir(f"{asset_type}_search")
+            file_path = os.path.join(tempdir, f"{asset_base_id}.prxc")
+            scene_uuid = utils.get_scene_id()
+            client_lib.asset_prxc_download(
+                asset_base_id, prxc_url, file_path, scene_uuid
+            )
+            self._proxor_pending = asset_base_id
+        except Exception as e:
+            bk_logger.debug(f"prxc on-demand fetch not scheduled: {e}")
+            self._proxor_pending = None
+
+    def _poll_proxor_pending(self) -> None:
+        """Swap to proxor mid-drag once the pending ``.prxc`` lands."""
+        if self._proxor_pending is None or self._proxor_handler is not None:
+            return
+        asset_base_id = self._proxor_pending
+        prxc_path = global_vars.DATA.get("prxc available", {}).get(asset_base_id)
+        if prxc_path and os.path.exists(prxc_path):
+            self._install_proxor_handler_from_path(asset_base_id, prxc_path)
+            self._proxor_pending = None
 
     def is_nodegroup_compatible_with_editor(
         self, nodegroup_type: str, editor_type: Optional[str] = None
@@ -936,7 +1130,7 @@ class AssetDragOperator(bpy.types.Operator):
                     title="This object is linked from outer file",
                     message="Please select the model,"
                     "go to the 'Selected Model' panel "
-                    "in BlenderKit and hit 'Bring to Scene' first.",
+                    "in Blendkit and hit 'Bring to Scene' first.",
                 )
                 return
             if obj.type not in utils.supported_material_drag:
@@ -1445,10 +1639,10 @@ class AssetDragOperator(bpy.types.Operator):
 
         for window in wins:
             # first let's test if it's in this window, so we know we shall continue
-            window_x = window.x
-            window_y = window.y
-            window_width = window.width
-            window_height = window.height
+            window_x = window.x * self.resolution_factor
+            window_y = window.y * self.resolution_factor
+            window_width = window.width * self.resolution_factor
+            window_height = window.height * self.resolution_factor
             if (
                 x < window_x
                 or x > window_x + window_width
@@ -1473,52 +1667,38 @@ class AssetDragOperator(bpy.types.Operator):
         self,
     ) -> Union[bpy.types.Object, bpy.types.Collection, None]:
         """Find and select the element under the mouse in the outliner.
-        Returns the selected object, collection, or None."""
+        Returns the selected object, collection, or None.
+
+        Reuses ``utils.get_outliner_element_under_mouse`` with
+        ``restore_selection=False`` so the probed element stays selected for the
+        drop. The original selection is captured here and restored later via
+        ``restore_original_selection()``.
+        """
         if not self.active_area or self.active_area.type != "OUTLINER":
             return None
 
-        context = bpy.context
-        view_layer = context.view_layer
-        selected_objects = context.selected_objects
-        active_object = context.active_object
+        view_layer = bpy.context.view_layer
 
-        orig_selected_objects = selected_objects.copy()
-        orig_active_object = active_object
-        orig_active_collection = view_layer.active_layer_collection
+        # Capture selection so restore_original_selection() can put it back after the drop.
+        self.orig_selected_objects = bpy.context.selected_objects.copy()
+        self.orig_active_object = bpy.context.active_object
+        self.orig_active_collection = view_layer.active_layer_collection
 
-        selected_element = None
-        if bpy.app.version > (3, 1, 9):
-            # doesn't make sense for lower versions, we wouldn't get the selected_ids anyway.
-            #  Simply drops into active_layer_collection in prehistoric Blender.
-            with bpy.context.temp_override(
-                window=self.active_window,
-                area=self.active_area,
-                region=self.active_region,
-            ):
-                bpy.ops.outliner.select_box(
-                    xmin=self.mouse_x - 1,
-                    xmax=self.mouse_x + 1,
-                    ymin=self.mouse_y - 1,
-                    ymax=self.mouse_y + 1,
-                    wait_for_input=False,
-                    mode="SET",
-                )
+        selected_element = utils.get_outliner_element_under_mouse(
+            self.active_window,
+            self.active_area,
+            self.active_region,
+            self.mouse_x,
+            self.mouse_y,
+            restore_selection=False,
+        )
 
-                # Get the newly selected element using selected_ids
-                if (
-                    hasattr(bpy.context, "selected_ids")
-                    and len(bpy.context.selected_ids) > 0
-                ):
-                    selected_element = bpy.context.selected_ids[0]
-
+        # Prehistoric Blender (<= 3.1.9) can't resolve selected_ids; drop into the
+        # active layer collection instead.
         if selected_element is None and hasattr(view_layer, "active_layer_collection"):
             alc = view_layer.active_layer_collection
             if alc is not None and hasattr(alc, "collection"):
                 selected_element = alc.collection
-
-        self.orig_selected_objects = orig_selected_objects
-        self.orig_active_object = orig_active_object
-        self.orig_active_collection = orig_active_collection
 
         return selected_element
 
@@ -1594,6 +1774,9 @@ class AssetDragOperator(bpy.types.Operator):
     ):
         """Get the active object under the mouse cursor during drag."""
 
+        # Reset per-frame hover state
+        self.over_particle_instance = False
+
         # precise placement in ortho views, and quad view
         region_data = viewport_utils.region_data_for_view(active_area, active_region)
         if region_data is None:
@@ -1603,6 +1786,9 @@ class AssetDragOperator(bpy.types.Operator):
                     if region_data is not None:
                         break
 
+        # Raw (unfiltered) first hit from mouse_raycast, reused below to detect
+        # hovering over a particle-system instance without a second ray_cast.
+        raw_first_obj = None
         # Need to temporarily override context for raycasting
         if bpy.app.version < (3, 2, 0):  # B3.0, B3.1 - custom context override
             override = {
@@ -1622,6 +1808,7 @@ class AssetDragOperator(bpy.types.Operator):
                 self.face_index,
                 obj,
                 self.matrix,
+                raw_first_obj,
             ) = mouse_raycast(active_region, region_data, self.mouse_x, self.mouse_y)
             if obj is not None:
                 self.object_name = obj.name
@@ -1637,6 +1824,7 @@ class AssetDragOperator(bpy.types.Operator):
                     self.face_index,
                     obj,
                     self.matrix,
+                    raw_first_obj,
                 ) = mouse_raycast(
                     active_region,
                     region_data,
@@ -1704,6 +1892,19 @@ class AssetDragOperator(bpy.types.Operator):
                     else:
                         self.object_name = None
 
+        # Detect if the cursor is over an object that was filtered out of drag
+        # snapping because it's used as a particle-system instance. mouse_raycast
+        # already returns the raw (unfiltered) first hit, so we reuse it here
+        # instead of doing a second full scene ray_cast every drag frame.
+        try:
+            if raw_first_obj is not None and object_in_particle_collection(
+                raw_first_obj
+            ):
+                self.over_particle_instance = True
+        except Exception:
+            # Informational only — never break drag on detection failure.
+            pass
+
     def _handle_node_editor_type(
         self, current_area_type: Union[str, None], active_area: bpy.types.Area
     ) -> None:
@@ -1726,6 +1927,10 @@ class AssetDragOperator(bpy.types.Operator):
         """Shared teardown: remove handlers, restore cursor, reset drag state."""
         self.handlers_remove()
         bpy.context.window.cursor_modal_restore()
+        try:
+            bpy.context.workspace.status_text_set(None)
+        except Exception:
+            pass
         ui_props.dragging = False
         if self.closed_assetbar:
             bpy.ops.view3d.run_assetbar_fix_context(keep_running=True, do_search=False)
@@ -1739,8 +1944,17 @@ class AssetDragOperator(bpy.types.Operator):
         cls = type(self)
         ui_props = bpy.context.window_manager.blenderkitUI
 
-        self.mouse_screen_x = int(context.window.x + event.mouse_x)
-        self.mouse_screen_y = int(context.window.y + event.mouse_y)
+        # Swap in the proxor handler if an on-demand fetch finished since
+        # the last modal tick (cheap dict + path check, no I/O in common case).
+        if self._proxor_pending is not None:
+            self._poll_proxor_pending()
+
+        self.mouse_screen_x = int(
+            context.window.x * self.resolution_factor + event.mouse_x
+        )
+        self.mouse_screen_y = int(
+            context.window.y * self.resolution_factor + event.mouse_y
+        )
 
         # Find the active region under the mouse cursor using actual screen coordinates
         found_window, found_area, found_region = self.find_active_region(
@@ -1768,10 +1982,14 @@ class AssetDragOperator(bpy.types.Operator):
         # Convert screen coords (bottom-left) to region-local coords
         # window.x/y and region.x/y are also in bottom-left coordinate system
         self.mouse_x = int(
-            self.mouse_screen_x - self.active_window.x - self.active_region.x
+            self.mouse_screen_x
+            - self.active_window.x * self.resolution_factor
+            - self.active_region.x
         )
         self.mouse_y = int(
-            self.mouse_screen_y - self.active_window.y - self.active_region.y
+            self.mouse_screen_y
+            - self.active_window.y * self.resolution_factor
+            - self.active_region.y
         )
 
         # redraw all windows to update cursor and other elements
@@ -1844,10 +2062,18 @@ class AssetDragOperator(bpy.types.Operator):
             return {"PASS_THROUGH"}
 
         sprops = bpy.context.window_manager.blenderkit_models
-        if event.type == "WHEELUPMOUSE":
-            sprops.offset_rotation_amount += sprops.offset_rotation_step
-        elif event.type == "WHEELDOWNMOUSE":
-            sprops.offset_rotation_amount -= sprops.offset_rotation_step
+        if event.type in ("WHEELUPMOUSE", "WHEELDOWNMOUSE"):
+            direction = 1 if event.type == "WHEELUPMOUSE" else -1
+            if event.ctrl:
+                # Snap to nearest perpendicular (90°) then step by 90°
+                snap = math.pi / 2
+                current = sprops.offset_rotation_amount
+                snapped = round(current / snap) * snap
+                sprops.offset_rotation_amount = snapped + direction * snap
+            elif event.shift:
+                sprops.offset_rotation_amount += direction * math.radians(1)
+            else:
+                sprops.offset_rotation_amount += direction * math.radians(10)
 
         if event.type in {
             "MOUSEMOVE",
@@ -1909,11 +2135,33 @@ class AssetDragOperator(bpy.types.Operator):
         # This is critical for multi-window support where active_index is shared across windows
         self.asset_data = dict(sr[self.asset_search_index])
 
-        # Initialize drag-start coordinates immediately in invoke. If mouse-move
-        # events are sparse (or arrive late), we still compute threshold against
-        # the true click/press origin instead of first modal tick.
-        self.mouse_screen_x = int(context.window.x + event.mouse_x)
-        self.mouse_screen_y = int(context.window.y + event.mouse_y)
+        # Try to load proxor preview for model/printable assets
+        if utils.proxor_enabled() and self.asset_data.get("assetType") in (
+            "model",
+            "printable",
+        ):
+            asset_base_id = self.asset_data.get("assetBaseId", "")
+            prxc_path = global_vars.DATA.get("prxc available", {}).get(asset_base_id)
+            if prxc_path and os.path.exists(prxc_path):
+                self._install_proxor_handler_from_path(asset_base_id, prxc_path)
+            else:
+                # No cached file: kick off a single on-demand .prxc fetch.
+                # Drag continues with the green bbox; handler is swapped in
+                # from modal() once the file lands on disk.
+                self._start_proxor_fetch(asset_base_id)
+
+        # Initialize drag-start coordinates immediately in invoke.
+        # resolution factor is essential on Mac OS. don't touch it if you don't know what you are doing.
+        self.resolution_factor = (
+            bpy.context.preferences.system.pixel_size
+            / bpy.context.preferences.view.ui_scale
+        )
+        self.mouse_screen_x = int(
+            context.window.x * self.resolution_factor + event.mouse_x
+        )
+        self.mouse_screen_y = int(
+            context.window.y * self.resolution_factor + event.mouse_y
+        )
         self.start_mouse_x = self.mouse_screen_x
         self.start_mouse_y = self.mouse_screen_y
         # Author assets should not be dragged, cancel immediately
@@ -1925,7 +2173,9 @@ class AssetDragOperator(bpy.types.Operator):
         ):
             message = "This addon is not purchased yet."
             link_text = "Purchase add-on online"
-            url = f'{global_vars.SERVER}/get-blenderkit/{self.asset_data["id"]}/?from_addon=True'
+            url = paths.get_unlock_asset_url(
+                self.asset_data["id"], "addon_purchase_drag"
+            )
             bpy.ops.wm.blenderkit_url_dialog(
                 "INVOKE_REGION_WIN", url=url, message=message, link_text=link_text
             )
@@ -1935,17 +2185,22 @@ class AssetDragOperator(bpy.types.Operator):
 
         if not self.asset_data.get("canDownload"):
 
-            message = "This asset is included in Full Plan.\nSupport asset creators & open-source by subscribing."
-            link_text = "Unlock All Assets"
-            url = f"{global_vars.SERVER}/get-blenderkit/{self.asset_data['id']}/?from_addon=True"
+            variant = unlock_options.get_unlock_variant()
+            url = paths.get_unlock_asset_url(
+                self.asset_data["id"], "asset_unlock_drag", variant.identifier
+            )
             bpy.ops.wm.blenderkit_url_dialog(
-                "INVOKE_REGION_WIN", url=url, message=message, link_text=link_text
+                "INVOKE_REGION_WIN",
+                url=url,
+                header=variant.header,
+                message=variant.message,
+                link_text=variant.button_text,
             )
             ui_props.dragging = False
             cls.active_operator_id = None
             return {"CANCELLED"}
 
-        prefs = bpy.context.preferences.addons[__package__].preferences
+        prefs = bpy.context.preferences.addons[_ADDON_PACKAGE].preferences
 
         dir_behaviour = prefs.directory_behaviour
 
@@ -2042,6 +2297,12 @@ class AssetDragOperator(bpy.types.Operator):
         ui_props = bpy.context.window_manager.blenderkitUI
         self.drag = False
         self.steps = 0
+        try:
+            bpy.context.workspace.status_text_set(
+                _make_drag_status_fn(self.asset_data.get("assetType", ""))
+            )
+        except Exception as e:
+            bk_logger.debug("Could not set drag-drop status text: %s", e)
         context.window_manager.modal_handler_add(self)
         return {"RUNNING_MODAL"}
 
@@ -2066,9 +2327,9 @@ class AssetDragOperator(bpy.types.Operator):
 
 class DownloadGizmoOperator(BL_UI_OT_draw_operator):
     bl_idname = "view3d.blenderkit_download_gizmo_widget"
-    bl_label = "BlenderKit download gizmo"
+    bl_label = "Blendkit download gizmo"
     bl_description = (
-        "BlenderKit download gizmo - draws download and enables to cancel it."
+        "Blendkit download gizmo - draws download and enables to cancel it."
     )
     bl_options = {"REGISTER"}
     instances = []

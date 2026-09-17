@@ -1,12 +1,29 @@
 import logging
+import math
 from typing import Optional
 
 import bpy
+import gpu
 from bpy.types import Operator
 
+from .. import ui_bgl
 from .bl_ui_widget import region_redraw
 
 bk_logger = logging.getLogger(__name__)
+
+
+def _widget_outside_clip(widget, clip):
+    """Return True when widget's screen rect is fully outside the clip rect.
+
+    ``clip`` is a (top, bottom, left, right) tuple in widget (top-down) coords.
+    """
+    gt, gb, gl, gr = clip
+    return (
+        widget.y_screen + widget.height <= gt
+        or widget.y_screen >= gb
+        or widget.x_screen + widget.width <= gl
+        or widget.x_screen >= gr
+    )
 
 
 def get_safely(obj, attr_name, default=None):
@@ -19,9 +36,28 @@ def get_safely(obj, attr_name, default=None):
         return default
 
 
+def _compute_grid_clip(op):
+    """Return the visible grid area as (top, bottom, left, right) in widget coords.
+
+    Returns None when the clip area cannot be determined (e.g. missing panel).
+    Used by both the draw callback (GPU scissor) and the event handler to skip
+    buffer-row widgets that are positioned outside the visible bar.
+    """
+    panel = get_safely(op, "panel", None)
+    button_size = get_safely(op, "button_size", 0)
+    if panel is None or button_size <= 0:
+        return None
+    hcount = get_safely(op, "hcount", 1)
+    wcount = get_safely(op, "wcount", 1)
+    margin = get_safely(op, "assetbar_margin", 0)
+    top = panel.y_screen + margin
+    left = panel.x_screen + margin
+    return (top, top + hcount * button_size, left, left + wcount * button_size)
+
+
 def restart_asset_bar():
     # ignore failures if already gone
-    from asset_bar_op import BlenderKitAssetBarOperator
+    from ..asset_bar.asset_bar_op import BlenderKitAssetBarOperator
 
     try:
         bpy.utils.unregister_class(BlenderKitAssetBarOperator)
@@ -90,13 +126,18 @@ class BL_UI_OT_draw_operator(Operator):
         self.draw_event = None
 
     def handle_widget_events(self, event):
-        result = False
-        # we iterate widgets reversed, so top buttons can get processed first if buttons overlap.
+        grid_clip = _compute_grid_clip(self)
+        # Iterate reversed so top/front widgets get priority on overlap.
         for widget in reversed(self.widgets):
+            if (
+                getattr(widget, "_is_grid_widget", False)
+                and grid_clip is not None
+                and _widget_outside_clip(widget, grid_clip)
+            ):
+                continue
             if widget.handle_event(event):
-                result = True
-                return True  # return prematurely to avoid conflicts.
-        return result
+                return True
+        return False
 
     def modal(self, context, event):
         if self._finished:
@@ -155,7 +196,81 @@ def draw_callback_px_separated(self, op, context):
             if region_pointer is None or region_pointer != active_region_pointer:
                 return
 
-        for widget in self.widgets:
-            widget.draw()
+        region = getattr(context, "region", None)
+
+        # Grid clipping strategy:
+        #  * Always cull widgets that are fully outside the visible bar.
+        #  * When the GPU scissor API is available (Blender 3.6+), also
+        #    clip partially-visible widgets so smooth-scroll animations
+        #    don't spill rows outside the bar. On older Blender versions
+        #    smooth scroll is disabled at the asset-bar level, so plain
+        #    culling is sufficient.
+        grid_clip = _compute_grid_clip(self)
+        scissor_supported = hasattr(gpu.state, "scissor_test_set") and hasattr(
+            gpu.state, "scissor_set"
+        )
+        grid_scissor = None
+        if scissor_supported and grid_clip is not None and region is not None:
+            gt, gb, gl, gr = grid_clip
+            try:
+                vp = gpu.state.viewport_get()
+            except Exception:  # noqa: BLE001
+                vp = None
+            if vp is not None:
+                rw = max(region.width, 1)
+                rh = max(region.height, 1)
+                sx = int(vp[0] + gl * vp[2] / rw)
+                sy = int(vp[1] + (region.height - gb) * vp[3] / rh)
+                sw = math.ceil((gr - gl) * vp[2] / rw)
+                sh = math.ceil((gb - gt) * vp[3] / rh)
+                if sw > 0 and sh > 0:
+                    grid_scissor = (sx, sy, sw, sh)
+
+        # Smooth-scroll sub-slot offset is applied as a single draw-time
+        # translate to all grid widgets (GPU coords, +x right / +y up) instead
+        # of repositioning each widget per frame. While it's non-zero, expand
+        # the *cull* clip by one slot so buffer widgets sliding into view are
+        # not culled; the GPU scissor stays at the exact bar bounds so partial
+        # widgets are still clipped precisely.
+        grid_offset = get_safely(self, "_grid_draw_offset", (0.0, 0.0))
+        offset_dx, offset_dy = grid_offset
+        has_grid_offset = offset_dx != 0.0 or offset_dy != 0.0
+        cull_clip = grid_clip
+        if has_grid_offset and grid_clip is not None:
+            bs = get_safely(self, "button_size", 0) or 0
+            gt, gb, gl, gr = grid_clip
+            cull_clip = (gt - bs, gb + bs, gl - bs, gr + bs)
+
+        with ui_bgl.overlay_matrix_guard(region):
+            scissor_active = False
+            for widget in self.widgets:
+                is_grid = getattr(widget, "_is_grid_widget", False)
+                if (
+                    is_grid
+                    and cull_clip is not None
+                    and _widget_outside_clip(widget, cull_clip)
+                ):
+                    continue
+
+                if is_grid and grid_scissor is not None:
+                    if not scissor_active:
+                        gpu.state.scissor_test_set(True)
+                        gpu.state.scissor_set(*grid_scissor)
+                        scissor_active = True
+                elif scissor_active:
+                    gpu.state.scissor_test_set(False)
+                    scissor_active = False
+
+                if is_grid and has_grid_offset:
+                    gpu.matrix.push()
+                    gpu.matrix.translate((offset_dx, offset_dy))
+                    widget.draw()
+                    gpu.matrix.pop()
+                else:
+                    widget.draw()
+
+            if scissor_active:
+                gpu.state.scissor_test_set(False)
+
     except Exception:
         bk_logger.exception("Error in draw_callback_px_separated: ")

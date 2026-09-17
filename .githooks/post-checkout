@@ -1,0 +1,16 @@
+#!/bin/sh
+# Checkout submodule(s) to commit(s) stored in this repository (.git/modules/*/HEAD)
+# To get the latest changes from remote instead, use: `git submodule update --remote`
+
+repo_root="$(git rev-parse --show-toplevel 2>/dev/null)" || exit 0
+cd "$repo_root" || exit 0
+
+# $3 is 1 for a branch checkout, 0 for a file checkout.
+# Only touch submodules on branch checkouts and when submodules exist.
+if [ "${3:-}" = "1" ] && [ -f .gitmodules ]; then
+	if ! git submodule update --init --recursive; then
+		echo "Warning: 'git submodule update --init --recursive' failed; continuing..." >&2
+	fi
+fi
+
+exit 0

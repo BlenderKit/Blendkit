@@ -97,7 +97,7 @@ class BL_UI_Image(BL_UI_Widget):
         self.shader.bind()
         self.shader.uniform_float("color", self._bg_color)
 
-        self.batch_panel.draw(self.shader)
+        self._draw_panel_batch()
 
     def draw_image(self):
         if self.__image is not None:

@@ -7,6 +7,10 @@ class BL_UI_Drag_Panel(BL_UI_Widget):
         self.drag_offset_x = 0
         self.drag_offset_y = 0
         self.is_drag = False
+        # When False the panel can't be dragged by its background (e.g. the
+        # asset bar, which is positioned by its own offsets and resized via a
+        # dedicated handle widget).
+        self.drag_enabled = True
         self.widgets = []
 
     def set_location(self, x, y):
@@ -43,6 +47,8 @@ class BL_UI_Drag_Panel(BL_UI_Widget):
         return False
 
     def mouse_down(self, x, y):
+        if not self.drag_enabled:
+            return False
         if self.child_widget_focused(x, y):
             return False
 
@@ -56,7 +62,7 @@ class BL_UI_Drag_Panel(BL_UI_Widget):
         return False
 
     def mouse_move(self, x, y):
-        if self.is_drag:
+        if self.drag_enabled and self.is_drag:
             height = self.get_area_height()
             self.update(x, height - y)
             self.layout_widgets()

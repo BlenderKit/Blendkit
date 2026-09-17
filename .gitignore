@@ -2,6 +2,9 @@ __pycache__
 out
 # ignore built binaries
 client/v*.*.*
+client/client.exe
+client/RESOLVED_VERSION
+bk_client/client/bk_client-settings.json
 
 pyproject.toml
 client_builds
@@ -20,3 +23,12 @@ _bck/
 
 # debug env variables
 .env
+
+# macos thumbnail database
+.DS_Store
+
+# ignore temp blend files
+*.blend1
+
+# ignore thumbnailer testing output
+**/camera_sweep

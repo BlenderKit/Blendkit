@@ -73,7 +73,7 @@ def get_category_path(categories, category):
 
 
 def get_category_name_path(categories, category):
-    """finds the category in all possible subcategories and returns the path to it"""
+    """Finds the category in all possible subcategories and returns the path to it."""
     category_path = []
     check_categories = categories[:]
     parents = {}
@@ -98,7 +98,8 @@ def get_category_name_path(categories, category):
     return category_path
 
 
-def get_category(categories, cat_path=()):
+def get_category(categories, cat_path=()) -> dict:
+    """Finds the category in all possible subcategories and returns the category dict."""
     for category in cat_path:
         for c in categories:
             if c["slug"] == category:
@@ -106,6 +107,7 @@ def get_category(categories, cat_path=()):
                 if category == cat_path[-1]:
                     return c
                 break
+    return {}
 
 
 def handle_categories_task(task: client_tasks.Task):
@@ -195,8 +197,9 @@ def get_category_enums(self, context):
         global_vars.DATA["bkit_categories"], cat_path=(asset_type,)
     )
     items = []
-    for c in asset_categories["children"]:
-        items.append((c["slug"], c["name"], c["description"]))
+    if asset_categories is not None and asset_categories.get("children") is not None:
+        for c in asset_categories["children"]:
+            items.append((c["slug"], c["name"], c["description"]))
     if len(items) == 0:
         items.append(("EMPTY", "Empty", "no categories on this level defined"))
     else:
@@ -224,7 +227,10 @@ def get_subcategory_enums(self, context):
                 self.category,
             ),
         )
-        if asset_categories is not None:
+        if (
+            asset_categories is not None
+            and asset_categories.get("children") is not None
+        ):
             for c in asset_categories["children"]:
                 items.append((c["slug"], c["name"], c["description"]))
     if len(items) == 0:
@@ -263,7 +269,10 @@ def get_subcategory1_enums(self, context):
                 self.subcategory,
             ),
         )
-        if asset_categories is not None:
+        if (
+            asset_categories is not None
+            and asset_categories.get("children") is not None
+        ):
             for c in asset_categories["children"]:
                 items.append((c["slug"], c["name"], c["description"]))
     if len(items) == 0:

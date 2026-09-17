@@ -68,63 +68,68 @@
         },
 
         {
-            "name": "Run Blender 5.1.0",
-            "type": "cppvsdbg",
+            "name": "Run Blender 5.2.1",
+            "type": "node",
             "request": "launch",
-            "program": "D:/blenders/5.1.0/blender.exe",
-            "args": [],
-            "stopAtEntry": false,
+            "console": "integratedTerminal",
             "cwd": "${workspaceFolder}",
-            "externalConsole": false,
-            "environment": [
-                // {"name": "BK_SKIP_NEW_THUMBNAILS",
-                // "value": "1"},
-            ],
+            "env": {
+                "BLENDKIT_DEBUG": "1"
+            },
+            "windows": {
+                "args": [
+                    "-dev"
+                ],
+                "runtimeExecutable": "D:/blenders/5.2.1/blender.exe",
+            },
+            "linux": {
+                "runtimeExecutable": "blender",
+            },
+            "osx": {
+                "runtimeExecutable": "/Applications/Blender 5.2.app/Contents/MacOS/Blender",
+            }
         },
 
         {
-            "name": "Run Blender 5.0.1 Tests",
+            "name": "Run Blender 5.2.1 Tests",
             "type": "node",
             "request": "launch",
             "console": "integratedTerminal",
             "cwd": "${workspaceFolder}",
             "windows": {
-                "runtimeExecutable": "D:/blenders/5.0.1/blender.exe",
+                "runtimeExecutable": "D:/blenders/5.2.1/blender.exe",
                 "args": [
-                    "--background",
                     "-noaudio",
                     "--python-exit-code",
                     "1",
                     "--python",
                     "tests/test.py",
                     "--",
-                    "blenderkit"
+                    "blenderkit_dev_hl"
                 ]
             },
             "linux": {
                 "runtimeExecutable": "blender",
                 "args": [
-                    "--background",
                     "-noaudio",
                     "--python-exit-code",
                     "1",
                     "--python",
                     "tests/test.py",
                     "--",
-                    "blenderkit"
+                    "blenderkit_dev_hl"
                 ]
             },
             "osx": {
-                "runtimeExecutable": "blender",
+                "runtimeExecutable": "/Applications/Blender.app/Contents/MacOS/Blender",
                 "args": [
-                    "--background",
                     "-noaudio",
                     "--python-exit-code",
                     "1",
                     "--python",
                     "tests/test.py",
                     "--",
-                    "blenderkit"
+                    "blenderkit_dev_hl"
                 ]
             }
         },
@@ -160,9 +165,8 @@
             "request": "launch",
             "module": "black",
             "args": [
-                "${workspaceFolder}/*.py",
+                ".",
                 "--check", "--diff",
-
             ],
             "console": "integratedTerminal",
             "windows": {
@@ -314,21 +318,21 @@
                     "-NoLogo",
                     "-NoProfile",
                     "-Command",
-                    "D:\\blenders\\5.1.0\\blender.exe --background -noaudio --python-exit-code 1 --python tests/test.py -- blenderkit_dev_hl"
+                    "D:\\blenders\\5.1.2\\blender.exe --background -noaudio --python-exit-code 1 --python tests/test.py -- blenderkit_dev_hl"
                 ]
             },
             "linux": {
                 "runtimeExecutable": "/bin/bash",
                 "args": [
                     "-c",
-                    "blender --background -noaudio --python-exit-code 1 --python tests/test.py -- blenderkit"
+                    "blender --background -noaudio --python-exit-code 1 --python tests/test.py -- blenderkit_dev_hl"
                 ]
             },
             "osx": {
                 "runtimeExecutable": "/bin/bash",
                 "args": [
                     "-c",
-                    "blender --background -noaudio --python-exit-code 1 --python tests/test.py -- blenderkit"
+                    "/Applications/Blender.app/Contents/MacOS/Blender --background -noaudio --python-exit-code 1 --python tests/test.py -- blenderkit_dev_hl"
                 ]
             }
         },

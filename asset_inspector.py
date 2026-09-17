@@ -30,6 +30,13 @@ RENDER_OBTYPES = ["MESH", "CURVE", "SURFACE", "METABALL", "TEXT"]
 _BLE_5_PLUS = bpy.app.version >= (5, 0, 0)
 
 
+def _image_tile_count(image) -> int:
+    """Return the number of tiles for a UDIM image, 1 for regular images."""
+    if getattr(image, "source", "") == "TILED" and hasattr(image, "tiles"):
+        return max(1, len(image.tiles))
+    return 1
+
+
 def check_material(props, mat):
     e = bpy.context.scene.render.engine
     shaders = []
@@ -62,7 +69,10 @@ def check_material(props, mat):
                         if n.image not in textures:
                             textures.append(n.image)
                             props.texture_count += 1
-                            total_pixels += n.image.size[0] * n.image.size[1]
+                            # Multiply per-tile pixel area by tile count so that
+                            # UDIM images (source='TILED') report the correct total.
+                            n_tiles = _image_tile_count(n.image)
+                            total_pixels += n_tiles * n.image.size[0] * n.image.size[1]
 
                             maxres = max(n.image.size[0], n.image.size[1])
                             props.texture_resolution_max = max(
@@ -138,7 +148,10 @@ def check_render_engine(props, obs):
 
                             textures.append(n.image)
                             props.texture_count += 1
-                            total_pixels += n.image.size[0] * n.image.size[1]
+                            # Multiply per-tile pixel area by tile count so that
+                            # UDIM images (source='TILED') report the correct total.
+                            n_tiles = _image_tile_count(n.image)
+                            total_pixels += n_tiles * n.image.size[0] * n.image.size[1]
 
                             maxres = max(n.image.size[0], n.image.size[1])
                             props.texture_resolution_max = max(
@@ -461,7 +474,7 @@ class AutoFillTags(bpy.types.Operator):
     """Fill tags for asset. Now run before upload, no need to interact from user side"""
 
     bl_idname = "object.blenderkit_auto_tags"
-    bl_label = "Generate Auto Tags for BlenderKit"
+    bl_label = "Generate Auto Tags for Blendkit"
     bl_options = {"REGISTER", "UNDO", "INTERNAL"}
 
     @classmethod

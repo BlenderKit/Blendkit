@@ -21,7 +21,6 @@ import os
 
 import bpy
 
-
 # We can store multiple preview collections here,
 # however in this example we only store "main"
 icon_collections = {}
@@ -44,8 +43,8 @@ icons_read = {
     "nsfw.png": "nsfw",
     "bell.png": "bell",
     "post_comment.png": "post_comment",
-    "blenderkit_logo.png": "logo",
-    "blenderkit_logo_offline.png": "logo_offline",
+    "blendkit_logo.png": "logo",
+    "blendkit_logo_offline.png": "logo_offline",
     "bookmark_full.png": "bookmark_full",
     "bookmark_empty.png": "bookmark_empty",
     "bar_slider_up.png": "bar_slider_up",
@@ -125,6 +124,18 @@ def register_icons():
 
     icon_collections["main"] = pcoll
     icon_collections["previews"] = bpy.utils.previews.new()
+
+    # Thumbnail angle previews shown in the thumbnail generator dialog. Files are
+    # named "<SNAP>_<ANGLE>.png" (e.g. "GROUND_ANGLE_1.png") to match the
+    # thumbnail_snap_to + thumbnail_angle enum values.
+    angles_pcoll = bpy.utils.previews.new()
+    angles_dir = os.path.join(icons_dir, "thumbnail_angles")
+    if os.path.isdir(angles_dir):
+        for fname in os.listdir(angles_dir):
+            if fname.lower().endswith(".png"):
+                key = os.path.splitext(fname)[0]
+                angles_pcoll.load(key, os.path.join(angles_dir, fname), "IMAGE")
+    icon_collections["thumbnail_angles"] = angles_pcoll
 
 
 def unregister_icons():

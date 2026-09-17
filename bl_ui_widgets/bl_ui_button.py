@@ -159,7 +159,7 @@ class BL_UI_Button(BL_UI_Widget):
         else:
             self.shader.bind()
             self.shader.uniform_float("color", fill_color)
-            self.batch_panel.draw(self.shader)
+            self._draw_panel_batch()
 
         self.draw_image()
 
