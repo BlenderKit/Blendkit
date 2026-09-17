@@ -25,12 +25,13 @@ multi_line_output = 3
 lines_after_imports = 2
 skip = ["lib", "out", ".venv"]
 profile = "black"
+exclude = ["lib", "out", ".venv", "bk_client", "bk_proxor"]
 
 [tool.black]
 target-version = ['py310']
 include = '\.pyi?$'
 exclude = '''
-/(\.git|\.venv|lib|out)/
+/(\.git|\.venv|lib|out|client|bk_client|bk_proxor)/
 '''
 
 [tool.ruff]
@@ -52,6 +53,8 @@ exclude = [
   ".venv/**",
   "*.pyi",
   "sentry_sdk",
+  "bk_client",
+  "bk_proxor",
 ]
 ignore = [
     "E501", # Line too long

@@ -23,7 +23,6 @@ import random
 import secrets
 import string
 import time
-import uuid
 from urllib.parse import quote as urlquote
 from webbrowser import open_new_tab
 
@@ -35,6 +34,7 @@ from . import (
     client_tasks,
     datas,
     global_vars,
+    paths,
     reports,
     search_price,
     tasks_queue,
@@ -51,9 +51,21 @@ active_authenticator = None
 bk_logger = logging.getLogger(__name__)
 
 
+def _login_task_event(login_event: str, refresh_event: str) -> str:
+    """Pick the telemetry event for a finished/failed "login" task.
+
+    Blendkit-Client delivers token *refresh* outcomes as "login" tasks too (one per
+    connected add-on). Only a login the add-on itself started - login_attempt is set
+    by LoginOnline and cleared by write_tokens, cancel and register - is a login.
+    """
+    preferences = bpy.context.preferences.addons[__package__].preferences
+    return login_event if preferences.login_attempt else refresh_event
+
+
 def handle_login_task(task: client_tasks.Task):
     """Handles incoming task of type Login. Writes tokens if it finished successfully, logouts the user on error."""
     if task.status == "finished":
+        client_lib.report_event(_login_task_event("login_completed", "token_refreshed"))
         tasks_queue.add_task(
             (
                 write_tokens,
@@ -65,6 +77,10 @@ def handle_login_task(task: client_tasks.Task):
             )
         )
     elif task.status == "error":
+        client_lib.report_event(
+            _login_task_event("login_failed", "token_refresh_failed"),
+            {"message": str(task.message)[:256]},
+        )
         logout()
         reports.add_report(task.message, type="ERROR", details=task.message_detailed)
 
@@ -123,13 +139,13 @@ def clean_login_data():
 
 
 def logout() -> None:
-    """Logs out user from add-on. Also calls BlenderKit-client to revoke the tokens."""
+    """Logs out user from add-on. Also calls Blendkit-client to revoke the tokens."""
     bk_logger.info("Logging out.")
     client_lib.oauth2_logout()
     clean_login_data()
 
 
-def login(signup: bool) -> None:
+def login(signup: bool, placement: str = "login") -> None:
     """Logs user into the addon.
     Opens a browser with login page. Once user is logged it redirects browser to Client handling access code via URL querry parameter.
     Using the access_code Client then requests api_token and handles the results as a task with status finished/error.
@@ -151,6 +167,8 @@ def login(signup: bool) -> None:
         authorize_url = f"{global_vars.SERVER}/accounts/register/?next={authorize_url}"
     else:
         authorize_url = f"{global_vars.SERVER}{authorize_url}"
+    authorize_url = paths.url_with_utm(authorize_url, placement)
+    client_lib.report_event("login_started", {"placement": placement, "signup": signup})
     ok = open_new_tab(authorize_url)
     bk_logger.info("Login page in browser opened (%s)", ok)
 
@@ -169,7 +187,7 @@ def generate_pkce_pair() -> tuple[str, str]:
 
 
 def get_system_id() -> str:
-    return f"{uuid.getnode():015d}"
+    return paths.get_stable_system_id()
 
 
 def write_tokens(auth_token, refresh_token, oauth_response):
@@ -207,10 +225,10 @@ def ensure_token_refresh() -> bool:
 
 
 class LoginOnline(bpy.types.Operator):
-    """Login or register online on BlenderKit webpage"""
+    """Login or register online on Blendkit webpage"""
 
     bl_idname = "wm.blenderkit_login"
-    bl_label = "BlenderKit login/signup"
+    bl_label = "Blendkit login/signup"
     bl_options = {"REGISTER", "UNDO"}
 
     signup: BoolProperty(  # type: ignore
@@ -223,7 +241,14 @@ class LoginOnline(bpy.types.Operator):
     message: bpy.props.StringProperty(  # type: ignore
         name="Message",
         description="",
-        default="You were logged out from BlenderKit.\n Clicking OK takes you to web login. ",
+        default="You were logged out from Blendkit.\n Clicking OK takes you to web login. ",
+    )
+
+    placement: bpy.props.StringProperty(  # type: ignore
+        name="Placement",
+        description="Which add-on surface triggered the login, for web analytics",
+        default="login",
+        options={"SKIP_SAVE", "HIDDEN"},
     )
 
     @classmethod
@@ -231,13 +256,18 @@ class LoginOnline(bpy.types.Operator):
         return True
 
     def draw(self, context):
+        # local import to avoid circular import
+        from . import ui_panels
+
+        # this timer is there to not let double clicks through the popups down to the asset bar.
+        ui_panels.set_overlay_panel_active()
         layout = self.layout
         utils.label_multiline(layout, text=self.message, width=300)
 
     def execute(self, context):
         preferences = bpy.context.preferences.addons[__package__].preferences
         preferences.login_attempt = True
-        login(self.signup)
+        login(self.signup, self.placement)
         return {"FINISHED"}
 
     def invoke(self, context, event):
@@ -249,10 +279,10 @@ class LoginOnline(bpy.types.Operator):
 
 
 class Logout(bpy.types.Operator):
-    """Logout from BlenderKit immediately"""
+    """Logout from Blendkit immediately"""
 
     bl_idname = "wm.blenderkit_logout"
-    bl_label = "BlenderKit logout"
+    bl_label = "Blendkit logout"
     bl_options = {"REGISTER", "UNDO"}
 
     @classmethod
@@ -268,7 +298,7 @@ class CancelLoginOnline(bpy.types.Operator):
     """Cancel login attempt"""
 
     bl_idname = "wm.blenderkit_login_cancel"
-    bl_label = "BlenderKit login cancel"
+    bl_label = "Blendkit login cancel"
     bl_options = {"REGISTER", "UNDO"}
 
     @classmethod
@@ -278,6 +308,7 @@ class CancelLoginOnline(bpy.types.Operator):
     def execute(self, context):
         preferences = bpy.context.preferences.addons[__package__].preferences
         preferences.login_attempt = False
+        client_lib.report_event("login_cancelled")
         return {"FINISHED"}
 
 

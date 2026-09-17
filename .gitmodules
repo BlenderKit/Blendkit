@@ -1,0 +1,9 @@
+[submodule "bk_client"]
+	path = bk_client
+	url = https://github.com/BlenderKit/bk_client
+	branch = main
+	
+[submodule "bk_proxor"]
+	path = bk_proxor
+	url = https://github.com/BlenderKit/bk_proxor
+	branch = main

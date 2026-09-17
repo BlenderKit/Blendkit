@@ -85,9 +85,7 @@ def threadread(tcom: ThreadCom):
             continue
         # Background Blender already formats logs; strip a leading emoji/prefix to avoid double branding.
         line = inline.strip()
-        line = re.sub(
-            r"^(?:[🐞ℹ️⚠️❌🔥]\s*)?blenderkit:\s*", "", line, flags=re.IGNORECASE
-        )
+        line = re.sub(r"^(?:[🐞ℹ️⚠️❌🔥]\s*)?blendkit:\s*", "", line, flags=re.IGNORECASE)
         bk_logger.info(line)
         progress = re.findall(r"progress\{(.*?)\}", inline)
         if len(progress) > 0:

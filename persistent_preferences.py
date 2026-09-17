@@ -47,6 +47,19 @@ def write_preferences_to_JSON(preferences: dict):
         bk_logger.warning("Failed to save preferences: %s", e)
 
 
+def get_legacy_assetbar_expanded_preference(prefs: dict, user_preferences) -> bool:
+    """Resolve asset bar expanded state for older preference files."""
+    if "assetbar_expanded" in prefs:
+        return bool(prefs["assetbar_expanded"])
+    is_property_set = getattr(user_preferences, "is_property_set", None)
+    if callable(is_property_set) and is_property_set("assetbar_expanded"):
+        return bool(user_preferences.assetbar_expanded)
+    saved_rows = prefs.get(
+        "maximized_assetbar_rows", user_preferences.maximized_assetbar_rows
+    )
+    return int(saved_rows) > 1
+
+
 def load_preferences_from_JSON():
     """Load preferences from JSON file and update the user preferences accordingly."""
     preferences_path = get_preferences_path()
@@ -85,6 +98,9 @@ def load_preferences_from_JSON():
     user_preferences.experimental_features = prefs.get(
         "experimental_features", user_preferences.experimental_features
     )
+    user_preferences.send_usage_data = prefs.get(
+        "send_usage_data", user_preferences.send_usage_data
+    )
     user_preferences.keep_preferences = prefs.get(
         "keep_preferences", user_preferences.keep_preferences
     )
@@ -112,6 +128,9 @@ def load_preferences_from_JSON():
     user_preferences.maximized_assetbar_rows = prefs.get(
         "maximized_assetbar_rows", user_preferences.maximized_assetbar_rows
     )
+    user_preferences.assetbar_expanded = get_legacy_assetbar_expanded_preference(
+        prefs, user_preferences
+    )
     user_preferences.search_field_width = prefs.get(
         "search_field_width", user_preferences.search_field_width
     )
@@ -126,6 +145,12 @@ def load_preferences_from_JSON():
     )
     user_preferences.assetbar_follows_cursor = prefs.get(
         "assetbar_follows_cursor", user_preferences.assetbar_follows_cursor
+    )
+    user_preferences.proxor_enabled = prefs.get(
+        "proxor_enabled", user_preferences.proxor_enabled
+    )
+    user_preferences.rating_nudge_enabled = prefs.get(
+        "rating_nudge_enabled", user_preferences.rating_nudge_enabled
     )
 
     # NETWORK
@@ -165,6 +190,11 @@ def load_preferences_from_JSON():
 
     # IMPORT SETTINGS
     user_preferences.resolution = prefs.get("resolution", user_preferences.resolution)
+    # THUMBNAIL SETTINGS
+    utils.apply_thumbnail_settings_from_dict(
+        getattr(user_preferences, "thumbnail_settings", None),
+        prefs.get("thumbnail_settings", {}),
+    )
     bk_logger.info("Successfully loaded preferences from %s", preferences_path)
     user_preferences.preferences_lock = False
     return prefs

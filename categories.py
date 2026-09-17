@@ -197,8 +197,9 @@ def get_category_enums(self, context):
         global_vars.DATA["bkit_categories"], cat_path=(asset_type,)
     )
     items = []
-    for c in asset_categories["children"]:
-        items.append((c["slug"], c["name"], c["description"]))
+    if asset_categories is not None and asset_categories.get("children") is not None:
+        for c in asset_categories["children"]:
+            items.append((c["slug"], c["name"], c["description"]))
     if len(items) == 0:
         items.append(("EMPTY", "Empty", "no categories on this level defined"))
     else:
@@ -226,7 +227,10 @@ def get_subcategory_enums(self, context):
                 self.category,
             ),
         )
-        if asset_categories is not None:
+        if (
+            asset_categories is not None
+            and asset_categories.get("children") is not None
+        ):
             for c in asset_categories["children"]:
                 items.append((c["slug"], c["name"], c["description"]))
     if len(items) == 0:
@@ -265,7 +269,10 @@ def get_subcategory1_enums(self, context):
                 self.subcategory,
             ),
         )
-        if asset_categories is not None:
+        if (
+            asset_categories is not None
+            and asset_categories.get("children") is not None
+        ):
             for c in asset_categories["children"]:
                 items.append((c["slug"], c["name"], c["description"]))
     if len(items) == 0:

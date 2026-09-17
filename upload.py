@@ -20,6 +20,7 @@ import json
 import logging
 import os
 import re
+import subprocess
 import sys
 import requests
 import tempfile
@@ -58,21 +59,12 @@ TAGS_MINIMUM = 3
 TAGS_MAXIMUM = 10
 DESCRIPTION_MINIMUM = 20
 
-BLENDERKIT_EXPORT_DATA_FILE = "data.json"
+BLENDKIT_EXPORT_DATA_FILE = "data.json"
 bk_logger = logging.getLogger(__name__)
 licenses = (
     ("royalty_free", "Royalty Free", "royalty free commercial license"),
     ("cc_zero", "Creative Commons Zero", "Creative Commons Zero"),
 )
-
-
-def wire_thumbnail_upload_enabled() -> bool:
-    """Feature gate for experimental wireframe thumbnail uploads."""
-    addon = bpy.context.preferences.addons.get(__package__)
-    if addon is None:
-        return False
-    preferences = addon.preferences
-    return getattr(preferences, "enable_wire_thumbnail_upload", False)
 
 
 def add_version(data):
@@ -265,24 +257,6 @@ def check_missing_data(asset_type, props, upload_set):
                     "   Please check the filepath and try again.",
                 )
 
-    if wire_thumbnail_upload_enabled() and "WIRE_THUMBNAIL" in upload_set:
-        if props.wire_thumbnail_will_upload_on_website:
-            pass
-        else:
-            wire_thumb_path = bpy.path.abspath(props.wire_thumbnail)
-            if props.wire_thumbnail == "":
-                write_to_report(
-                    props,
-                    "A wireframe thumbnail image has not been provided.\n"
-                    "   Please add a wireframe thumbnail in JPG or PNG format, ensuring at least 1024x1024 pixels.",
-                )
-            elif not os.path.exists(Path(wire_thumb_path)):
-                write_to_report(
-                    props,
-                    "Wireframe thumbnail filepath does not exist on the disk.\n"
-                    "   Please check the filepath and try again.",
-                )
-
     if props.is_private == "PUBLIC":
         check_public_requirements(props)
 
@@ -441,7 +415,7 @@ def get_upload_data(caller=None, context=None, asset_type=None):
             )
         # Add wire thumbnail path to export_data for models and printable assets
         if (
-            wire_thumbnail_upload_enabled()
+            utils.experimental_enabled()
             and asset_type in ("MODEL", "SCENE", "PRINTABLE")
             and props.wire_thumbnail
         ):
@@ -798,6 +772,14 @@ def get_upload_data(caller=None, context=None, asset_type=None):
     upload_data["isPrivate"] = props.is_private == "PRIVATE"
     upload_data["token"] = user_preferences.api_key
 
+    # author name (server fills in the real author from the API key, but the
+    # background packing process needs it to write asset_data.author into the
+    # saved .blend so the validator sees the correct author in the asset browser)
+    profile = global_vars.BKIT_PROFILE
+    upload_data["author"] = getattr(profile, "fullName", "") or getattr(
+        profile, "username", ""
+    )
+
     upload_data["parameters"] = upload_params
 
     # if props.asset_base_id != '':
@@ -816,8 +798,8 @@ def update_free_full(self, context):
         if self.free_full == "FULL":
             self.free_full = "FREE"
             ui_panels.ui_message(
-                title="All BlenderKit materials are free",
-                message="Any material uploaded to BlenderKit is free."
+                title="All Blendkit materials are free",
+                message="Any material uploaded to Blendkit is free."
                 " However, it can still earn money for the author,"
                 " based on our fair share system. "
                 "Part of subscription is sent to authors based on usage by paying users.",
@@ -993,6 +975,8 @@ class FastMetadata(bpy.types.Operator):
         return True
 
     def draw(self, context):
+        # this timer is there to not let double clicks through the popups down to the asset bar.
+        ui_panels.set_overlay_panel_active()
         layout = self.layout
         # col = layout.column()
         layout.label(text=self.message)
@@ -1073,7 +1057,7 @@ class FastMetadata(bpy.types.Operator):
 
         if extra_parameters:
             metadata["parameters"].extend(extra_parameters)
-        url = f"{paths.BLENDERKIT_API}/assets/{self.asset_id}/"
+        url = f"{paths.BLENDKIT_API}/assets/{self.asset_id}/"
         messages = {
             "success": "Metadata upload succeeded",
             "error": "Metadata upload failed",
@@ -1203,7 +1187,14 @@ def _get_upload_datablock(asset_type: str):
 
 
 def ensure_asset_metadata_on_datablock(asset_type: str, props) -> None:
-    """Write tags/description/author into the datablock before we save for upload."""
+    """Write tags/description/author into the datablock before we save for upload.
+
+    For MODEL/PRINTABLE this is a no-op: the asset entity is a collection that
+    only exists after objects are appended in upload_bg.py, so metadata and
+    preview are written onto the collection there from upload_data.
+    """
+    if asset_type in ("MODEL", "PRINTABLE"):
+        return
 
     data_block = _get_upload_datablock(asset_type)
     if data_block is None:
@@ -1238,19 +1229,15 @@ def ensure_asset_metadata_on_datablock(asset_type: str, props) -> None:
         if props.id:
             other_meta["id"] = props.asset_base_id
 
-        # further custom meta from dictParameters
-        if props.condition:
-            other_meta["condition"] = props.condition
-        if props.pbr_type:
-            other_meta["pbr_type"] = props.pbr_type
-        if props.style:
-            other_meta["style"] = props.style
-        if props.engine:
-            other_meta["engine"] = props.engine
-        if props.animated:
-            other_meta["animated"] = "yes"
-        if props.simulation:
-            other_meta["simulation"] = "yes"
+        # further custom meta from dictParameters - not every asset type
+        # defines all of these props, so read them defensively
+        for key in ("condition", "pbr_type", "style", "engine"):
+            value = getattr(props, key, "")
+            if value:
+                other_meta[key] = value
+        for key in ("animated", "simulation"):
+            if getattr(props, key, False):
+                other_meta[key] = "yes"
 
         # ad additional metadata to tags
         for key, value in other_meta.items():
@@ -1461,7 +1448,12 @@ def prepare_asset_data(self, context, asset_type, reupload, upload_set):
         return False, None, None
 
     ensure_asset_metadata_on_datablock(asset_type, props)
-    apply_asset_preview(_get_upload_datablock(asset_type), props)
+    if asset_type not in ("MODEL", "PRINTABLE"):
+        # For MODEL/PRINTABLE the preview is applied onto the collection in
+        # upload_bg.py (the collection is created there after objects are
+        # appended). Applying it onto the active object here would create a
+        # second, wrong asset entry.
+        apply_asset_preview(_get_upload_datablock(asset_type), props)
 
     if not reupload:
         props.asset_base_id = ""
@@ -1485,6 +1477,12 @@ def prepare_asset_data(self, context, asset_type, reupload, upload_set):
         elif not os.path.exists(export_data["thumbnail_path"]):
             props.upload_state = "0% - thumbnail not found"
             props.uploading = False
+            write_to_report(
+                props,
+                "Thumbnail file was not found on disk.\n"
+                f"   Expected at: {export_data['thumbnail_path']}\n"
+                "   Please check the thumbnail filepath and try again.",
+            )
             return False, None, None
 
     # Check if photo thumbnail exists for printable assets when it's included in upload_set
@@ -1493,13 +1491,25 @@ def prepare_asset_data(self, context, asset_type, reupload, upload_set):
             if not os.path.exists(export_data["photo_thumbnail_path"]):
                 props.upload_state = "0% - photo thumbnail not found"
                 props.uploading = False
+                write_to_report(
+                    props,
+                    "Photo thumbnail file was not found on disk.\n"
+                    f"   Expected at: {export_data['photo_thumbnail_path']}\n"
+                    "   Please check the photo thumbnail filepath and try again.",
+                )
                 return False, None, None
 
     # check if we have wire_thumbnail
-    if wire_thumbnail_upload_enabled() and "wire_thumbnail" in upload_set:
+    if utils.experimental_enabled() and "wire_thumbnail" in upload_set:
         if not os.path.exists(export_data.get("wire_thumbnail_path", "")):
             props.upload_state = "0% - wire thumbnail not found"
             props.uploading = False
+            write_to_report(
+                props,
+                "Wireframe thumbnail file was not found on disk.\n"
+                f"   Expected at: {export_data.get('wire_thumbnail_path', '')}\n"
+                "   Please regenerate the wireframe thumbnail and try again.",
+            )
             return False, None, None
 
     # save a copy of the file for processing. Only for blend files
@@ -1550,13 +1560,155 @@ asset_types = (
 )
 
 
+class DryRunExportOperator(Operator):
+    """Validator-only: run the full export pipeline (pack, collection, asset mark)
+    without creating a database entry or uploading anything.
+    The resulting .blend is saved to a temp directory and its path is printed to the console.
+    """
+
+    bl_idname = "object.blenderkit_dry_run_export"
+    bl_description = (
+        "Validator tool: run the full export pipeline without uploading. "
+        "Packs textures, marks the asset collection, saves .blend to a temp dir."
+    )
+    bl_label = "Dry Run Export"
+    bl_options = {"REGISTER", "INTERNAL"}
+
+    asset_type: EnumProperty(  # type: ignore[valid-type]
+        name="Type",
+        items=asset_types,
+        description="Type of asset to dry-run export",
+        default="MODEL",
+    )
+
+    # Required by get_upload_data() which inspects caller.properties.main_file
+    main_file: BoolProperty(name="main file", default=True, options={"SKIP_SAVE"})  # type: ignore[valid-type]
+
+    @classmethod
+    def poll(cls, context):
+        return utils.uploadable_asset_poll() and utils.profile_is_validator()
+
+    def execute(self, context):
+        bpy.ops.object.blenderkit_auto_tags()
+        props = utils.get_upload_props()
+
+        upload_set = ["METADATA", "THUMBNAIL", "MAINFILE"]
+        if self.asset_type in {"MODEL", "PRINTABLE"}:
+            upload_set.append("PRXC")
+
+        ok, upload_data, export_data = prepare_asset_data(
+            self, context, self.asset_type, reupload=False, upload_set=upload_set
+        )
+        if not ok:
+            self.report({"ERROR_INVALID_INPUT"}, props.report)
+            props.upload_state = ""
+            return {"CANCELLED"}
+
+        # Fill the fields normally assigned server-side so upload_bg.py can run end-to-end.
+        fake_id = "dry_run_export"
+        export_data["assetBaseId"] = fake_id
+        export_data["id"] = fake_id
+        upload_data["assetBaseId"] = fake_id
+        upload_data["id"] = fake_id
+
+        # Mirror what client/main.go::PackBlendFile() writes to data.json
+        datafile = os.path.join(export_data["temp_dir"], "data.json")
+        try:
+            with open(datafile, "w", encoding="utf-8") as f:
+                json.dump(
+                    {
+                        "export_data": export_data,
+                        "upload_data": upload_data,
+                        "upload_set": upload_set,
+                    },
+                    f,
+                    ensure_ascii=False,
+                )
+        except Exception as e:
+            self.report({"ERROR"}, f"Could not write dry-run data.json: {e}")
+            return {"CANCELLED"}
+
+        # Run Blender in the background with upload_bg.py, exactly like the real upload.
+        script_path = os.path.join(os.path.dirname(__file__), "upload_bg.py")
+        cleanfile = os.path.join(
+            os.path.dirname(__file__), "blendfiles", "cleaned.blend"
+        )
+        blender_user_scripts_dir = str(Path(__file__).resolve().parents[2])
+
+        env = os.environ.copy()
+        env["BLENDER_USER_SCRIPTS"] = blender_user_scripts_dir
+
+        args = [
+            bpy.app.binary_path,
+            "--background",
+            "--factory-startup",
+            "-noaudio",
+            cleanfile,
+            "--python",
+            script_path,
+            "--",
+            datafile,
+            __package__,
+        ]
+
+        bk_logger.info("Dry run launching: %s", " ".join(args))
+        props.upload_state = "Running dry-run export..."
+        try:
+            proc = subprocess.run(
+                args,
+                env=env,
+                creationflags=utils.get_process_flags(),
+                capture_output=True,
+                text=True,
+            )
+        except Exception as e:
+            self.report({"ERROR"}, f"Dry run subprocess failed to start: {e}")
+            return {"CANCELLED"}
+
+        # Surface the subprocess log to the system console so validators can inspect it.
+        if proc.stdout:
+            for line in proc.stdout.splitlines():
+                print(f"[dry-run] {line}")
+        if proc.stderr:
+            for line in proc.stderr.splitlines():
+                print(f"[dry-run:stderr] {line}")
+
+        if proc.returncode != 0:
+            msg = f"Dry run FAILED (exit {proc.returncode}). See system console for output."
+            bk_logger.error(msg)
+            self.report({"ERROR"}, msg)
+            props.upload_state = msg
+            return {"CANCELLED"}
+
+        produced = os.path.join(export_data["temp_dir"], fake_id + ".blend")
+        produced_zip = os.path.join(export_data["temp_dir"], fake_id + ".zip")
+        out_path = produced_zip if os.path.exists(produced_zip) else produced
+        msg = f"Dry run export OK -> {out_path}"
+        bk_logger.info(msg)
+        self.report({"INFO"}, msg)
+        props.upload_state = "Dry run export finished. No data was uploaded."
+
+        # Launch a fresh Blender instance to inspect the produced .blend
+        if os.path.exists(produced):
+            try:
+                subprocess.Popen(
+                    [bpy.app.binary_path, produced],
+                    creationflags=utils.get_process_flags(),
+                )
+                bk_logger.info("Opened dry-run .blend in new Blender: %s", produced)
+            except Exception as e:
+                bk_logger.warning("Could not auto-open dry-run .blend: %s", e)
+
+        return {"FINISHED"}
+
+
 class UploadOperator(Operator):
     """Tooltip"""
 
     bl_idname = "object.blenderkit_upload"
     bl_description = "Upload or re-upload asset + thumbnail + metadata"
 
-    bl_label = "BlenderKit Asset Upload"
+    bl_label = "Blendkit Asset Upload"
     bl_options = {"REGISTER", "INTERNAL"}
 
     # type of upload - model, material, textures, e.t.c.
@@ -1599,7 +1751,7 @@ class UploadOperator(Operator):
     def execute(self, context):
         bpy.ops.object.blenderkit_auto_tags()
         props = utils.get_upload_props()
-        wire_upload_enabled = wire_thumbnail_upload_enabled()
+        wire_upload_enabled = utils.experimental_enabled()
 
         upload_set = []
         if not self.reupload:
@@ -1608,11 +1760,12 @@ class UploadOperator(Operator):
             if self.asset_type == "PRINTABLE" and props.photo_thumbnail:
                 upload_set.append("photo_thumbnail")
 
-            # add wire_thumbnail for models if it exists
+            # add wire_thumbnail for models only when a valid image is provided
             if (
                 wire_upload_enabled
                 and self.asset_type in {"MODEL", "SCENE", "PRINTABLE"}
                 and props.wire_thumbnail
+                and os.path.exists(bpy.path.abspath(props.wire_thumbnail))
             ):
                 upload_set.append("wire_thumbnail")
         else:
@@ -1655,6 +1808,8 @@ class UploadOperator(Operator):
         return {"FINISHED"}
 
     def draw(self, context):
+        # this timer is there to not let double clicks through the popups down to the asset bar.
+        ui_panels.set_overlay_panel_active()
         props = utils.get_upload_props()
         layout = self.layout
 
@@ -1673,7 +1828,7 @@ class UploadOperator(Operator):
                 layout.prop(self, "photo_thumbnail")
 
             # Show wire_thumbnail option for models, scenes, and printable assets
-            if wire_thumbnail_upload_enabled() and self.asset_type in {
+            if utils.experimental_enabled() and self.asset_type in {
                 "MODEL",
                 "SCENE",
                 "PRINTABLE",
@@ -1710,7 +1865,7 @@ class UploadOperator(Operator):
                         layout,
                         text="This image isn't HDR,\n"
                         "It has a low dynamic range.\n"
-                        "BlenderKit library accepts 360 degree images\n"
+                        "Blendkit library accepts 360 degree images\n"
                         "however the default filter setting for search\n"
                         "is to show only true HDR images\n",
                         icon="ERROR",
@@ -1743,7 +1898,7 @@ class UploadOperator(Operator):
             utils.label_multiline(
                 layout,
                 width=500,
-                text="Would you like to upload your asset to BlenderKit?",
+                text="Would you like to upload your asset to Blendkit?",
             )
 
     def invoke(self, context, event):
@@ -1782,8 +1937,8 @@ class AssetDebugPrint(Operator):
     """Change verification status"""
 
     bl_idname = "object.blenderkit_print_asset_debug"
-    bl_description = "BlenderKit print asset data for debug purposes"
-    bl_label = "BlenderKit print asset data"
+    bl_description = "Blendkit print asset data for debug purposes"
+    bl_label = "Blendkit print asset data"
     bl_options = {"REGISTER", "UNDO", "INTERNAL"}
 
     # type of upload - model, material, textures, e.t.c.
@@ -1839,9 +1994,11 @@ class AssetVerificationStatusChange(Operator):
         return True
 
     def draw(self, context):
+        # this timer is there to not let double clicks through the popups down to the asset bar.
+        ui_panels.set_overlay_panel_active()
         layout = self.layout
         # if self.state == 'deleted':
-        message = "Really delete asset from BlenderKit online storage?"
+        message = "Really delete asset from Blendkit online storage?"
         if self.original_state == "on_hold":
             message += (
                 "\n\nThis asset is on hold. If you want to upload it again,"
@@ -1862,7 +2019,7 @@ class AssetVerificationStatusChange(Operator):
             if result["id"] == self.asset_id:
                 result["verificationStatus"] = self.state
 
-        url = paths.BLENDERKIT_API + "/assets/" + str(self.asset_id) + "/"
+        url = paths.BLENDKIT_API + "/assets/" + str(self.asset_id) + "/"
         upload_data = {"verificationStatus": self.state}
         messages = {
             "success": "Verification status changed",
@@ -1959,12 +2116,12 @@ def patch_individual_parameter(asset_id="", param_name="", param_value="", api_k
         asset_id (str): ID of the asset to update
         param_name (str): Name of the parameter to update
         param_value (str): New value for the parameter
-        api_key (str): BlenderKit API key
+        api_key (str): Blendkit API key
 
     Returns:
         bool: True if successful, False otherwise
     """
-    url = f"{paths.BLENDERKIT_API}/assets/{asset_id}/parameter/{param_name}/"
+    url = f"{paths.BLENDKIT_API}/assets/{asset_id}/parameter/{param_name}/"
     headers = utils.get_headers(api_key)
     metadata_dict = {"value": param_value}
     messages = {
@@ -1996,6 +2153,7 @@ def mark_for_thumbnail(
     snap_to: str = None,  # GROUND, WALL, CEILING, FLOAT
     # Material-specific parameters
     thumbnail_type: str = None,  # BALL, BALL_COMPLEX, FLUID, CLOTH, HAIR
+    thumbnail_render_engine: str = None,  # CYCLES, EEVEE
     scale: float = None,
     background: bool = None,
     adaptive_subdivision: bool = None,
@@ -2007,7 +2165,7 @@ def mark_for_thumbnail(
 
     Args:
         asset_id (str): The ID of the asset to update
-        api_key (str): BlenderKit API key
+        api_key (str): Blendkit API key
         use_gpu (bool, optional): Use GPU for rendering
         samples (int, optional): Number of render samples
         resolution (int, optional): Resolution of render
@@ -2016,6 +2174,7 @@ def mark_for_thumbnail(
         angle (str, optional): Camera angle for models (DEFAULT, FRONT, SIDE, TOP)
         snap_to (str, optional): Object placement for models (GROUND, WALL, CEILING, FLOAT)
         thumbnail_type (str, optional): Type of material preview (BALL, BALL_COMPLEX, FLUID, CLOTH, HAIR)
+        thumbnail_render_engine (str, optional): Render engine for materials (CYCLES, EEVEE)
         scale (float, optional): Scale of preview object for materials
         background (bool, optional): Use background for transparent materials
         adaptive_subdivision (bool, optional): Use adaptive subdivision for materials
@@ -2047,6 +2206,8 @@ def mark_for_thumbnail(
     # Material-specific parameters
     if thumbnail_type is not None:
         params["thumbnail_type"] = thumbnail_type
+    if thumbnail_render_engine is not None:
+        params["thumbnail_render_engine"] = thumbnail_render_engine
     if scale is not None:
         params["thumbnail_scale"] = scale
     if background is not None:
@@ -2065,6 +2226,7 @@ def mark_for_thumbnail(
 
 
 def register_upload():
+    bpy.utils.register_class(DryRunExportOperator)
     bpy.utils.register_class(UploadOperator)
     bpy.utils.register_class(FastMetadata)
     bpy.utils.register_class(AssetDebugPrint)
@@ -2072,6 +2234,7 @@ def register_upload():
 
 
 def unregister_upload():
+    bpy.utils.unregister_class(DryRunExportOperator)
     bpy.utils.unregister_class(UploadOperator)
     bpy.utils.unregister_class(FastMetadata)
     bpy.utils.unregister_class(AssetDebugPrint)

@@ -226,14 +226,29 @@ def draw_callback_px_separated(self, op, context):
                 if sw > 0 and sh > 0:
                     grid_scissor = (sx, sy, sw, sh)
 
+        # Smooth-scroll sub-slot offset is applied as a single draw-time
+        # translate to all grid widgets (GPU coords, +x right / +y up) instead
+        # of repositioning each widget per frame. While it's non-zero, expand
+        # the *cull* clip by one slot so buffer widgets sliding into view are
+        # not culled; the GPU scissor stays at the exact bar bounds so partial
+        # widgets are still clipped precisely.
+        grid_offset = get_safely(self, "_grid_draw_offset", (0.0, 0.0))
+        offset_dx, offset_dy = grid_offset
+        has_grid_offset = offset_dx != 0.0 or offset_dy != 0.0
+        cull_clip = grid_clip
+        if has_grid_offset and grid_clip is not None:
+            bs = get_safely(self, "button_size", 0) or 0
+            gt, gb, gl, gr = grid_clip
+            cull_clip = (gt - bs, gb + bs, gl - bs, gr + bs)
+
         with ui_bgl.overlay_matrix_guard(region):
             scissor_active = False
             for widget in self.widgets:
                 is_grid = getattr(widget, "_is_grid_widget", False)
                 if (
                     is_grid
-                    and grid_clip is not None
-                    and _widget_outside_clip(widget, grid_clip)
+                    and cull_clip is not None
+                    and _widget_outside_clip(widget, cull_clip)
                 ):
                     continue
 
@@ -246,7 +261,13 @@ def draw_callback_px_separated(self, op, context):
                     gpu.state.scissor_test_set(False)
                     scissor_active = False
 
-                widget.draw()
+                if is_grid and has_grid_offset:
+                    gpu.matrix.push()
+                    gpu.matrix.translate((offset_dx, offset_dy))
+                    widget.draw()
+                    gpu.matrix.pop()
+                else:
+                    widget.draw()
 
             if scissor_active:
                 gpu.state.scissor_test_set(False)

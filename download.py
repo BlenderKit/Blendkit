@@ -27,12 +27,15 @@ import shutil
 import time
 from typing import Any, Optional
 
+import requests
+
 from . import (
     append_link,
     client_lib,
     client_tasks,
     global_vars,
     paths,
+    rating_nudge,
     reports,
     resolutions,
     search,
@@ -67,7 +70,7 @@ download_tasks: dict[str, dict[str, Any]] = {}
 
 
 def get_blenderkit_repository() -> tuple[Optional[Any], int]:
-    """Find the BlenderKit extensions repository index.
+    """Find the Blendkit extensions repository index.
 
     Returns:
         tuple[repo or None, repo_index]: Repository and its index in the
@@ -120,7 +123,7 @@ def get_addon_installation_status(asset_data: dict[str, Any]) -> dict[str, Any]:
     if not is_enabled:
         extension_module_name = f"bl_ext.www_blenderkit_com.{extension_id}"
         is_enabled = extension_module_name in enabled_addons
-        bk_logger.debug(
+        bk_logger.trace(
             "Checking extension format: %s -> enabled: %s",
             extension_module_name,
             is_enabled,
@@ -133,7 +136,7 @@ def get_addon_installation_status(asset_data: dict[str, Any]) -> dict[str, Any]:
                     f".{extension_id}"
                 ) and addon_module.startswith("bl_ext."):
                     is_enabled = True
-                    bk_logger.info(
+                    bk_logger.trace(
                         "Found enabled addon with extension format: %s", addon_module
                     )
                     break
@@ -151,7 +154,7 @@ def get_addon_installation_status(asset_data: dict[str, Any]) -> dict[str, Any]:
                 f".{extension_id}"
             ) and addon_module.__name__.startswith("bl_ext."):
                 is_installed = True
-                bk_logger.info(
+                bk_logger.trace(
                     "Found installed addon with extension format: %s",
                     addon_module.__name__,
                 )
@@ -172,7 +175,9 @@ def get_addon_installation_status(asset_data: dict[str, Any]) -> dict[str, Any]:
                     # Check if this specific module name is enabled
                     is_enabled = addon_module.__name__ in enabled_addons
                     if is_enabled:
-                        bk_logger.info("Found enabled addon: %s", addon_module.__name__)
+                        bk_logger.trace(
+                            "Found enabled addon: %s", addon_module.__name__
+                        )
                     break
         except Exception as e:
             bk_logger.warning("Error double-checking enabled status: %s", e)
@@ -199,7 +204,7 @@ def get_addon_installation_status(asset_data: dict[str, Any]) -> dict[str, Any]:
     # Method 4: Check through Blender's extension repositories directly
     if not is_installed:
         try:
-            # Look for BlenderKit repository and check its packages
+            # Look for Blendkit repository and check its packages
             for repo in bpy.context.preferences.extensions.repos:
                 if not repo.enabled:
                     continue
@@ -209,7 +214,7 @@ def get_addon_installation_status(asset_data: dict[str, Any]) -> dict[str, Any]:
                 ):
                     continue
 
-                # This is a BlenderKit repository, try to find our package
+                # This is a Blendkit repository, try to find our package
                 # Note: The actual package checking would require deeper access to the repository data
                 # For now, we'll rely on the previous methods
                 break
@@ -223,11 +228,9 @@ def get_addon_installation_status(asset_data: dict[str, Any]) -> dict[str, Any]:
         if "blenderkit" in addon.lower() or addon.endswith(extension_id)
     ]
     if blenderkit_addons:
-        bk_logger.debug(
-            "Found BlenderKit-related enabled addons: %s", blenderkit_addons
-        )
+        bk_logger.trace("Found Blendkit-related enabled addons: %s", blenderkit_addons)
 
-    bk_logger.debug(
+    bk_logger.trace(
         "Addon status check for '%s': installed=%s, enabled=%s",
         extension_id,
         is_installed,
@@ -240,6 +243,13 @@ def get_addon_installation_status(asset_data: dict[str, Any]) -> dict[str, Any]:
         "pkg_id": extension_id,
         "cached_pkg": None,  # Not using cached_pkg anymore
     }
+
+
+def is_addon_installed(asset_data: dict[str, Any]) -> bool:
+    """Whether the add-on asset is installed. Prerequisite for rating add-ons."""
+    if asset_data.get("assetType") != "addon":
+        return False
+    return get_addon_installation_status(asset_data).get("installed", False)
 
 
 def install_addon_from_local_file(
@@ -274,14 +284,14 @@ def install_addon_from_local_file(
         reports.add_report(f"Addon '{addon_name}' is already installed", type="INFO")
         return
 
-    # Find the BlenderKit repository to install the addon to
+    # Find the Blendkit repository to install the addon to
     repo, repo_index = get_blenderkit_repository()
     if repo is None:
-        error_msg = "BlenderKit repository not found. Please ensure the BlenderKit extensions repository is enabled in preferences."
+        error_msg = "Blendkit repository not found. Please ensure the Blendkit extensions repository is enabled in preferences."
         reports.add_report(error_msg, type="ERROR")
         raise Exception(error_msg)
 
-    # Install from file to the BlenderKit repository
+    # Install from file to the Blendkit repository
     result = bpy.ops.extensions.package_install_files(
         repo=repo.module,
         filepath=file_path,
@@ -441,18 +451,70 @@ def cleanup_temp_enabled_addons() -> None:
         bk_logger.error("Error during temporary addon cleanup: %s", e)
 
 
+def handle_usage_report_task(task: client_tasks.Task) -> None:
+    """Result of a presence report: logged, never a popup."""
+    if task.status == "error":
+        bk_logger.warning("Usage report failed: %s", task.message)
+    elif task.status == "finished":
+        bk_logger.debug("Usage report sent")
+
+
+def usage_reports_enabled() -> bool:
+    return bool(bpy.context.preferences.addons[__package__].preferences.send_usage_data)
+
+
 @persistent
 def scene_save(context) -> None:
-    """Do cleanup of blenderkit props and send a message to the server about assets used."""
-    # TODO this can be optimized by merging these 2 functions, since both iterate over all objects.
+    """Clean up Blendkit props and report which assets are still in the file.
+
+    One "save" usage report per scene, every save, listing every Blendkit
+    asset present with its instance count. The server keeps it as per-scene
+    presence state (what was kept, what was removed, and when) for search
+    evaluation and, only after simulation, a possible redistribution weight.
+    Saving must never fail because of this, so a Client that is not running
+    is logged and ignored.
+    """
     if bpy.app.background:
         return
     check_unused()
-    report_data = (
-        get_asset_usages()
-    )  # TODO: FIX OR REMOVE THIS (now returns empty dict all the time) https://github.com/BlenderKit/blenderkit/issues/1013
-    if report_data != {}:
-        client_lib.report_usages(report_data)
+    if not usage_reports_enabled():
+        return
+    _send_presence_reports(build_save_reports())
+
+
+@persistent
+def scene_render_complete(scene, *_args) -> None:
+    """Report the assets present in the scene a render job just finished for.
+
+    Runs on ``render_complete`` (once per render job, not per frame). Like the
+    save report it is a background signal: a Client that is not running is
+    logged and ignored, and rendering can never fail because of it.
+    """
+    if bpy.app.background or not usage_reports_enabled():
+        return
+    if not hasattr(scene, "objects"):
+        scene = bpy.context.scene
+    report = build_render_report(scene)
+    if report is not None:
+        _send_presence_reports([report])
+
+
+def _send_presence_reports(reports: list[dict[str, Any]]) -> None:
+    for report in reports:
+        try:
+            response = client_lib.report_usages(report)
+        except requests.RequestException as e:
+            bk_logger.warning(
+                "Could not send the %s-time usage report: %s", report["event"], e
+            )
+            continue
+        if not response.ok:
+            bk_logger.warning(
+                "Blendkit-Client refused the %s-time usage report: %s %s",
+                report["event"],
+                response.status_code,
+                response.text,
+            )
 
 
 def refresh_addon_search_results_status() -> None:
@@ -504,89 +566,116 @@ def scene_load(context) -> None:
     check_missing()
 
 
-# TODO: FIX OR REMOVE THIS BROKEN FUNCTION - remove empty dict all the time
-# https://github.com/BlenderKit/blenderkit/issues/1013
-def get_asset_usages() -> dict[str, Any]:
-    """Report the usage of assets to the server."""
-    sid = utils.get_scene_id()
-    assets = {}
-    asset_obs = []
-    scene = bpy.context.scene
-    asset_usages = {}
+def _asset_base_id(datablock) -> Optional[str]:
+    """assetBaseId of a Blendkit asset datablock, else None."""
+    asset_data = datablock.get("asset_data")
+    if not asset_data:
+        return None
+    return asset_data.get("assetBaseId")
 
-    for ob in scene.collection.objects:
-        if ob.get("asset_data") != None:
-            asset_obs.append(ob)
 
-    for ob in asset_obs:
-        asset_data = ob["asset_data"]
-        abid = asset_data["assetBaseId"]
+def collect_present_assets(scene, file_wide: bool = False) -> dict[str, int]:
+    """Blendkit assets present in ``scene`` at save time: {assetBaseId: instance count}.
 
-        if assets.get(abid) is None:
-            asset_usages[abid] = {"count": 1}
-            assets[abid] = asset_data
-        else:
-            asset_usages[abid]["count"] += 1
+    Counts what the file actually uses: objects linked to the scene (models and
+    collection instances), materials in their slots (one per slot), the scene's
+    world (HDRs), and the scene itself when it is a scene asset. Brushes and
+    node groups are not owned by a scene, so they are attributed once, to the
+    scene flagged ``file_wide`` (the active one). Orphan datablocks - a
+    material nobody uses, a node group with no users - do not count: Blender
+    drops them on save and the user evidently did not keep them.
+    """
+    counts: dict[str, int] = {}
 
-    # brushes
-    for b in bpy.data.brushes:
-        if b.get("asset_data") != None:
-            abid = b["asset_data"]["assetBaseId"]
-            asset_usages[abid] = {"count": 1}
-            assets[abid] = b["asset_data"]
-    # materials
-    for ob in scene.collection.objects:
-        for ms in ob.material_slots:
-            m = ms.material
+    def add(datablock, instances: int = 1) -> None:
+        abid = _asset_base_id(datablock)
+        if abid:
+            counts[abid] = counts.get(abid, 0) + instances
 
-            if m is not None and m.get("asset_data") is not None:
-                abid = m["asset_data"]["assetBaseId"]
-                if assets.get(abid) is None:
-                    asset_usages[abid] = {"count": 1}
-                    assets[abid] = m["asset_data"]
-                else:
-                    asset_usages[abid]["count"] += 1
+    for ob in scene.objects:
+        add(ob)
+        if ob.instance_collection is not None:
+            add(ob.instance_collection)
+        for slot in ob.material_slots:
+            if slot.material is not None:
+                add(slot.material)
+    if scene.world is not None:
+        add(scene.world)
+    add(scene)
+    if file_wide:
+        for brush in bpy.data.brushes:
+            add(brush)
+        for nodegroup in bpy.data.node_groups:
+            if nodegroup.users > 0:
+                add(nodegroup)
+    return counts
 
-    assets_list = []
-    assets_reported = scene.get("assets reported", {})
 
-    new_assets_count = 0
-    for k in asset_usages.keys():
-        if k not in assets_reported.keys():
-            data = asset_usages[k]
-            list_item = {
-                "asset": k,
-                "usageCount": data["count"],
-                "proximitySet": data.get("proximity", []),
-            }
-            assets_list.append(list_item)
-            new_assets_count += 1
-        if k not in assets_reported.keys():
-            assets_reported[k] = True
+# Unchanged presence is re-reported at most this often. Every consumer of the
+# reports reads state (kept at 24 h, removed at T, present at an order's cut-off),
+# not save frequency, so identical consecutive saves carry nothing; the heartbeat
+# keeps "still here" fresh enough for all of them while dropping most rows.
+SAVE_REPORT_HEARTBEAT_SECONDS = 3600
 
-    scene["assets reported"] = assets_reported
+# (event, scene uuid) -> (monotonic time of the last report, the counts it carried).
+# In-process on purpose: the first save of every Blender session always reports,
+# which is itself a useful signal (the file was opened and worked on again).
+# Saves and renders are tracked apart: a render right after a save must still
+# report, because the render is the evidence the server cannot get otherwise.
+_last_save_reports: dict[tuple[str, str], tuple[float, dict[str, int]]] = {}
 
-    if new_assets_count == 0:
-        bk_logger.debug("no new assets were added")
-        return {}
-    usage_report = {"scene": sid, "reportType": "save", "assetusageSet": assets_list}
 
-    au = scene.get("assets used", {})
-    ad = scene.get("assets deleted", {})
+def _report_due(event: str, scene_id: str, counts: dict[str, int], now: float) -> bool:
+    last = _last_save_reports.get((event, scene_id))
+    if last is None:
+        return True
+    last_at, last_counts = last
+    return counts != last_counts or now - last_at >= SAVE_REPORT_HEARTBEAT_SECONDS
 
-    ak = assets.keys()
-    for k in au.keys():
-        if k not in ak:
-            ad[k] = au[k]
-        else:
-            if k in ad:
-                ad.pop(k)
 
-    # scene['assets used'] = {}
-    for k in ak:  # rewrite assets used.
-        scene["assets used"][k] = assets[k]
+def _presence_report(event: str, scene, now: float) -> Optional[dict[str, Any]]:
+    """The presence report for one scene at ``event``, or None when nothing is due.
 
-    return usage_report
+    Scenes that never touched Blendkit (no uuid, no assets) are skipped; a
+    scene with a uuid is reported even when empty, because "nothing left" is
+    exactly the removal the server needs to see. A scene whose assets are the
+    same as at its last report of this event within
+    ``SAVE_REPORT_HEARTBEAT_SECONDS`` is skipped.
+    """
+    counts = collect_present_assets(scene, file_wide=scene == bpy.context.scene)
+    if scene.get("uuid") is None and not counts:
+        return None
+    scene_id = utils.get_scene_id(scene)
+    if not _report_due(event, scene_id, counts, now):
+        return None
+    _last_save_reports[(event, scene_id)] = (now, counts)
+    return {
+        "scene": scene_id,
+        "event": event,
+        "assetusageSet": [
+            {"asset": abid, "usageCount": instances, "proximitySet": []}
+            for abid, instances in sorted(counts.items())
+        ],
+    }
+
+
+def build_save_reports(now: Optional[float] = None) -> list[dict[str, Any]]:
+    """One "save" presence report per scene whose Blendkit presence changed (or is due a heartbeat)."""
+    if now is None:
+        now = time.monotonic()
+    reports = (_presence_report("save", scene, now) for scene in bpy.data.scenes)
+    return [report for report in reports if report is not None]
+
+
+def build_render_report(scene, now: Optional[float] = None) -> Optional[dict[str, Any]]:
+    """The "render" presence report for the scene a render job just finished for.
+
+    A render is the strongest evidence that the assets in the scene were
+    used, and the only one for files that are rendered but never saved.
+    """
+    if now is None:
+        now = time.monotonic()
+    return _presence_report("render", scene, now)
 
 
 def _sanitize_for_idprops(value: Any) -> Any:
@@ -696,6 +785,7 @@ def append_asset(
     wm = bpy.context.window_manager
     user_preferences = bpy.context.preferences.addons[__package__].preferences
     user_preferences.download_counter += 1
+    rating_nudge.record_download(asset_data)
 
     asset_main = None
 
@@ -716,7 +806,11 @@ def append_asset(
 
     if asset_data["assetType"] in ("model", "printable"):
         downloaders = kwargs.get("downloaders")
-        sprops = wm.blenderkit_models
+        if asset_data["assetType"] == "model":
+            sprops = wm.blenderkit_models
+        else:
+            sprops = wm.blenderkit_printables
+
         # TODO this is here because combinations of linking objects or appending groups are rather not-usefull
         if sprops.import_method == "LINK_COLLECTION":
             sprops.append_link = "LINK"
@@ -1110,7 +1204,7 @@ def replace_resolution_appended(
 # TODO: keep this until we check resolution replacement and other features from this one are supported in daemon.
 # @bpy.app.handlers.persistent
 # def download_timer():
-#     # TODO might get moved to handle all blenderkit stuff, not to slow down.
+#     # TODO might get moved to handle all Blendkit stuff, not to slow down.
 #     '''
 #     check for running and finished downloads.
 #     Running downloads get checked for progress which is passed to UI.
@@ -1354,7 +1448,7 @@ def download_write_progress(task_id: str, task: client_tasks.Task) -> None:
                 r["downloaded"] = task.progress
 
 
-# TODO might get moved to handle all blenderkit stuff, not to slow down.
+# TODO might get moved to handle all Blendkit stuff, not to slow down.
 def download_post(task: client_tasks.Task) -> None:
     """Check for running and finished downloads.
     Running downloads get checked for progress which is passed to UI.
@@ -1457,7 +1551,7 @@ def download_post(task: client_tasks.Task) -> None:
 
 
 def download(asset_data: Any, **kwargs: Any) -> None:
-    """Init download data and request task from BlenderKit-Client."""
+    """Init download data and request task from Blendkit-Client."""
     if kwargs.get("retry_counter", 0) > 3:
         sprops = utils.get_search_props()
         report = f"Maximum retries exceeded for {asset_data['name']}"
@@ -1594,7 +1688,7 @@ def try_finished_append(asset_data: dict[str, Any], **kwargs: Any) -> None:
     if sr is None:
         return
     for sres in sr:
-        if asset_data["id"] != sres["id"]:
+        if sres.get("id") != asset_data["id"]:
             continue
         sres["downloaded"] = 100
 
@@ -1644,7 +1738,7 @@ def duplicate_asset(
     except Exception as e:
         reports.add_report(
             f"duplicate_asset: {str(e)}",
-            3,
+            timeout=3,
             type="ERROR",
         )
         raise e
@@ -1788,7 +1882,7 @@ asset_types = (
 
 
 class BlenderkitAddonManagerOperator(bpy.types.Operator):
-    """Manage BlenderKit addon installation, enabling, and disabling"""
+    """Manage Blendkit addon installation, enabling, and disabling"""
 
     bl_idname = "scene.blenderkit_addon_manager"
     bl_label = "Addon Manager"
@@ -1824,10 +1918,10 @@ class BlenderkitAddonManagerOperator(bpy.types.Operator):
                 reports.add_report("No extension ID found for this addon", type="ERROR")
                 return {"CANCELLED"}
 
-            # Find the BlenderKit repository
+            # Find the Blendkit repository
             repo, repo_index = get_blenderkit_repository()
             if repo is None:
-                reports.add_report("BlenderKit repository not found", type="ERROR")
+                reports.add_report("Blendkit repository not found", type="ERROR")
                 return {"CANCELLED"}
 
         try:
@@ -1984,6 +2078,8 @@ class BlenderkitAddonChoiceOperator(bpy.types.Operator):
     )  # type: ignore
 
     def draw(self, context: bpy.types.Context) -> None:
+        # this timer is there to not let double clicks through the popups down to the asset bar.
+        ui_panels.set_overlay_panel_active()
 
         layout = self.layout
 
@@ -2017,13 +2113,23 @@ class BlenderkitAddonChoiceOperator(bpy.types.Operator):
             )
             warn.label(text=f"Your Blender version: {cur}")
 
+        os_compat, os_platforms = utils.get_addon_os_compatibility(asset_data)
+        if not os_compat:
+            warn = layout.box()
+            warn.alert = True
+            warn.label(
+                text=f"Incompatible: supports {', '.join(os_platforms)}",
+                icon="ERROR",
+            )
+            warn.label(text=f"Your platform: {utils.get_current_addon_platform()}")
+
         layout = layout.column()
         # Show current status and appropriate action enum
         if not status["installed"]:
             layout.label(text="Status: Not Installed", icon="QUESTION")
             layout.separator()
             layout.prop(self, "action_not_installed", expand=True)
-            if not is_compat:
+            if not is_compat or not os_compat:
                 layout.separator()
                 row = layout.row()
                 row.alert = True
@@ -2076,10 +2182,10 @@ class BlenderkitAddonChoiceOperator(bpy.types.Operator):
                 reports.add_report("No extension ID found for this addon", type="ERROR")
                 return {"CANCELLED"}
 
-            # Find the BlenderKit repository
+            # Find the Blendkit repository
             repo, repo_index = get_blenderkit_repository()
             if repo is None:
-                reports.add_report("BlenderKit repository not found", type="ERROR")
+                reports.add_report("Blendkit repository not found", type="ERROR")
                 return {"CANCELLED"}
 
         try:
@@ -2218,7 +2324,7 @@ class BlenderkitKillDownloadOperator(bpy.types.Operator):
     """Kill a download"""
 
     bl_idname = "scene.blenderkit_download_kill"
-    bl_label = "BlenderKit Kill Asset Download"
+    bl_label = "Blendkit Kill Asset Download"
     bl_options = {"REGISTER", "INTERNAL"}
 
     task_id: StringProperty(  # type: ignore[valid-type]
@@ -2527,7 +2633,7 @@ class BlenderkitDownloadOperator(bpy.types.Operator):
 
     def draw(self, context: bpy.types.Context) -> None:
         # this timer is there to not let double clicks through the popups down to the asset bar.
-        ui_panels.last_time_overlay_panel_active = time.time()
+        ui_panels.set_overlay_panel_active()
         layout = self.layout
         if self.invoke_resolution:
             layout.prop(self, "resolution", expand=True, icon_only=False)
@@ -2587,6 +2693,7 @@ def register_download() -> None:
     bpy.utils.register_class(BlenderkitAddonChoiceOperator)
     bpy.app.handlers.load_post.append(scene_load)
     bpy.app.handlers.save_pre.append(scene_save)
+    bpy.app.handlers.render_complete.append(scene_render_complete)
     bpy.app.handlers.load_post.append(scene_load_post)
 
 
@@ -2596,6 +2703,7 @@ def unregister_download() -> None:
     bpy.utils.unregister_class(BlenderkitAddonChoiceOperator)
     bpy.app.handlers.load_post.remove(scene_load)
     bpy.app.handlers.save_pre.remove(scene_save)
+    bpy.app.handlers.render_complete.remove(scene_render_complete)
     bpy.app.handlers.load_post.remove(scene_load_post)
     # Clean up any remaining temporarily enabled addons
     cleanup_temp_enabled_addons()

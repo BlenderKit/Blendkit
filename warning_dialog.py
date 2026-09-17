@@ -42,7 +42,7 @@ def is_microsoft_store_blender() -> bool:
 
     Microsoft Store apps live under the per-user ``WindowsApps`` folder which
     is sandboxed (read-only locations, no child process spawn). That breaks
-    several BlenderKit features: launching the BlenderKit-Client binary from
+    several Blendkit features: launching the Blendkit-Client binary from
     outside the addon, writing to the user ``blenderkit_data`` folder and
     spawning background Blender processes for thumbnails / unpacking.
     """
@@ -74,12 +74,12 @@ BLENDER_DOWNLOAD_URL = "https://www.blender.org/download/"
 # readable at default widths.
 _MS_STORE_LINES = (
     "You are running Blender installed from the Microsoft Store.",
-    "This sandboxed install can break several BlenderKit features:",
-    "  - launching the BlenderKit-Client binary",
+    "This sandboxed install can break several Blendkit features:",
+    "  - launching the Blendkit-Client binary",
     "  - background Blender processes (thumbnails, unpacking)",
     "  - writing into the user blenderkit_data folder",
     "",
-    "If everything works for you, you can keep using BlenderKit.",
+    "If everything works for you, you can keep using Blendkit.",
     "Otherwise we recommend installing Blender from blender.org.",
 )
 
@@ -114,10 +114,15 @@ class BlenderKitMSStoreWarningOperator(bpy.types.Operator):
     """Warn the user that Blender was installed from the Microsoft Store."""
 
     bl_idname = "wm.blenderkit_ms_store_warning"
-    bl_label = "Blenderkit -Microsoft Store Blender detected"
+    bl_label = "Blendkit - Microsoft Store Blender detected"
     bl_options = {"REGISTER", "INTERNAL"}
 
     def draw(self, context):
+        # local import to avoid circular import
+        from . import ui_panels
+
+        # this timer is there to not let double clicks through the popups down to the asset bar.
+        ui_panels.set_overlay_panel_active()
         layout = self.layout
         for line in _MS_STORE_LINES:
             # Empty rows render as a vertical spacer to mimic blank lines.

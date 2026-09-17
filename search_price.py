@@ -85,7 +85,7 @@ def query_user_price(
     fetched_results: list[dict] = []
     if fresh_uuids:
         payload: dict = {"version_uuids": fresh_uuids}
-        url = f"{paths.BLENDERKIT_API}/cart/request-price-bulk/"
+        url = f"{paths.BLENDKIT_API}/cart/request-price-bulk/"
 
         headers = utils.get_simple_headers()
         headers.setdefault("Content-Type", "application/json")

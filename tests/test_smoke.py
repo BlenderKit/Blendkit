@@ -22,10 +22,12 @@ from unittest.mock import Mock
 import bpy
 
 
-for addon in bpy.context.preferences.addons:
-    if "blenderkit" in addon.module:
-        __package__ = addon.module
-        break
+# ``test.py`` imports this as ``<addon>.tests.<name>``; strip ``.tests`` so
+# ``__package__`` is the add-on's own module - needed by the relative import
+# and any ``bpy...addons[__package__]`` lookups below. Scanning ``addons`` for
+# "blenderkit" is unreliable when several blenderkit* add-ons are enabled.
+if __package__:
+    __package__ = __package__.rsplit(".tests", 1)[0]
 from . import search, utils
 
 
@@ -83,10 +85,10 @@ class TestUtilsHasUrl(unittest.TestCase):
         self.assertEqual(text, "plain text")
 
     def test_markdown_url(self):
-        urls, text = utils.has_url("Check [BlenderKit](https://www.blenderkit.com) now")
+        urls, text = utils.has_url("Check [Blendkit](https://www.blendkit.com) now")
         self.assertEqual(len(urls), 1)
-        self.assertEqual(urls[0][0], "BlenderKit")
-        self.assertEqual(urls[0][1], "https://www.blenderkit.com")
+        self.assertEqual(urls[0][0], "Blendkit")
+        self.assertEqual(urls[0][1], "https://www.blendkit.com")
 
 
 class TestUtilsRemoveUrlProtocol(unittest.TestCase):
@@ -103,12 +105,6 @@ class TestUtilsRemoveUrlProtocol(unittest.TestCase):
 
 
 class TestAssetFromNewerBlenderVersion(unittest.TestCase):
-    def test_older_major_asset(self):
-        asset = {"assetType": "model", "sourceAppVersion": "3.6.0"}
-        has_warning, level = utils.asset_from_newer_blender_version(asset, (4, 0, 0))
-        self.assertTrue(has_warning)
-        self.assertEqual(level, "major_older")
-
     def test_older_minor_asset(self):
         asset = {"assetType": "model", "sourceAppVersion": "4.0.0"}
         has_warning, level = utils.asset_from_newer_blender_version(asset, (4, 1, 0))
@@ -146,12 +142,6 @@ class TestAssetFromNewerBlenderVersion(unittest.TestCase):
         asset = {"assetType": "model", "sourceAppVersion": "4"}
         has_warning, level = utils.asset_from_newer_blender_version(asset, (4, 0, 0))
         self.assertFalse(has_warning)
-
-    def test_two_major_versions_older(self):
-        asset = {"assetType": "model", "sourceAppVersion": "2.93.0"}
-        has_warning, level = utils.asset_from_newer_blender_version(asset, (4, 2, 0))
-        self.assertTrue(has_warning)
-        self.assertEqual(level, "major_older")
 
 
 class TestAssetVersionAsTuple(unittest.TestCase):

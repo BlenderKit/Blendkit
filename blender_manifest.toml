@@ -2,12 +2,12 @@ schema_version = "1.0.0"
 
 id = "blenderkit"
 type = "add-on"
-version = "3.20.0-260517" # X.Y.Z-YYYYMMDD, must have a dash instead of a dot
+version = "3.21.2-260907" # X.Y.Z-YYYYMMDD, must have a dash instead of a dot
 
-name = "BlenderKit Online Asset Library"
+name = "Blendkit Online Asset Library"
 tagline = "Drag & drop of assets from the community driven library"
 maintainer = "Vilem Duha <admin@blenderkit.com>, Petr Dlouhy, A. Gajdosik, Michal Hons"
-website = "https://blenderkit.com/"
+website = "https://blendkit.com/"
 
 tags = ["3D View"]
 blender_version_min = "3.0.0"
@@ -17,4 +17,4 @@ copyright = ["2019 Blender Kit s.r.o.",]
 
 [permissions]
 files = "Import and export assets"
-network = "Search and download from blenderkit.com"
+network = "Search and download from blendkit.com"

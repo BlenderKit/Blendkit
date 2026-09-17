@@ -25,8 +25,13 @@ if COLLECT_COVERAGE:
     try:
         import coverage as _coverage
 
-        project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-        _cov = _coverage.Coverage(source=[project_root])
+        # Measure the add-on *package* as it is actually imported. Blender loads
+        # the add-on from its install dir (e.g. .../scripts/addons/blenderkit),
+        # NOT from this source checkout, so scoping coverage to the source tree
+        # records every add-on module as never-executed (0%). Scoping to the
+        # package name follows the imported files; codecov.yml `fixes` then maps
+        # the install path back to repo paths.
+        _cov = _coverage.Coverage(source=[sys.argv[-1]])
         _cov.start()
     except ImportError:
         COLLECT_COVERAGE = False
@@ -34,32 +39,94 @@ if COLLECT_COVERAGE:
 
 import addon_utils
 
-
 print(f"----- Tests preparation ----- (mode:{os.getenv('TESTS_TYPE', 'all')})")
-result = addon_utils.enable(sys.argv[-1], default_set=True)
-if result is None:
-    print(f"FATAL: addon '{sys.argv[-1]}' failed to load")
+
+# loop over all modules because we are getting tripplets in names now (extension mode)
+target_addon = sys.argv[-1]
+name_match = None
+for add in addon_utils.modules():
+    if target_addon == add.__name__.split(".")[-1]:
+        name_match = add.__name__
+        break
+if not name_match:
+    print(f"FATAL: addon '{sys.argv[-1]}' does not match any available modules")
     sys.exit(1)
-print(f"- addon enabled: {sys.argv[-1]}")
+
+result = addon_utils.enable(name_match, default_set=True)
+if result is None:
+    print(f"FATAL: addon '{name_match}' failed to load")
+    sys.exit(1)
+print(f"- addon enabled: {name_match}")
+
+# Run the tests from the INSTALLED add-on, imported as ``<pkg>.tests.*`` submodules
+# rather than the source checkout. This makes the test files the same ones
+# ``coverage`` measures (source=[<pkg>]), so they report real coverage instead of
+# 0% - and genuinely dead test code (an uncollected test, an unused helper) shows
+# up as uncovered.
+#
+# We import each module by its fully-qualified name under ``name_match`` (e.g.
+# ``blenderkit.tests.test_upload`` in legacy add-on mode, or
+# ``bl_ext.user_default.blenderkit_dev_hl.tests.test_upload`` in extension mode)
+# instead of using ``TestLoader.discover``. ``discover`` derives the module name
+# from the directory path (``blenderkit_dev_hl.tests.test_upload``), which does NOT
+# match the package the add-on is actually loaded under in extension mode, so the
+# test files' ``from .. import <module>`` relative imports resolve against the wrong
+# parent package and fail. Importing under ``name_match`` makes relative imports
+# resolve identically in both modes.
+import importlib
 
 runner = unittest.TextTestRunner(buffer=False)
 suite = unittest.TestSuite()
 testLoader = unittest.TestLoader()
 
-suite.addTests(testLoader.discover("tests", "test_init.py"))
-suite.addTests(testLoader.discover("tests", "test_upload.py"))
-suite.addTests(testLoader.discover("tests", "test_timer.py"))
-suite.addTests(testLoader.discover("tests", "test_paths.py"))
-suite.addTests(testLoader.discover("tests", "test_utils.py"))
-suite.addTests(testLoader.discover("tests", "test_version_compare.py"))
-suite.addTests(testLoader.discover("tests", "test_client_lib.py"))
-suite.addTests(testLoader.discover("tests", "test_search.py"))
-suite.addTests(testLoader.discover("tests", "test_global_vars.py"))
-suite.addTests(testLoader.discover("tests", "test_manifest_toml.py"))
-suite.addTests(testLoader.discover("tests", "test_ui_panels.py"))
-suite.addTests(testLoader.discover("tests", "test_registration.py"))
-suite.addTests(testLoader.discover("tests", "test_smoke.py"))
-print(f"- {len(suite._tests)} tests discovered and loaded\n")
+# Modules that must run first, in this order (the client tests expect the state
+# earlier modules leave behind). Every other ``tests/test_*.py`` in the installed
+# package is loaded after them automatically - a new test file never needs to be
+# registered here, and can never be skipped silently.
+_ordered_first = [
+    "test_init",
+    "test_upload",
+    "test_paths",
+    "test_utils",
+    "test_version_compare",
+    "test_client_lib",
+    "test_bkit_oauth",
+    "test_search",
+    "test_asset_bar_op",
+    "test_global_vars",
+    "test_clipboard_x11",
+    "test_manifest_toml",
+    "test_ui_panels",
+    "test_registration",
+    "test_smoke",
+    "test_upload_bg",
+    "test_persistent_preferences",
+    "test_timer",
+    "test_rating_nudge",
+    "test_didnt_use",
+    "test_ratings",
+    "test_keymap_utils",
+    "test_override_extension_draw",
+    "test_datas",
+]
+_tests_dir = os.path.dirname(importlib.import_module(f"{name_match}.tests").__file__)
+_all_modules = sorted(
+    f[:-3]
+    for f in os.listdir(_tests_dir)
+    if f.startswith("test_") and f.endswith(".py")
+)
+_missing = [m for m in _ordered_first if m not in _all_modules]
+if _missing:
+    print(f"FATAL: ordered test modules not found in {_tests_dir}: {_missing}")
+    sys.exit(1)
+_test_modules = _ordered_first + [m for m in _all_modules if m not in _ordered_first]
+
+for _modname in _test_modules:
+    _module = importlib.import_module(f"{name_match}.tests.{_modname}")
+    suite.addTests(testLoader.loadTestsFromModule(_module))
+print(
+    f"- {len(suite._tests)} test suites from {len(_test_modules)} modules loaded: {_test_modules}\n"
+)
 
 print(f"----- Running tests --------------------------------------------------")
 result = runner.run(suite)

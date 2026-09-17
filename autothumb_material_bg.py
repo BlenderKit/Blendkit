@@ -73,15 +73,15 @@ def patch_imports(addon_module_name: str):
 if __name__ == "__main__":
     try:
         # args order must match the order in blenderkit/autothumb.py:get_thumbnailer_args()!
-        BLENDERKIT_EXPORT_DATA = sys.argv[-3]
-        BLENDERKIT_EXPORT_API_KEY = sys.argv[-2]
+        BLENDKIT_EXPORT_DATA = sys.argv[-3]
+        BLENDKIT_EXPORT_API_KEY = sys.argv[-2]
         patch_imports(sys.argv[-1])
         bpy.ops.preferences.addon_enable(module=sys.argv[-1])
 
         from . import append_link, bg_blender, bg_utils, client_lib, utils
 
         bg_blender.progress("preparing thumbnail scene")
-        with open(BLENDERKIT_EXPORT_DATA, "r", encoding="utf-8") as s:
+        with open(BLENDKIT_EXPORT_DATA, "r", encoding="utf-8") as s:
             data = json.load(s)
             # append_material(file_name, matname = None, link = False, fake_user = True)
 
@@ -98,7 +98,7 @@ if __name__ == "__main__":
 
             asset_data = data["asset_data"]
             has_url, download_url, file_name = client_lib.get_download_url(
-                asset_data, utils.get_scene_id(), BLENDERKIT_EXPORT_API_KEY
+                asset_data, utils.get_scene_id(), BLENDKIT_EXPORT_API_KEY
             )
             asset_data["files"][0]["url"] = download_url
             asset_data["files"][0]["file_name"] = file_name
@@ -110,7 +110,7 @@ if __name__ == "__main__":
             # download first, or rather make sure if it's already downloaded
             bg_blender.progress("downloading asset")
             fpath = bg_utils.download_asset_file(
-                asset_data, api_key=BLENDERKIT_EXPORT_API_KEY
+                asset_data, api_key=BLENDKIT_EXPORT_API_KEY
             )
             data["filepath"] = fpath
 
@@ -240,7 +240,7 @@ if __name__ == "__main__":
 
         bg_blender.progress("uploading thumbnail")
         ok = client_lib.complete_upload_file_blocking(
-            api_key=BLENDERKIT_EXPORT_API_KEY,
+            api_key=BLENDKIT_EXPORT_API_KEY,
             asset_id=data["asset_data"]["id"],
             filepath=f"{data['thumbnail_path']}.png",
             filetype=f"thumbnail",

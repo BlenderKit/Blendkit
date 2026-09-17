@@ -130,6 +130,17 @@ fi
 # --- Move to repository root ---
 cd "${REPO_DIR}"
 
+# --- Ensure git submodules are checked out (e.g. bk_maya/bk_proxor) ---
+# Without this the .prxc proxor parser silently fails to import and no
+# proxor hologram is drawn. Safe to run repeatedly; no-op once populated.
+if command -v git >/dev/null 2>&1 && [ -f "${REPO_DIR}/.gitmodules" ]; then
+  echo "Initializing/updating git submodules (recursive)..."
+  if ! git -C "${REPO_DIR}" submodule update --init --recursive; then
+    echo "Warning: 'git submodule update --init --recursive' failed; continuing..." >&2
+  fi
+fi
+
+
 PROJECT_NAME="blenderkit_addon"
 PROJECT_DIR="${REPO_DIR}"
 REQUIREMENTS_FILE="${PROJECT_DIR}/pyproject.toml"
@@ -169,6 +180,31 @@ echo "----------------------------------------"
 echo "Virtual environment info:"
 pdm info --env || true
 echo "----------------------------------------"
+
+# --- Set up sub-repo virtual environments ---
+# bk_client and bk_proxor are git submodules with their OWN pyproject.toml and
+# their OWN (stricter/different) ruff + pydoclint rulesets. They must be linted
+# against their own dependencies, so each gets its own project-local .venv
+# instead of sharing the addon's. Safe to run repeatedly.
+for SUBREPO in bk_client bk_proxor; do
+  SUBREPO_DIR="${REPO_DIR}/${SUBREPO}"
+  if [ -f "${SUBREPO_DIR}/pyproject.toml" ]; then
+    echo "----------------------------------------"
+    echo "Setting up sub-repo: ${SUBREPO}"
+    echo "----------------------------------------"
+    (
+      cd "${SUBREPO_DIR}"
+      if ! pdm venv create --with-pip >/dev/null 2>&1; then
+        echo "Note: venv for ${SUBREPO} may already exist."
+      fi
+      if ! pdm install; then
+        echo "Warning: 'pdm install' failed for ${SUBREPO}; continuing..." >&2
+      fi
+    )
+  else
+    echo "No pyproject.toml in ${SUBREPO}, skipping."
+  fi
+done
 
 echo "How to use the environment:"
 echo "  pdm shell                     # activate the venv"

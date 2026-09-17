@@ -184,7 +184,7 @@ def _download_thumbnail(url: str) -> str:
         return target_path
     try:
         req = urllib.request.Request(url)
-        req.add_header("User-Agent", "BlenderKit")
+        req.add_header("User-Agent", "Blendkit")
         req.add_header("Accept", "image/*")
         with urllib.request.urlopen(req, timeout=15) as response:
             with open(target_path, "wb") as handle:
@@ -328,19 +328,41 @@ def _write_metadata(data_block, asset_data: dict) -> None:
     if "simulation" in dict_parameters and dict_parameters["simulation"]:
         other_meta["simulation"] = "yes"
 
-    # ad additional metadata to tags
-    for key, value in other_meta.items():
-        tags.new(f"{key}:{value}")
-
     description = asset_data.get("description", "")
     author_name = _resolve_author_name(asset_data)
 
     data_block.asset_data.author = author_name
+    other_meta[f"author_name"] = author_name
+
     data_block.asset_data.description = description
     if hasattr(data_block.asset_data, "copyright"):
-        data_block.asset_data.copyright = asset_data.get("copyright", "")
+        cop = asset_data.get("copyright", "")
+        data_block.asset_data.copyright = cop
+        other_meta[f"copyright"] = cop
     if hasattr(data_block.asset_data, "license"):
-        data_block.asset_data.license = asset_data.get("license", "")
+        lic = asset_data.get("license", "")
+        data_block.asset_data.license = lic
+        other_meta[f"license"] = lic
+
+    if description:
+        # we must split by whole words and with max length of 64 chars this includes the key
+        words = description.split()
+        current_tag = ""
+        dp_index = 0
+        for word in words:
+            if len(current_tag) + len(word) + 1 <= 59:
+                current_tag += (" " if current_tag else "") + word
+            else:
+                if current_tag:
+                    other_meta[f"d{dp_index:02}"] = current_tag
+                dp_index += 1
+                current_tag = word
+        if current_tag:
+            other_meta[f"d{dp_index:02}"] = current_tag
+
+    # ad additional metadata to tags
+    for key, value in other_meta.items():
+        tags.new(f"{key}:{value}")
 
 
 def _sanitize_catalog_segment(segment: str) -> str:
@@ -509,6 +531,123 @@ def _assign_asset_catalog(
         )
 
 
+def _match_asset_by_name(datablocks, asset_data):
+    """Return the data-block whose name matches the asset name, or None."""
+    name = (asset_data.get("name") or "").strip()
+    if not name:
+        return None
+    for db in datablocks:
+        if db.name == name:
+            return db
+    lname = name.lower()
+    for db in datablocks:
+        if db.name.lower() == lname:
+            return db
+    return None
+
+
+def _is_official_nodegroup(ng) -> bool:
+    """Official Blender node groups must not be treated as downloadable assets."""
+    ad = getattr(ng, "asset_data", None)
+    if ad is None:
+        return False
+    if hasattr(ad, "copyright") and ad.copyright == "Blender Foundation":
+        return True
+    try:
+        return bool(ad.is_property_readonly("author"))
+    except Exception:
+        return False
+
+
+def _mark_single_asset(datablocks, asset_data, skip=None, fallback_to_first=False):
+    """Mark exactly one data-block from *datablocks* as the scene's asset.
+
+    Materials and node groups have no wrapping collection, so the data-block
+    itself must be the asset. A downloaded .blend can contain several of these
+    (nested node groups, helper materials), but we want a single asset entry
+    that lands in the correct catalog.
+
+    Selection order: a data-block already marked as an asset (upload marks the
+    main one) -> a data-block whose name matches the asset name -> optionally
+    the first available data-block. Any other asset-marked data-block in
+    *datablocks* is cleared so the scene exposes exactly one asset.
+    """
+    can_mark = bpy.app.version >= (3, 0, 0)
+    items = [db for db in datablocks if skip is None or not skip(db)]
+    if not items:
+        return None
+
+    marked = [db for db in items if getattr(db, "asset_data", None) is not None]
+    if marked:
+        chosen = _match_asset_by_name(marked, asset_data) or marked[0]
+    else:
+        chosen = _match_asset_by_name(items, asset_data)
+        if chosen is None and fallback_to_first:
+            chosen = items[0]
+
+    if chosen is None:
+        return None
+
+    if can_mark:
+        if getattr(chosen, "asset_data", None) is None:
+            chosen.asset_mark()
+        # guarantee a single asset per scene: clear any other marks
+        for db in items:
+            if db is not chosen and getattr(db, "asset_data", None) is not None:
+                db.asset_clear()
+        # store asset_data so the data-block can be identified as a BlenderKit
+        # asset (rating, bookmarking, etc.) after being dragged in
+        chosen["asset_data"] = _sanitize_for_idprops(asset_data)
+
+    return chosen
+
+
+# Datablock collections (on bpy.data) that can hold an asset_mark and that a
+# Blendkit asset file might contain. Used to enforce "exactly one asset per
+# unpacked .blend".
+_MARKABLE_DATA_COLLECTIONS = (
+    "objects",
+    "collections",
+    "materials",
+    "node_groups",
+    "brushes",
+    "worlds",
+    "images",
+)
+
+
+def enforce_single_asset_mark(keep):
+    """Guarantee that *keep* is the only asset-marked datablock in the file.
+
+    Clears asset marks from every other markable datablock (objects,
+    collections, materials, node groups, brushes, worlds, images) and from any
+    scene other than *keep*. This makes the unpacked file expose exactly one
+    asset, healing historical files that arrive with stray/duplicate marks.
+    """
+    if bpy.app.version < (3, 0, 0) or keep is None:
+        return
+    for coll_name in _MARKABLE_DATA_COLLECTIONS:
+        data_coll = getattr(bpy.data, coll_name, None)
+        if not data_coll:
+            continue
+        for db in data_coll:
+            if db is keep:
+                continue
+            if getattr(db, "asset_data", None) is not None:
+                try:
+                    db.asset_clear()
+                except Exception as e:
+                    print(f"Could not clear stray asset mark on {db!r}: {e}")
+    for scene in bpy.data.scenes:
+        if scene is keep:
+            continue
+        if getattr(scene, "asset_data", None) is not None:
+            try:
+                scene.asset_clear()
+            except Exception as e:
+                print(f"Could not clear stray asset mark on scene {scene!r}: {e}")
+
+
 def unpack_asset(data):
     """Unpack asset data into the current Blender file.
 
@@ -595,67 +734,108 @@ def unpack_asset(data):
         # scene.  Marking the collection lets Blender create a proper collection
         # instance that shows every object in the hierarchy.
         #
-        # upload_bg.py calls asset_mark() on the root object before uploading, so
-        # every downloaded .blend arrives with the root object already marked as an
-        # asset.  Clear those object-level marks first so only the collection entry
-        # appears in the asset browser (no duplicates).
-        for ob in bpy.data.objects:
-            if ob.asset_data is not None:
-                ob.asset_clear()
-
+        # IMPORTANT: never rely on bpy.context.visible_objects here. This script
+        # runs in a headless background Blender where the view layer / visibility
+        # is unreliable, which historically caused the collection lookup to fail
+        # and the root object (locator) to be marked instead — landing the asset
+        # in "Unassigned". Instead we trust the upload-time collection mark and
+        # fall back to name / membership heuristics that don't need a context.
+        can_mark = bpy.app.version >= (3, 0, 0)
         scene_collection = bpy.context.scene.collection
-        main_collection = None
-        for col in scene_collection.children:
-            has_root_objects = any(
-                ob.parent is None and ob in bpy.context.visible_objects
-                for ob in col.objects
+        candidate_collections = list(scene_collection.children)
+
+        # Choose the asset collection, in order of reliability:
+        #  1. a collection upload already marked as an asset
+        #  2. a collection whose name matches the asset name
+        #  3. a collection that actually contains root objects (parent is None)
+        #  4. the first child collection
+        main_collection = next(
+            (
+                c
+                for c in candidate_collections
+                if getattr(c, "asset_data", None) is not None
+            ),
+            None,
+        )
+        if main_collection is None:
+            main_collection = _match_asset_by_name(candidate_collections, asset_data)
+        if main_collection is None:
+            main_collection = next(
+                (
+                    c
+                    for c in candidate_collections
+                    if any(ob.parent is None for ob in c.objects)
+                ),
+                None,
             )
-            if has_root_objects:
-                main_collection = col
-                break
+        if main_collection is None and candidate_collections:
+            main_collection = candidate_collections[0]
 
         if main_collection is not None:
-            if bpy.app.version >= (3, 0, 0):
+            # Single asset per scene: clear object-level marks (upload marks the
+            # root object too) and any other top-level collection marks brought
+            # in from the source file, so only this collection is the asset.
+            for ob in bpy.data.objects:
+                if getattr(ob, "asset_data", None) is not None:
+                    ob.asset_clear()
+            for col in candidate_collections:
+                if (
+                    col is not main_collection
+                    and getattr(col, "asset_data", None) is not None
+                ):
+                    col.asset_clear()
+            if can_mark and getattr(main_collection, "asset_data", None) is None:
                 main_collection.asset_mark()
             # Store asset_data on the collection so that collection-instance
             # EMPTYs added via Blender's native asset browser can be identified
-            # as BlenderKit assets (rating, bookmarking, etc.).
+            # as Blendkit assets (rating, bookmarking, etc.).
             main_collection["asset_data"] = _sanitize_for_idprops(asset_data)
             data_block = main_collection
         else:
-            # Fallback: no suitable collection found – mark root visible objects.
-            for ob in bpy.data.objects:
-                if ob.parent is None and ob in bpy.context.visible_objects:
-                    if bpy.app.version >= (3, 0, 0):
-                        ob.asset_mark()
-                    data_block = ob
+            # Fallback: no collection at all – mark a single root object.
+            root_objects = [ob for ob in bpy.data.objects if ob.parent is None]
+            chosen = _match_asset_by_name(root_objects, asset_data) or (
+                root_objects[0] if root_objects else None
+            )
+            if chosen is not None:
+                for ob in bpy.data.objects:
+                    if ob is not chosen and getattr(ob, "asset_data", None) is not None:
+                        ob.asset_clear()
+                if can_mark and getattr(chosen, "asset_data", None) is None:
+                    chosen.asset_mark()
+                chosen["asset_data"] = _sanitize_for_idprops(asset_data)
+                data_block = chosen
     elif asset_data["assetType"] == "material":
-        for m in bpy.data.materials:
-            if bpy.app.version >= (3, 0, 0):
-                m.asset_mark()
-            data_block = m
+        # Materials have no wrapping collection, so mark the single main
+        # material as the asset (and clear any extras) so it lands in the
+        # Materials catalog instead of leaving stray "Unassigned" entries.
+        data_block = _mark_single_asset(
+            bpy.data.materials, asset_data, fallback_to_first=True
+        )
     elif asset_data["assetType"] == "scene":
         if bpy.app.version >= (3, 0, 0):
             bpy.context.scene.asset_mark()
             data_block = bpy.context.scene
     elif asset_data["assetType"] == "brush":
-        for b in bpy.data.brushes:
-            if hasattr(b, "asset_data") and b.asset_data is not None:
-                if bpy.app.version >= (3, 0, 0):
-                    b.asset_mark()
-                data_block = b
+        # Brushes have no wrapping collection; mark the single main brush.
+        # Using _mark_single_asset (instead of requiring a pre-existing mark)
+        # lets historical brushes that arrive unmarked be re-marked correctly.
+        data_block = _mark_single_asset(
+            bpy.data.brushes, asset_data, fallback_to_first=True
+        )
     elif asset_data["assetType"] == "nodegroup":
-        for ng in bpy.data.node_groups:
-            if hasattr(ng, "asset_data") and ng.asset_data is not None:
-                if (
-                    hasattr(ng.asset_data, "copyright")
-                    and ng.asset_data.copyright == "Blender Foundation"
-                    or ng.asset_data.is_property_readonly("author")
-                ):
-                    continue  # skip official node groups, they are not assets
-                if bpy.app.version >= (3, 0, 0):
-                    ng.asset_mark()
-                data_block = ng
+        # Node groups have no wrapping collection either; mark the single main
+        # node group (skipping official Blender ones and nested helper groups)
+        # so it gets its own Node Groups catalog entry.
+        data_block = _mark_single_asset(
+            bpy.data.node_groups, asset_data, skip=_is_official_nodegroup
+        )
+
+    # Final invariant: exactly one asset is marked in the file. Clear any stray
+    # marks of other types (e.g. a marked material inside a model file from a
+    # historical buggy upload) so only data_block remains the asset.
+    if bpy.app.version >= (3, 0, 0) and data_block is not None:
+        enforce_single_asset_mark(data_block)
 
     if bpy.app.version >= (3, 0, 0) and data_block is not None and write_metadata:
         _write_metadata(data_block, asset_data)

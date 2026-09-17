@@ -16,18 +16,18 @@
 #
 # ##### END GPL LICENSE BLOCK #####
 """
-Module colors defines color palette for BlenderKit UI.
+Module colors defines color palette for Blendkit UI.
 """
 
 # UI Colors
 
 TOP_BAR_BLUE = (0.2, 0.25, 0.4, 1.0)
-"""TOP_BAR_BLUE Color for BlenderKit UI top bar."""
+"""TOP_BAR_BLUE Color for Blendkit UI top bar."""
 
 WHITE = (1, 1, 1, 0.9)
 
 TEXT = (0.9, 0.9, 0.9, 0.9)
-"""TEXT Color for BlenderKit UI text."""
+"""TEXT Color for Blendkit UI text."""
 
 TEXT_DIM = (0.8, 0.8, 0.8, 0.9)
 

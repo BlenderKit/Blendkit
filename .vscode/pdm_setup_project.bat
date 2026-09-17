@@ -76,6 +76,19 @@ pdm self update
 
 cd /d %REPO_FOLDER%
 
+:: Ensure git submodules are checked out (e.g. bk_maya\bk_proxor).
+:: Without this the .prxc proxor parser silently fails to import and no
+:: proxor hologram is drawn. Safe to run repeatedly; no-op once populated.
+where git >nul 2>nul
+if not errorlevel 1 (
+    if exist "%REPO_FOLDER%\.gitmodules" (
+        echo "Initializing/updating git submodules (recursive)..."
+        git -C "%REPO_FOLDER%" submodule update --init --recursive
+        if errorlevel 1 echo "Warning: git submodule update failed; continuing..."
+    )
+)
+
+
 echo ----------------------------------------
 echo "Processing project: blenderkit_addon"
 echo ----------------------------------------
@@ -122,6 +135,35 @@ if exist "!REQUIREMENTS_FILE!" (
 )
 
 echo "Virtual environment setup for !PROJECT_NAME! completed successfully!"
+
+:: ----------------------------------------------------------------------
+:: Sub-repo virtual environments.
+:: bk_client and bk_proxor are git submodules with their OWN pyproject.toml
+:: and their OWN (stricter/different) ruff + pydoclint rulesets. They must be
+:: linted against their own dependencies, so each gets its own project-local
+:: .venv instead of sharing the addon's. Safe to run repeatedly.
+:: ----------------------------------------------------------------------
+for %%R in (bk_client bk_proxor) do (
+    set "SUBREPO_DIR=%REPO_FOLDER%\%%R"
+    for %%A in ("!SUBREPO_DIR!") do set "SUBREPO_DIR=%%~fA"
+    if exist "!SUBREPO_DIR!\pyproject.toml" (
+        echo ----------------------------------------
+        echo "Setting up sub-repo: %%R"
+        echo ----------------------------------------
+        pushd "!SUBREPO_DIR!"
+        pdm info --env >nul 2>nul
+        if errorlevel 1 (
+            echo "Creating new virtual environment for %%R..."
+            pdm venv create --with-pip
+        )
+        echo "Syncing %%R dependencies (incl. dev tooling)..."
+        pdm install
+        if errorlevel 1 echo "Warning: 'pdm install' failed for %%R; continuing..."
+        popd
+    ) else (
+        echo "No pyproject.toml in %%R, skipping."
+    )
+)
 
 echo ----------------------------------------
 echo "Virtual environment set up successfully!"

@@ -5,6 +5,7 @@ from gpu_extras.batch import batch_for_shader
 
 from .. import ui_bgl
 
+from contextlib import contextmanager
 from typing import Union
 
 
@@ -40,13 +41,37 @@ def resolve_fill_color(preferred_color, fallback_color):
     return (clamp(r), clamp(g), clamp(b), clamp(a))
 
 
+_suppress_region_redraw = False
+
+
 def region_redraw(ctx: bpy.types.Context = None):
+    # Inside a batched_region_redraw() block, individual widget redraws are
+    # suppressed; the caller issues a single redraw afterwards.
+    if _suppress_region_redraw:
+        return
     if ctx is not None:
         context = ctx
     else:
         context = bpy.context
     if context.region is not None:
         context.region.tag_redraw()
+
+
+@contextmanager
+def batched_region_redraw():
+    """Suppress per-widget region_redraw() calls inside the block.
+
+    Bulk layout passes (e.g. repositioning hundreds of asset buttons on every
+    smooth-scroll frame) would otherwise tag a redraw once per widget. Wrap the
+    pass in this context and issue a single region_redraw() afterwards.
+    """
+    global _suppress_region_redraw
+    previous = _suppress_region_redraw
+    _suppress_region_redraw = True
+    try:
+        yield
+    finally:
+        _suppress_region_redraw = previous
 
 
 class BL_UI_Widget:
@@ -87,6 +112,12 @@ class BL_UI_Widget:
             self.shader = gpu.shader.from_builtin("2D_UNIFORM_COLOR")
         else:
             self.shader = gpu.shader.from_builtin("UNIFORM_COLOR")
+
+        # Background panel batch is built lazily, in local coordinates, and
+        # cached by size. Position is applied at draw time (see update() /
+        # _draw_panel_batch), so moving the widget does not rebuild the batch.
+        self.batch_panel = None
+        self._panel_batch_size = None
 
     @property
     def background_corner_radius(self):
@@ -274,33 +305,53 @@ class BL_UI_Widget:
         self.shader.bind()
         self.shader.uniform_float("color", self._bg_color)
 
-        self.batch_panel.draw(self.shader)
+        self._draw_panel_batch()
 
     def init(self, context):
         self.context = context
         self.update(self.x, self.y)
 
     def update(self, x, y):
-        area_height = self.get_area_height()
         self.x_screen = x
         self.y_screen = y
+        self._ensure_panel_batch()
+        region_redraw()
 
+    def _ensure_panel_batch(self):
+        """(Re)build the background batch only when the widget size changes.
+
+        Vertices are in local space (origin at the widget's top-left, y growing
+        downward); the screen position is applied at draw time via a translate.
+        Moving the widget - e.g. every frame during smooth scroll - therefore
+        no longer rebuilds the GPU batch, only an actual resize does.
+        """
+        size_key = (self.width, self.height)
+        if self.batch_panel is not None and self._panel_batch_size == size_key:
+            return
         indices = ((0, 1, 2), (0, 2, 3))
-
-        y_screen_flip = area_height - self.y_screen
-
-        # bottom left, top left, top right, bottom right
+        # top-left, bottom-left, bottom-right, top-right (local, y down)
         vertices = (
-            (self.x_screen, y_screen_flip),
-            (self.x_screen, y_screen_flip - self.height),
-            (self.x_screen + self.width, y_screen_flip - self.height),
-            (self.x_screen + self.width, y_screen_flip),
+            (0.0, 0.0),
+            (0.0, -self.height),
+            (self.width, -self.height),
+            (self.width, 0.0),
         )
-
         self.batch_panel = batch_for_shader(
             self.shader, "TRIS", {"pos": vertices}, indices=indices
         )
-        region_redraw()
+        self._panel_batch_size = size_key
+
+    def _draw_panel_batch(self):
+        """Draw the cached background batch at the widget's current position."""
+        if self.batch_panel is None:
+            self._ensure_panel_batch()
+        area_height = self.get_area_height()
+        gpu.matrix.push()
+        try:
+            gpu.matrix.translate((self.x_screen, area_height - self.y_screen))
+            self.batch_panel.draw(self.shader)
+        finally:
+            gpu.matrix.pop()
 
     def handle_event(self, event):
         """

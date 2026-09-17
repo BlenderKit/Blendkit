@@ -1,0 +1,112 @@
+name: Prefilled report from add-on
+description: Report a bug, crash, or other issue, prefilled with basic metadata from the add-on.
+body:
+  - type: markdown
+    attributes:
+      value: |
+        *Please make the title as descriptive as possible, including part of the error message if applicable. This helps other users find and relate to your issue more easily.*
+
+        #### Before reporting a bug, please ensure the following:
+        - You have installed the [latest version of Blendkit](https://github.com/blenderkit/blenderkit/releases/latest), as the latest release may include a fix for your issue.
+        - You have restarted Blender after updating Blendkit. Skipping a restart can lead to unusual bugs; a restart often resolves issues immediately.
+        - You have searched for similar issues in the [Blendkit issues](https://github.com/blenderkit/blenderkit/issues). Existing threads may offer workarounds or solutions.
+
+        #### 3-Step Quick Help:
+        1. Uninstall Blendkit.
+        2. Install the [latest version of Blendkit](https://github.com/blenderkit/blenderkit/releases/latest) via Blender's UI, using the .zip file.
+        3. Restart Blender.
+
+  - type: textarea
+    id: description
+    attributes:
+      label: Bug Description
+      description: |
+        Please describe the problem, the expected behavior, and any deviation from it. The development team needs to understand and reproduce the problem from your description in order to fix it.
+    validations:
+      required: true
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Error Logs
+      description: |
+        Ideally, please provide the error logs related to the problem. [Here's how to get error logs](https://www.blendkit.com/report-bug/).
+        Providing error logs enables us to diagnose and address the issue more efficiently.
+        We may be able to resolve the issue without the logs, but in most cases, we will request them.
+    validations:
+      required: false
+
+  - type: input
+    id: blendkit_version
+    attributes:
+      label: Blendkit add-on version
+      description: Menu > Edit > Preferences > Add-ons > Blendkit Online Asset Library
+    validations:
+      required: true
+
+  - type: input
+    id: blender_version
+    attributes:
+      label: Blender version
+      description: Menu > Blender Logo > Splash Screen or About Blender
+    validations:
+      required: true
+
+  - type: input
+    id: operating_system
+    attributes:
+      label: Operating system
+      description: |
+        Your operating system (and CPU architecture).
+        Windows 10, Windows 11 - on classic Intel/AMD processor (x86_64) or ARM64 processor?
+        MacOS - Apple Silicon or Intel based processor?
+        Linux - distribution and CPU architecture?
+    validations:
+      required: true
+
+  - type: input
+    id: python_version
+    attributes:
+      label: Python version
+      description: Scripting Workspace > Console > 1st line in console contains Python version
+    validations:
+      required: true
+
+  ### ADVANCED INFO
+
+  - type: input
+    id: proxy
+    attributes:
+      label: Proxy settings
+      description: Menu > Edit > Preferences > Add-ons > Blendkit Online Asset Library > Networking > Proxy settings (and Custom proxy address)
+    validations:
+      required: false
+
+  - type: input
+    id: ip_version
+    attributes:
+      label: IP version
+      description: Menu > Edit > Preferences > Add-ons > Blendkit Online Asset Library > Networking > IP version
+    validations:
+      required: false
+
+  - type: input
+    id: ssl_context
+    attributes:
+      label: SSL Verification
+      description: Menu > Edit > Preferences > Add-ons > Blendkit Online Asset Library > Networking > SSL Verification
+    validations:
+      required: false
+
+  - type: input
+    id: trusted_ca_certs
+    attributes:
+      label: Custom CA certificates path
+      description: Menu > Edit > Preferences > Add-ons > Blendkit Online Asset Library > Networking > Custom CA certificates path
+    validations:
+      required: false
+
+  - type: markdown
+    attributes:
+      value: |
+        Thank you for taking the time to report this bug! Your input helps us improve Blendkit.

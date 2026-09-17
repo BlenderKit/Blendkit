@@ -21,10 +21,12 @@ from unittest.mock import Mock
 
 import bpy
 
-for addon in bpy.context.preferences.addons:
-    if "blenderkit" in addon.module:
-        __package__ = addon.module
-        break
+# ``test.py`` imports this as ``<addon>.tests.<name>``; strip ``.tests`` so
+# ``__package__`` is the add-on's own module - needed by the relative import
+# and any ``bpy...addons[__package__]`` lookups below. Scanning ``addons`` for
+# "blenderkit" is unreliable when several blenderkit* add-ons are enabled.
+if __package__:
+    __package__ = __package__.rsplit(".tests", 1)[0]
 from . import search
 
 
@@ -110,7 +112,7 @@ class TestQueryToURL(unittest.TestCase):
             scene_uuid=self.scene_uuid,
             page_size=self.page_size,
         )
-        expected = "https://www.blenderkit.com/api/v1/search/?query=+asset_type:model+sexualizedContent:+order:-last_blend_upload,-last_zip_file_upload&dict_parameters=1&page_size=15&addon_version=3.16.1&blender_version=5.0.0&scene_uuid=12345678-abcd-abcd-abcd-12345678abcd"
+        expected = "https://www.blendkit.com/api/v1/search/?query=+asset_type:model+sexualizedContent:+order:-last_blend_upload,-last_zip_file_upload&dict_parameters=1&page_size=15&addon_version=3.16.1&blender_version=5.0.0&scene_uuid=12345678-abcd-abcd-abcd-12345678abcd"
         self.assertEqual(url, expected)
 
     def test_sorted_model_query(self):
@@ -123,7 +125,7 @@ class TestQueryToURL(unittest.TestCase):
             scene_uuid=self.scene_uuid,
             page_size=self.page_size,
         )
-        expected = "https://www.blenderkit.com/api/v1/search/?query=+asset_type:model+sexualizedContent:+order:-working_hours&dict_parameters=1&page_size=15&addon_version=3.16.1&blender_version=5.0.0&scene_uuid=12345678-abcd-abcd-abcd-12345678abcd"
+        expected = "https://www.blendkit.com/api/v1/search/?query=+asset_type:model+sexualizedContent:+order:-working_hours&dict_parameters=1&page_size=15&addon_version=3.16.1&blender_version=5.0.0&scene_uuid=12345678-abcd-abcd-abcd-12345678abcd"
         self.assertEqual(url, expected)
 
     def test_sorted_freefirst_material_query(self):
@@ -138,7 +140,7 @@ class TestQueryToURL(unittest.TestCase):
             scene_uuid=self.scene_uuid,
             page_size=self.page_size,
         )
-        expected = "https://www.blenderkit.com/api/v1/search/?query=+asset_type:material+sexualizedContent:+order:-is_free,-quality&dict_parameters=1&page_size=15&addon_version=3.16.1&blender_version=5.0.0&scene_uuid=12345678-abcd-abcd-abcd-12345678abcd"
+        expected = "https://www.blendkit.com/api/v1/search/?query=+asset_type:material+sexualizedContent:+order:-is_free,-quality&dict_parameters=1&page_size=15&addon_version=3.16.1&blender_version=5.0.0&scene_uuid=12345678-abcd-abcd-abcd-12345678abcd"
         self.assertEqual(url, expected)
 
 

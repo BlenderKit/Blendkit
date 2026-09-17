@@ -38,7 +38,7 @@ from . import (
     categories,
     client_lib,
     client_tasks,
-    comments_utils,
+    clipboard_x11,
     datas,
     download,
     global_vars,
@@ -453,7 +453,7 @@ def update_ad(ad):
                 "can_download"
             ]  # this should stay ONLY for compatibility with older scenes
         except Exception as e:
-            bk_logger.error("BlenderKit failed to update older asset data")
+            bk_logger.error("Blendkit failed to update older asset data")
     return ad
 
 
@@ -511,15 +511,22 @@ last_clipboard = ""
 
 def check_clipboard():
     """Check clipboard for an exact string containing asset ID.
-    The string is generated on www.blenderkit.com as for example here:
-    https://www.blenderkit.com/get-blenderkit/54ff5c85-2c73-49e9-ba80-aec18616a408/
+    The string is generated on www.blendkit.com as for example here:
+    https://www.blendkit.com/get-blendkit/54ff5c85-2c73-49e9-ba80-aec18616a408/
     """
     global last_clipboard
-    try:  # could be problematic on Linux
-        current_clipboard = str(bpy.context.window_manager.clipboard)
-    except Exception as e:
-        bk_logger.warning("Failed to get clipboard: %s", e)
-        return
+    if clipboard_x11.is_available():
+        # X11: bounded, non-blocking read so a dead selection owner cannot hang
+        # Blender's main thread (issue #2244). None = unreadable this tick, skip.
+        current_clipboard = clipboard_x11.get_clipboard_text()
+        if current_clipboard is None:
+            return
+    else:
+        try:  # could be problematic on Linux
+            current_clipboard = str(bpy.context.window_manager.clipboard)
+        except Exception as e:
+            bk_logger.warning("Failed to get clipboard: %s", e)
+            return
 
     if current_clipboard == last_clipboard:
         return
@@ -600,11 +607,7 @@ def parse_author_result(r) -> dict:
     adata = r.get("author")
     if adata and isinstance(adata, dict) and len(adata) > 1:
         # Full author data available — parse it like regular assets do
-        adata = dict(adata)  # copy so pop() doesn't mutate the original
-        social_networks = datas.parse_social_networks(
-            adata.pop("socialNetworks", None) or []
-        )
-        author = datas.UserProfile(**adata, socialNetworks=social_networks)
+        author = datas.UserProfile.from_dict(adata)
         generate_author_profile(author)
         r["author"]["id"] = str(r["author"]["id"])
     else:
@@ -631,6 +634,26 @@ def parse_author_result(r) -> dict:
     return asset_data
 
 
+def get_large_thumbnail_url(asset_data) -> str:
+    """URL of the large/middle thumbnail, honoring WEBP support and the HDR special case.
+
+    This is the same selection parse_result() uses to derive asset_data['thumbnail'],
+    so downloading from it yields exactly the cached filename other code expects.
+    """
+    use_webp = True
+    if bpy.app.version < (3, 4, 0) or asset_data.get("webpGeneratedTimestamp", 0) == 0:
+        use_webp = False  # WEBP was optimized in Blender 3.4.0
+    if asset_data.get("assetType") == "hdr":
+        key = (
+            "thumbnailLargeUrlNonsquaredWebp"
+            if use_webp
+            else "thumbnailLargeUrlNonsquared"
+        )
+    else:
+        key = "thumbnailMiddleUrlWebp" if use_webp else "thumbnailMiddleUrl"
+    return asset_data.get(key) or ""
+
+
 # TODO: type annotate and check this crazy function!
 # Are we sure it behaves correctly on network issues, malfunctioning search etc?
 def parse_result(r) -> dict:
@@ -654,8 +677,7 @@ def parse_result(r) -> dict:
         return parse_author_result(r)
 
     adata = r["author"]
-    social_networks = datas.parse_social_networks(adata.pop("socialNetworks", []))
-    author = datas.UserProfile(**adata, socialNetworks=social_networks)
+    author = datas.UserProfile.from_dict(adata)
     generate_author_profile(author)
 
     r["available_resolutions"] = []
@@ -663,18 +685,8 @@ def parse_result(r) -> dict:
     if bpy.app.version < (3, 4, 0) or r.get("webpGeneratedTimestamp", 0) == 0:
         use_webp = False  # WEBP was optimized in Blender 3.4.0
 
-    # BIG THUMB - HDR CASE
-    if r["assetType"] == "hdr":
-        if use_webp:
-            thumb_url = r.get("thumbnailLargeUrlNonsquaredWebp")
-        else:
-            thumb_url = r.get("thumbnailLargeUrlNonsquared")
-    # BIG THUMB - NON HDR CASE
-    else:
-        if use_webp:
-            thumb_url = r.get("thumbnailMiddleUrlWebp")
-        else:
-            thumb_url = r.get("thumbnailMiddleUrl")
+    # BIG THUMB
+    thumb_url = get_large_thumbnail_url(r)
 
     # SMALL THUMB
     if use_webp:
@@ -824,6 +836,8 @@ def handle_search_task(task: client_tasks.Task) -> bool:
     # if original task was already removed (because user initiated another search), results are dropped- Returns True
     # because that's OK.
     orig_task = search_tasks.get(task.task_id)
+    if orig_task is None:
+        return True
 
     search_tasks.pop(task.task_id)
 
@@ -843,11 +857,10 @@ def handle_search_task(task: client_tasks.Task) -> bool:
         result_field = []  # type: ignore
     else:
         # Strip trailing placeholder entries before appending real results
-        previous = history_step.get("search_results", [])
+        previous = history_step.get("search_results", []) or []
         result_field = [r for r in previous if not r.get("placeholder")]  # type: ignore
 
     ui_props = bpy.context.window_manager.blenderkitUI  # type: ignore[attr-defined]
-    pending_comment_ids = []
     for result in task.result["results"]:
         asset_data = parse_result(result)
         if not asset_data:
@@ -855,23 +868,13 @@ def handle_search_task(task: client_tasks.Task) -> bool:
             continue
 
         result_field.append(asset_data)
-        if not utils.profile_is_validator():
-            continue
-        if asset_data.get("assetType") == "author":
-            continue
-        # VALIDATORS
-        # fetch all comments if user is validator to preview them faster
-        # these comments are also shown as part of the tooltip oh mouse hover in asset bar.
-        comments = comments_utils.get_comments_local(asset_data["assetBaseId"])
-        if comments is None:
-            pending_comment_ids.append(asset_data["assetBaseId"])
 
     # Flush batched gravatar downloads via Go client
     _flush_pending_gravatars()
 
-    # Fetch comments for validators via Go client (async via goroutines)
-    for aid in pending_comment_ids:
-        client_lib.get_comments(aid)
+    # Comments are fetched lazily on hover (asset bar tooltip) / on popup to
+    # avoid hammering the backend rate-limit (100 req/min). See
+    # comments_utils.request_comments_if_needed().
 
     # Results are kept strictly in arrival order. The asset bar relies on
     # stable positions: once an asset is placed it must never move, otherwise
@@ -904,11 +907,15 @@ def handle_search_task(task: client_tasks.Task) -> bool:
                 if asset.get("assetType") == "author" or asset.get("downloaded", 0) > 0
             ]
         if addon_props.search_compatible_only:
-            # Filter out addons that don't support the running Blender version.
+            # Filter out addons that don't support the running Blender version
+            # or OS. Validators are exempt: they keep seeing incompatible
+            # addons (rendered with the red overlay in the asset bar).
+            is_validator = utils.profile_is_validator()
             result_field = [
                 asset
                 for asset in result_field
                 if asset.get("assetType") != "addon"
+                or is_validator
                 or utils.is_addon_blender_compatible(asset)
             ]
 
@@ -1304,12 +1311,8 @@ def handle_get_user_profile(task: client_tasks.Task):
         return
 
     can_edit_all_assets = task.result.get("canEditAllAssets", False)
-    social_networks = datas.parse_social_networks(user_data.pop("socialNetworks", []))
-
-    user = datas.MineProfile(
-        socialNetworks=social_networks,
-        canEditAllAssets=can_edit_all_assets,
-        **user_data,
+    user = datas.MineProfile.from_dict(
+        {**user_data, "canEditAllAssets": can_edit_all_assets}
     )
     user.tooltip = generate_author_textblock(
         user.firstName, user.lastName, user.aboutMe
@@ -1351,12 +1354,12 @@ def query_to_url(
     """Build a new search request by parsing query dictionary into appropriate URL.
     Also modifies query and adds some stuff in there which is very misleading anti-pattern.
     TODO: just convert to URL here and move the sorting and adding of params to separate function.
-    https://www.blenderkit.com/api/v1/search/
+    https://www.blendkit.com/api/v1/search/
     """
     if query is None:
         query = {}
 
-    url = f"{paths.BLENDERKIT_API}/search/"
+    url = f"{paths.BLENDKIT_API}/search/"
 
     requeststring = "?query="
     if query.get("query") not in ("", None):
@@ -1368,7 +1371,10 @@ def query_to_url(
         if q == "asset_type" and value != "author":
             has_keywords = query.get("query") not in ("", None)
             has_author_filter = query.get("author_id") not in ("", None)
-            if has_keywords and not has_author_filter:
+            # Author documents lack the asset sort fields (created, score,
+            # working_hours...), so mixing them in breaks explicit ordering.
+            has_explicit_order = query.get("search_order_by", "default") != "default"
+            if has_keywords and not has_author_filter and not has_explicit_order:
                 value += ",author"
         requeststring += f"+{q}:{urllib.parse.quote_plus(value)}"
 
@@ -1407,7 +1413,7 @@ def decide_ordering(query: dict) -> list:
     If search_order_by is not default, its value is used for the sorting (quality, uploaded, etc.).
     Otherwise the 'legacy' mode is used which
     """
-    # result ordering: _score - relevance, score - BlenderKit score
+    # result ordering: _score - relevance, score - Blendkit score
     order = []
     if query.get("free_first", False):
         order = [
@@ -1735,18 +1741,18 @@ def get_search_simple(
 
     Parameters
     ----------
-    parameters - dict of blenderkit elastic parameters
+    parameters - dict of Blendkit elastic parameters
     filepath - a file to save the results. If None, results are returned
     page_size - page size for retrieved results
     max_results - max results of the search
-    api_key - BlenderKit api key
+    api_key - Blendkit api key
 
     Returns
     -------
     Returns search results as a list, and optionally saves to filepath
     """
     headers = utils.get_headers(api_key)
-    url = f"{paths.BLENDERKIT_API}/search/"
+    url = f"{paths.BLENDKIT_API}/search/"
     requeststring = url + "?query="
     for p in parameters.keys():
         requeststring += f"+{p}:{parameters[p]}"
@@ -1817,10 +1823,10 @@ def search(get_next=False, query=None, author_id=""):
             )
 
         if ui_props.asset_type == "PRINTABLE":
-            if not hasattr(wm, "blenderkit_models"):
+            if not hasattr(wm, "blenderkit_printables"):
                 return
             query = build_query_model(
-                bpy.context.window_manager.blenderkit_models,
+                bpy.context.window_manager.blenderkit_printables,
                 ui_props=bpy.context.window_manager.blenderkitUI,
                 preferences=bpy.context.preferences.addons[__package__].preferences,
             )
@@ -1908,6 +1914,12 @@ def search(get_next=False, query=None, author_id=""):
             if profile is not None:
                 query["author_id"] = str(profile.id)
 
+                # add user validation status filter here
+                if ui_props.own_verification_status.lower() != "all":
+                    query["verification_status"] = (
+                        ui_props.own_verification_status.lower()
+                    )
+
         # free first has to by in query to be evaluated as changed as another search, otherwise the filter is not updated.
         query["free_first"] = ui_props.free_only
         query["search_order_by"] = ui_props.search_order_by
@@ -1922,7 +1934,7 @@ def search(get_next=False, query=None, author_id=""):
         next_url = active_history_step["search_results_orig"].get("next", "")
 
     add_search_process(query, get_next, page_size, next_url, active_history_step["id"])
-    props.report = "BlenderKit searching...."
+    props.report = "Blendkit searching...."
 
 
 def clean_filters():
@@ -1931,6 +1943,7 @@ def clean_filters():
     ui_props = bpy.context.window_manager.blenderkitUI
     active_tab = get_active_tab()
     ui_props.property_unset("own_only")
+    ui_props.property_unset("own_verification_status")
     sprops.property_unset("search_texture_resolution")
     sprops.property_unset("search_file_size")
     sprops.property_unset("search_procedural")
@@ -1969,7 +1982,9 @@ def update_filters():
     if ui_props.search_bookmarks and not utils.user_logged_in():
         ui_props.search_bookmarks = False
         bpy.ops.wm.blenderkit_login_dialog(
-            "INVOKE_DEFAULT", message="Please login to use bookmarks."
+            "INVOKE_DEFAULT",
+            message="Please login to use bookmarks.",
+            placement="bookmarks_prompt",
         )
         return False
     if ui_props.own_only and not utils.user_logged_in():
@@ -1977,6 +1992,7 @@ def update_filters():
         bpy.ops.wm.blenderkit_login_dialog(
             "INVOKE_DEFAULT",
             message="Please login to upload and filter your own assets.",
+            placement="own_assets_prompt",
         )
         return False
 
@@ -2222,7 +2238,7 @@ class SearchOperator(Operator):
     """Tooltip"""
 
     bl_idname = "view3d.blenderkit_search"
-    bl_label = "BlenderKit asset search"
+    bl_label = "Blendkit asset search"
     bl_description = "Search online for assets"
     bl_options = {"REGISTER", "UNDO", "INTERNAL"}
 
@@ -2374,11 +2390,11 @@ class AuthorAssetTypeSearch(Operator):
     bl_label = "Search Author Assets"
     bl_options = {"REGISTER", "INTERNAL"}
 
-    author_id: StringProperty(name="Author ID", default="", options={"SKIP_SAVE"})
-    author_name: StringProperty(name="Author Name", default="", options={"SKIP_SAVE"})
+    author_id: StringProperty(name="Author ID", default="", options={"SKIP_SAVE"})  # type: ignore
+    author_name: StringProperty(name="Author Name", default="", options={"SKIP_SAVE"})  # type: ignore
     asset_type: StringProperty(
         name="Asset Type", default="MODEL", options={"SKIP_SAVE"}
-    )
+    )  # type: ignore
 
     def execute(self, context):
         ui_props = bpy.context.window_manager.blenderkitUI
@@ -2397,8 +2413,8 @@ class AuthorAssetTypePopup(Operator):
     bl_label = "Find Author's Assets"
     bl_options = {"REGISTER", "INTERNAL"}
 
-    author_id: StringProperty(name="Author ID", default="", options={"SKIP_SAVE"})
-    author_name: StringProperty(name="Author Name", default="", options={"SKIP_SAVE"})
+    author_id: StringProperty(name="Author ID", default="", options={"SKIP_SAVE"})  # type: ignore
+    author_name: StringProperty(name="Author Name", default="", options={"SKIP_SAVE"})  # type: ignore
 
     # Set by caller before invoke — per-type asset counts from the author result
     _asset_type_counts: dict = {}
@@ -2411,6 +2427,11 @@ class AuthorAssetTypePopup(Operator):
         return wm.invoke_popup(self, width=200)
 
     def draw(self, context):
+        # local import to avoid circular import (ui_panels imports search)
+        from . import ui_panels
+
+        # this timer is there to not let double clicks through the popups down to the asset bar.
+        ui_panels.set_overlay_panel_active()
         layout = self.layout
         layout.label(text=self.author_name or "Author")
         layout.separator()
@@ -2523,6 +2544,7 @@ def get_ui_state():
             "asset_type": ui_props.asset_type,
             "free_only": ui_props.free_only,
             "own_only": ui_props.own_only,
+            "own_verification_status": ui_props.own_verification_status,
             "search_bookmarks": ui_props.search_bookmarks,
             "quality_limit": ui_props.quality_limit,
             "search_license": ui_props.search_license,

@@ -16,7 +16,7 @@
 #
 # ##### END GPL LICENSE BLOCK #####
 
-"""Background communication thread for the BlenderKit-Client.
+"""Background communication thread for the Blendkit-Client.
 
 The legacy code path makes every HTTP roundtrip to the local Go client on
 Blender's main thread. Even on 127.0.0.1 these calls can block long enough to
@@ -49,7 +49,11 @@ import requests
 bk_logger = logging.getLogger(__name__)
 
 NO_PROXIES = {"http": "", "https": ""}
-POLL_TIMEOUT = (0.05, 0.25)
+# This poll runs on the worker thread, not Blender's main thread, so a longer
+# read timeout here does NOT stutter the UI. A generous value lets a busy Client
+# finish answering instead of being treated as unreachable (which would trigger
+# a needless restart on the main thread).
+POLL_TIMEOUT = (0.05, 2.0)
 DEFAULT_TIMEOUT = (0.1, 1.0)
 # Cap the worker's self-throttling so we keep checking on the Client.
 _MAX_BACKOFF_SECONDS = 5.0
@@ -183,10 +187,10 @@ def start() -> None:
             return
         _stop_event.clear()
         _thread = threading.Thread(
-            target=_worker_loop, name="BlenderKit-ClientComm", daemon=True
+            target=_worker_loop, name="Blendkit-ClientComm", daemon=True
         )
         _thread.start()
-    bk_logger.info("BlenderKit client communication thread started")
+    bk_logger.info("Blendkit client communication thread started")
 
 
 def stop(timeout: float = 1.0) -> None:
@@ -206,7 +210,7 @@ def stop(timeout: float = 1.0) -> None:
     thread.join(timeout=timeout)
     with _thread_lock:
         _thread = None
-    bk_logger.info("BlenderKit client communication thread stopped")
+    bk_logger.info("Blendkit client communication thread stopped")
 
 
 def _do_post(url: str, data: dict, timeout: Tuple[float, float]) -> None:
@@ -232,7 +236,7 @@ def _drain_outbound() -> None:
         try:
             func(*args, **kwargs)
         except Exception:
-            bk_logger.exception("Outbound BlenderKit-Client request failed")
+            bk_logger.exception("Outbound Blendkit-Client request failed")
 
 
 def _extract_port(url: str) -> Optional[str]:
@@ -316,7 +320,7 @@ def _worker_loop() -> None:
             try:
                 _poll_reports()
             except Exception:
-                bk_logger.exception("Unexpected error in BlenderKit poll worker")
+                bk_logger.exception("Unexpected error in Blendkit poll worker")
                 # Surface as a regular failure so backoff logic kicks in.
                 _consecutive_failures += 1
 
@@ -324,4 +328,4 @@ def _worker_loop() -> None:
         if _stop_event.wait(timeout=sleep_for):
             break
 
-    bk_logger.info("BlenderKit client communication worker exited")
+    bk_logger.info("Blendkit client communication worker exited")

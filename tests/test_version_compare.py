@@ -9,10 +9,11 @@ except ModuleNotFoundError:  # pragma: no cover - executed outside Blender only.
 
 
 if bpy is not None:
-    for addon in bpy.context.preferences.addons:
-        if "blenderkit" in addon.module:
-            __package__ = addon.module
-            break
+    # Strip the trailing ``.tests`` from this test package to get the add-on
+    # module (e.g. ``bl_ext.user_default.blenderkit_dev_hl``). Scanning ``addons``
+    # for "blenderkit" is unreliable when several blenderkit* add-ons are enabled.
+    if __package__:
+        __package__ = __package__.rsplit(".tests", 1)[0]
 else:
     PROJECT_ROOT = Path(__file__).resolve().parent.parent
     if str(PROJECT_ROOT) not in sys.path:

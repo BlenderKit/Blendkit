@@ -9,7 +9,7 @@ jobs:
   Checks:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Install
         run: pip install -r devs/requirements.txt
       - name: ISORT
@@ -18,41 +18,18 @@ jobs:
       - name: BLACK
         run: python -m black . --check --diff
 
-  Client-Unit-Tests:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - name: Set up Go
-        uses: actions/setup-go@v5
-        with:
-          go-version-file: './client/go.mod'
-          cache-dependency-path: './client/go.sum'
-        id: go
-      - name: Go test
-        working-directory: ./client
-        run: go test -coverprofile=coverage-go.out
-      - name: Upload Go coverage to Codecov
-        uses: codecov/codecov-action@v4
-        with:
-          token: ${{ secrets.CODECOV_TOKEN }}
-          files: client/coverage-go.out
-          flags: go
-          fail_ci_if_error: false
-
   Build:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - name: Set up Go
-        uses: actions/setup-go@v5
-        with:
-          go-version-file: './client/go.mod'
-          cache-dependency-path: './client/go.sum'
-        id: go
+      - uses: actions/checkout@v7
+      - name: Checkout bk_proxor submodule
+        run: git submodule update --init bk_proxor
       - name: Build add-on
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: python dev.py build
       - name: Store the build
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: blenderkit-${{ github.ref_name }}-${{ github.sha }}
           path: |
@@ -64,10 +41,10 @@ jobs:
     outputs:
       matrix: ${{ steps.set-matrix.outputs.matrix }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - id: set-matrix
         run: python .github/make-tests-matrix.py >> $GITHUB_OUTPUT
- 
+
   TESTS:
     needs: make-tests-matrix
     continue-on-error: true
@@ -75,16 +52,12 @@ jobs:
     strategy:
       matrix: ${{ fromJSON(needs.make-tests-matrix.outputs.matrix) }}
     steps:
-      - uses: actions/checkout@v4
-      - name: Set up Go
-        uses: actions/setup-go@v5
-        with:
-          go-version-file: './client/go.mod'
-          cache-dependency-path: './client/go.sum'
-        id: go
+      - uses: actions/checkout@v7
+      - name: Checkout bk_proxor submodule
+        run: git submodule update --init bk_proxor
       - name: Cache Blender
         id: blenderBinaryCache
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: /home/runner/blender
           key: blender-${{matrix.version}}-${{matrix.sha}}
@@ -104,9 +77,10 @@ jobs:
       - name: TEST
         env:
           COVERAGE: "1"
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: python dev.py test --install-at /home/runner/.config/blender/${{matrix.version_x_y}}/scripts/addons
       - name: Upload Python coverage to Codecov
-        uses: codecov/codecov-action@v4
+        uses: codecov/codecov-action@v7
         with:
           token: ${{ secrets.CODECOV_TOKEN }}
           files: coverage-python.xml

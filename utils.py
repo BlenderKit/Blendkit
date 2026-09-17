@@ -28,10 +28,135 @@ import shutil
 import sys
 import tempfile
 import uuid
-from typing import Optional
+from typing import Optional, Union
+
+import requests
 
 import bpy
 from mathutils import Vector
+
+# Cached result of available_render_engines(). Blender's EnumProperty items
+# callback must keep a persistent Python reference to the returned strings,
+# otherwise it may misbehave or crash. None means "not computed yet".
+_RENDER_ENGINES_CACHE = None
+
+
+def available_render_engines(self, context):
+    """Return a list of available render engines in the current Blender instance.
+
+    Defined before the relative imports below so it is available even while the
+    package is still being imported (avoids a circular import when EnumProperty
+    definitions reference it at class-body time).
+
+    The result is cached in a module-level variable. Blender requires that an
+    EnumProperty items callback keeps a persistent Python reference to the
+    returned strings, otherwise it "may misbehave or even crash". Caching also
+    avoids re-probing the render engines (which triggers an exception on every
+    redraw) each time the callback fires.
+    """
+    global _RENDER_ENGINES_CACHE
+    if _RENDER_ENGINES_CACHE is not None:
+        return _RENDER_ENGINES_CACHE
+
+    # ble < 5.1  --> only cycles
+    minimal = [("CYCLES", "Cycles", "Blender Cycles")]
+    if bpy.app.version < (5, 1, 0):
+        _RENDER_ENGINES_CACHE = minimal
+        return _RENDER_ENGINES_CACHE
+
+    # hacky way to get render engines, but blender does not provide a better way to get them, so we have to use this
+    re_engines = []
+    try:
+        # Trigger the error message that contains the full enum list
+        bpy.context.scene.render.engine = "INVALID_ENGINE_NAME"
+    except Exception as e:
+        # The error message looks like: enum "INVALID..." not found in ('BLENDER_EEVEE', 'BLENDER_WORKBENCH', 'CYCLES', ...)
+        error_str = str(e)
+        # Extract the values inside the parentheses
+        start = error_str.find("'")
+        if start != -1:
+            re_engines = error_str[start:].split("'")[
+                1::2
+            ]  # every other item after splitting on '
+    if not re_engines:
+        _RENDER_ENGINES_CACHE = minimal
+        return _RENDER_ENGINES_CACHE
+
+    out = []
+
+    for engine_id in re_engines:
+        # Get the human-readable name from the enum
+        try:
+            prop = bpy.context.scene.render.bl_rna.properties["engine"]
+            item = next(
+                (item for item in prop.enum_items if item.identifier == engine_id), None
+            )
+            display_name = item.name if item else engine_id
+            out.append((engine_id, display_name, f"{display_name} render engine"))
+        except:
+            pass
+    if not out:
+        _RENDER_ENGINES_CACHE = minimal
+        return _RENDER_ENGINES_CACHE
+    # move cycles to the top of the list, as it's the most common engine
+    out.sort(key=lambda x: (x[0] != "CYCLES", x[0]))
+    _RENDER_ENGINES_CACHE = out
+    return _RENDER_ENGINES_CACHE
+
+
+# Fields of the BlenderKitThumbnailSettings property group that are persisted.
+THUMBNAIL_SETTINGS_FIELDS = (
+    "thumbnail_render_engine",
+    "thumbnail_resolution",
+    "thumbnail_samples",
+    "thumbnail_denoising",
+    "thumbnail_background_lightness",
+    "thumbnail_angle",
+    "thumbnail_snap_to",
+    "thumbnail_material_color",
+    "thumbnail_generator_type",
+    "thumbnail_scale",
+    "thumbnail_background",
+    "adaptive_subdivision",
+    "thumbnail_use_gpu",
+)
+
+
+def thumbnail_settings_to_dict(settings) -> dict:
+    """Serialize the global thumbnail settings group into a JSON-friendly dict."""
+    out = {}
+    if settings is None:
+        return out
+    for name in THUMBNAIL_SETTINGS_FIELDS:
+        if not hasattr(settings, name):
+            continue
+        value = getattr(settings, name)
+        if name == "thumbnail_material_color":
+            value = list(value)
+        out[name] = value
+    return out
+
+
+def apply_thumbnail_settings_from_dict(settings, data: dict) -> None:
+    """Apply a previously saved dict of thumbnail settings onto the settings group.
+
+    Individual values are applied defensively: a value that is no longer valid
+    (e.g. a render engine not available in the current Blender) is skipped
+    instead of raising.
+    """
+    if settings is None or not isinstance(data, dict):
+        return
+    for name in THUMBNAIL_SETTINGS_FIELDS:
+        if name not in data or not hasattr(settings, name):
+            continue
+        try:
+            value = data[name]
+            if name == "thumbnail_material_color":
+                value = tuple(value)
+            setattr(settings, name, value)
+        except Exception as e:
+            bk_logger.warning("Failed to load thumbnail setting %s: %s", name, e)
+
 
 from . import (
     client_lib,
@@ -79,8 +204,28 @@ supported_material_drag = (
 
 def experimental_enabled() -> bool:
     """Check if experimental features are enabled. Experimental features are always be enabled for staff and validators."""
-    preferences = bpy.context.preferences.addons[__package__].preferences  # type: ignore
-    return preferences.experimental_features or profile_is_validator()  # type: ignore
+    addon = bpy.context.preferences.addons.get(__package__)  # type: ignore
+    if addon is None:
+        return False
+    return bool(addon.preferences.experimental_features or profile_is_validator())  # type: ignore
+
+
+def elevated_experimental_enabled() -> bool:
+    """Check if experimental features are enabled and is validator."""
+    addon = bpy.context.preferences.addons.get(__package__)  # type: ignore
+    if addon is None:
+        return False
+    return bool(
+        addon.preferences.experimental_features and profile_is_validator()
+    )  # type: ignore
+
+
+def proxor_enabled() -> bool:
+    """Check if Proxor is enabled in preferences."""
+    addon = bpy.context.preferences.addons.get(__package__)  # type: ignore
+    if addon is None:
+        return False
+    return bool(addon.preferences.proxor_enabled)  # type: ignore
 
 
 def get_process_flags():
@@ -129,7 +274,7 @@ def selection_set(sel):
 
 
 def get_asset_data_from_ob(ob) -> Optional[dict]:
-    """Return the BlenderKit asset_data dict for an object.
+    """Return the Blendkit asset_data dict for an object.
 
     Checks the object's own IDProperty first. When the object is a
     collection-instance EMPTY (imported from a local asset library) it falls
@@ -153,6 +298,80 @@ def get_active_model() -> Optional[bpy.types.Object]:
             ob = ob.parent
         return ob
     return None
+
+
+def get_outliner_element_under_mouse(
+    window: bpy.types.Window,
+    area: bpy.types.Area,
+    region: bpy.types.Region,
+    mouse_x: int,
+    mouse_y: int,
+    *,
+    restore_selection: bool = True,
+) -> Union[bpy.types.Object, bpy.types.Collection, None]:
+    """Return the Object or Collection under the mouse in an OUTLINER area.
+
+    Uses a 1px ``outliner.select_box`` probe (the same technique used for
+    outliner drag-and-drop) to resolve the hovered element via
+    ``context.selected_ids``.
+
+    ``mouse_x`` / ``mouse_y`` are region-relative coordinates.
+
+    When ``restore_selection`` is True (the default) the selection disturbed by
+    the probe is restored so the call leaves no visible side effects. Callers
+    that want to keep the probed element selected (e.g. to act on it and restore
+    the selection themselves later) can pass ``restore_selection=False``.
+
+    Returns None on unsupported Blender versions or when nothing is under the
+    cursor.
+    """
+    if area is None or region is None or area.type != "OUTLINER":
+        return None
+    if bpy.app.version <= (3, 1, 9):
+        # Older Blender doesn't expose selected_ids, so hover detection is impossible.
+        return None
+
+    context = bpy.context
+    view_layer = context.view_layer
+    orig_selected = context.selected_objects.copy()
+    orig_active = view_layer.objects.active
+    orig_active_collection = view_layer.active_layer_collection
+
+    element: Union[bpy.types.Object, bpy.types.Collection, None] = None
+    try:
+        with context.temp_override(window=window, area=area, region=region):
+            bpy.ops.outliner.select_box(
+                xmin=mouse_x - 1,
+                xmax=mouse_x + 1,
+                ymin=mouse_y - 1,
+                ymax=mouse_y + 1,
+                wait_for_input=False,
+                mode="SET",
+            )
+            if getattr(bpy.context, "selected_ids", None):
+                element = bpy.context.selected_ids[0]
+    except RuntimeError as e:
+        bk_logger.warning("Outliner hover detection failed: %s", e)
+
+    if not restore_selection:
+        return element
+
+    # Restore the selection state we disturbed with the probe.
+    try:
+        for ob in view_layer.objects:
+            ob.select_set(ob in orig_selected)
+        view_layer.objects.active = orig_active
+        if orig_active_collection is not None:
+            view_layer.active_layer_collection = orig_active_collection
+        # Clear the outliner's own highlight left by the probe.
+        with context.temp_override(window=window, area=area, region=region):
+            bpy.ops.outliner.select_box(
+                xmin=0, xmax=1, ymin=0, ymax=1, wait_for_input=False, mode="SET"
+            )
+    except (RuntimeError, ReferenceError) as e:
+        bk_logger.warning("Restoring selection after outliner hover failed: %s", e)
+
+    return element
 
 
 def get_active_HDR():
@@ -292,10 +511,14 @@ def get_search_props():
         return
     uiprops = bpy.context.window_manager.blenderkitUI
     props = None
-    if uiprops.asset_type in ("MODEL", "PRINTABLE"):
+    if uiprops.asset_type == "MODEL":
         if not hasattr(wm, "blenderkit_models"):
             return
         props = wm.blenderkit_models
+    if uiprops.asset_type == "PRINTABLE":
+        if not hasattr(wm, "blenderkit_printables"):
+            return
+        props = wm.blenderkit_printables
     if uiprops.asset_type == "SCENE":
         if not hasattr(wm, "blenderkit_scene"):
             return
@@ -507,10 +730,25 @@ def get_brush_icon_path(brush) -> str:
     return filepath
 
 
-def get_scene_id():
-    """gets scene id and possibly also generates a new one"""
-    bpy.context.scene["uuid"] = bpy.context.scene.get("uuid", str(uuid.uuid4()))
-    return bpy.context.scene["uuid"]
+def get_scene_id(scene=None):
+    """Return the scene's Blendkit uuid, generating and storing one when missing or shared.
+
+    Defaults to the active scene; pass a scene to address another one (the
+    save-time report covers every scene in the file). Blender copies custom
+    properties when a scene is created from another one ("New" included), so
+    a second scene starts out with the first one's uuid and the server would
+    merge the two into one history. The first scene in ``bpy.data.scenes``
+    keeps the shared uuid; every later scene holding it gets a fresh one.
+    """
+    if scene is None:
+        scene = bpy.context.scene
+    current = scene.get("uuid")
+    owner = next(
+        (other for other in bpy.data.scenes if other.get("uuid") == current), None
+    )
+    if current is None or (owner is not None and owner != scene):
+        scene["uuid"] = str(uuid.uuid4())
+    return scene["uuid"]
 
 
 def get_preferences_as_dict():
@@ -531,6 +769,7 @@ def get_preferences_as_dict():
         "api_key_refresh": user_preferences.api_key_refresh,
         "api_key_timeout": user_preferences.api_key_timeout,
         "experimental_features": user_preferences.experimental_features,
+        "send_usage_data": user_preferences.send_usage_data,
         "keep_preferences": user_preferences.keep_preferences,
         # FILE PATHS
         "directory_behaviour": user_preferences.directory_behaviour,
@@ -542,11 +781,15 @@ def get_preferences_as_dict():
         "show_on_start": user_preferences.show_on_start,
         "thumb_size": user_preferences.thumb_size,
         "maximized_assetbar_rows": user_preferences.maximized_assetbar_rows,
+        "assetbar_expanded": user_preferences.assetbar_expanded,
         "search_field_width": user_preferences.search_field_width,
         "search_in_header": user_preferences.search_in_header,
         "tips_on_start": user_preferences.tips_on_start,
         "announcements_on_start": user_preferences.announcements_on_start,
         "assetbar_follows_cursor": user_preferences.assetbar_follows_cursor,
+        "proxor_enabled": user_preferences.proxor_enabled,
+        "rating_nudge_enabled": user_preferences.rating_nudge_enabled,
+        "comments_order": user_preferences.comments_order,
         # NETWORK
         "client_port": user_preferences.client_port,
         "ip_version": user_preferences.ip_version,
@@ -561,6 +804,10 @@ def get_preferences_as_dict():
         "updater_interval_days": user_preferences.updater_interval_days,
         # IMPORT SETTINGS
         "resolution": user_preferences.resolution,
+        # THUMBNAIL SETTINGS
+        "thumbnail_settings": thumbnail_settings_to_dict(
+            getattr(user_preferences, "thumbnail_settings", None)
+        ),
     }
     return prefs
 
@@ -585,6 +832,7 @@ def get_preferences() -> datas.Prefs:
         api_key_timeout=user_preferences.api_key_timeout,  # type: ignore[union-attr]
         experimental_features=user_preferences.experimental_features,  # type: ignore[union-attr]
         keep_preferences=user_preferences.keep_preferences,  # type: ignore[union-attr]
+        send_usage_data=user_preferences.send_usage_data,  # type: ignore[union-attr]
         # FILE PATHS
         directory_behaviour=user_preferences.directory_behaviour,  # type: ignore[union-attr]
         global_dir=user_preferences.global_dir,  # type: ignore[union-attr]
@@ -595,11 +843,13 @@ def get_preferences() -> datas.Prefs:
         show_on_start=user_preferences.show_on_start,  # type: ignore[union-attr]
         thumb_size=user_preferences.thumb_size,  # type: ignore[union-attr]
         maximized_assetbar_rows=user_preferences.maximized_assetbar_rows,  # type: ignore[union-attr]
+        assetbar_expanded=user_preferences.assetbar_expanded,  # type: ignore[union-attr]
         search_field_width=user_preferences.search_field_width,  # type: ignore[union-attr]
         search_in_header=user_preferences.search_in_header,  # type: ignore[union-attr]
         tips_on_start=user_preferences.tips_on_start,  # type: ignore[union-attr]
         announcements_on_start=user_preferences.announcements_on_start,  # type: ignore[union-attr]
         assetbar_follows_cursor=user_preferences.assetbar_follows_cursor,  # type: ignore[union-attr]
+        proxor_enabled=user_preferences.proxor_enabled,  # type: ignore[union-attr]
         # NETWORK
         client_port=user_preferences.client_port,  # type: ignore[union-attr]
         ip_version=user_preferences.ip_version,  # type: ignore[union-attr]
@@ -617,6 +867,22 @@ def get_preferences() -> datas.Prefs:
         material_import_automap=user_preferences.material_import_automap,  # type: ignore[union-attr]
     )
     return prefs
+
+
+def send_usage_data_updated(user_preferences, context):
+    """Push the usage-data choice to Blendkit-Client, then save the preferences.
+
+    Skipped while the preference is being set FROM the Client's settings
+    broadcast, which would otherwise echo the value straight back.
+    """
+    if not client_lib.applying_client_settings:
+        try:
+            client_lib.set_usage_data_opt_out(not user_preferences.send_usage_data)
+        except requests.RequestException as e:
+            bk_logger.warning(
+                "Could not store the usage-data choice in Blendkit-Client: %s", e
+            )
+    save_prefs(user_preferences, context)
 
 
 def save_prefs_without_save_userpref(user_preferences, context):
@@ -917,7 +1183,7 @@ def copy_asset(fp1, fp2):
             bk_logger.debug("copied")
 
     # except Exception as e:
-    #     print('BlenderKit failed to copy asset')
+    #     print('Blendkit failed to copy asset')
     #     print(fp1, fp2)
     #     print(e)
 
@@ -1470,7 +1736,6 @@ def asset_from_newer_blender_version(asset_data, blender_version=None):
 
     Returns (needs_warning: bool, difference: str) where difference is one of:
     - "major_newer": asset from a newer major version (high risk)
-    - "major_older": asset from an older major version (possible incompatibility)
     - "minor": asset from a newer minor version within same major
     - "patch": asset from a newer patch version within same major.minor
     - "": no compatibility concern
@@ -1490,7 +1755,7 @@ def asset_from_newer_blender_version(asset_data, blender_version=None):
     if blender_version[0] < int(asset_ver[0]):
         return True, "major_newer"
     elif blender_version[0] > int(asset_ver[0]):
-        return True, "major_older"
+        return False, ""
 
     if blender_version[1] < int(asset_ver[1]):
         return True, "minor"
@@ -1570,10 +1835,8 @@ def check_context(context, area_type="VIEW_3D"):
 
 
 def get_fake_context(context=None, area_type="VIEW_3D"):
-    C_dict = (
-        {}
-    )  # context.copy() #context.copy was a source of problems - incompatibility with addons that also define context
-    C_dict.update(region="WINDOW")
+    # context.copy() was a source of problems - incompatibility with addons that also define context
+    C_dict: dict = {}
 
     # if hasattr(context,'window') and hasattr(context,'screen') and hasattr(context,'area') and hasattr(context,'region'):
     #     w = context.window
@@ -1623,6 +1886,10 @@ def has_url(text):
 def line_with_urls(row, text, urls, icon="NONE", use_urls=False):
     used_urls = []
     if use_urls:
+        # emboss the url buttons so users can tell they are clickable - the
+        # surrounding row is drawn with emboss="NONE" for plain-text lines.
+        if len(urls) > 0:
+            row.emboss = "NORMAL"
         for i, url in enumerate(urls):
             op = row.operator("wm.blenderkit_url", text=url[0])
             op.url = url[1]
@@ -1643,6 +1910,8 @@ def label_multiline(
     max_lines: int = 10,
     split_last: float = 0,
     use_urls: bool = False,
+    align: str = "LEFT",
+    emboss: str = "NONE",
 ):
     """
      draw a ui label, but try to split it in multiple lines.
@@ -1685,6 +1954,8 @@ def label_multiline(
                 i = threshold
             l1 = line[:i]
             row = layout.row()
+            row.alignment = align
+            row.emboss = emboss
             line_with_urls(row, l1, urls, icon=icon, use_urls=use_urls)
             rows.append(row)
             icon = "NONE"
@@ -1695,12 +1966,15 @@ def label_multiline(
         if line_index > max_lines:
             break
         row = layout.row()
+        row.alignment = align
+        row.emboss = emboss
         if split_last > 0:
             row = row.split(factor=split_last)
         line_with_urls(row, line, urls, icon=icon, use_urls=use_urls)
 
         rows.append(row)
         icon = "NONE"
+
     return rows
 
 
@@ -1772,7 +2046,7 @@ def _check_dir_permissions(dir_path, dir_label="Directory"):
     if os.path.isfile(dir_path):
         return False, (
             f"{dir_label} path points to a file, not a folder.\n"
-            f"Please remove the file or change the path in BlenderKit preferences.\n"
+            f"Please remove the file or change the path in Blendkit preferences.\n"
             f"Path: {dir_path}"
         )
 
@@ -1789,7 +2063,7 @@ def _check_dir_permissions(dir_path, dir_label="Directory"):
         except OSError as e:
             return False, (
                 f"Cannot create {dir_label}: {e}\n"
-                f"Please check the path in BlenderKit preferences.\n"
+                f"Please check the path in Blendkit preferences.\n"
                 f"Path: {dir_path}"
             )
 
@@ -1804,14 +2078,14 @@ def _check_dir_permissions(dir_path, dir_label="Directory"):
     except PermissionError:
         return False, (
             f"No write permission to {dir_label}.\n"
-            f"BlenderKit needs to save downloaded assets into this folder.\n"
+            f"Blendkit needs to save downloaded assets into this folder.\n"
             f"Please choose a folder where you have write access, or fix the permissions.\n"
             f"Path: {dir_path}"
         )
     except OSError as e:
         return False, (
             f"Cannot write to {dir_label}: {e}\n"
-            f"Please check the path in BlenderKit preferences.\n"
+            f"Please check the path in Blendkit preferences.\n"
             f"Path: {dir_path}"
         )
 
@@ -1844,7 +2118,7 @@ def try_recover_global_dir():
     prefs = bpy.context.preferences.addons[__package__].preferences
     prefs.global_dir = default_dir
     reports.add_report(
-        f"BlenderKit download folder was not accessible. Reset to default: {default_dir}",
+        f"Blendkit download folder was not accessible. Reset to default: {default_dir}",
         type="INFO",
     )
     restart_client_after_path_fix()
@@ -1950,12 +2224,54 @@ def get_addon_blender_compatibility(asset_data):
     return True, min_v, max_v
 
 
+def get_current_addon_platform() -> str:
+    """Return the Blender-extension platform id for the running machine.
+
+    Format matches Blender manifest platforms, e.g. 'windows-x64',
+    'macos-arm64', 'linux-x64'.
+    """
+    os_name = {"win32": "windows", "darwin": "macos"}.get(sys.platform)
+    if os_name is None:
+        os_name = "linux" if sys.platform.startswith("linux") else sys.platform
+    machine = platform.machine().lower()
+    if machine in ("x86_64", "amd64", "x64"):
+        arch = "x64"
+    elif machine in ("arm64", "aarch64"):
+        arch = "arm64"
+    else:
+        arch = machine
+    return f"{os_name}-{arch}"
+
+
+def get_addon_os_compatibility(asset_data):
+    """Return (is_compatible, platforms) for an addon asset.
+
+    Reads dictParameters.platforms (list of Blender platform ids). An empty or
+    missing list means the addon is platform-independent (compatible). Non-addon
+    assets are always compatible.
+    """
+    if not isinstance(asset_data, dict) or asset_data.get("assetType") != "addon":
+        return True, None
+    dp = asset_data.get("dictParameters") or {}
+    platforms = dp.get("platforms") or None
+    if not platforms:
+        return True, platforms
+    return get_current_addon_platform() in platforms, platforms
+
+
+def is_addon_os_compatible(asset_data) -> bool:
+    return get_addon_os_compatibility(asset_data)[0]
+
+
 def is_addon_blender_compatible(asset_data) -> bool:
-    return get_addon_blender_compatibility(asset_data)[0]
+    """Whether an addon is usable on this machine (both Blender version and OS)."""
+    return get_addon_blender_compatibility(asset_data)[0] and is_addon_os_compatible(
+        asset_data
+    )
 
 
 def get_addon_version() -> str:
-    """Get BlenderKit addon version as string in format X.Y.Z."""
+    """Get Blendkit addon version as string in format X.Y.Z."""
     ver = global_vars.VERSION
     return f"{ver[0]}.{ver[1]}.{ver[2]}"
 
@@ -1968,7 +2284,7 @@ def get_project_name() -> str:
 
 
 class BlenderkitException(Exception):
-    """Base class for all BlenderKit exceptions."""
+    """Base class for all Blendkit exceptions."""
 
     pass
 

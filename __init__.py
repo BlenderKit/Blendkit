@@ -18,24 +18,23 @@
 # type: ignore
 
 bl_info = {
-    "name": "BlenderKit Online Asset Library",
+    "name": "Blendkit Online Asset Library",
     "author": "Vilem Duha, Petr Dlouhy, A. Gajdosik, Michal Hons",
-    "version": (3, 20, 0, 260517),  # X.Y.Z.yymmdd
+    "version": (3, 21, 2, 260907),  # X.Y.Z.yymmdd
     "blender": (3, 0, 0),
-    "location": "View3D > Properties > BlenderKit",
+    "location": "View3D > Properties > Blendkit",
     "description": "Boost your workflow with drag&drop assets from the community driven library.",
     "doc_url": "https://github.com/BlenderKit/blenderkit/wiki",
     "tracker_url": "https://github.com/BlenderKit/blenderkit/issues",
     "category": "3D View",
 }
-VERSION = (3, 20, 0, 260517)
+VERSION = (3, 21, 2, 260907)
 
 import logging
 import random
 import sys
 from importlib import reload
 from os import path
-
 
 try:
     sys.stdout.reconfigure(encoding="utf-8")
@@ -79,6 +78,8 @@ if "bpy" in locals():
     colors = reload(colors)
     client_lib = reload(client_lib)
     client_tasks = reload(client_tasks)
+    clipboard_x11 = reload(clipboard_x11)
+    unlock_options = reload(unlock_options)
     disclaimer_op = reload(disclaimer_op)
     warning_dialog = reload(warning_dialog)
     download = reload(download)
@@ -90,6 +91,7 @@ if "bpy" in locals():
     paths = reload(paths)
     ratings_utils = reload(ratings_utils)
     ratings = reload(ratings)
+    rating_nudge = reload(rating_nudge)
     comments_utils = reload(comments_utils)
     resolutions = reload(resolutions)
     search = reload(search)
@@ -105,24 +107,22 @@ if "bpy" in locals():
     reports = reload(reports)
     rereports = reload(reports)
 
-    from .bl_proxor import draw as bl_proxor_draw
-    from .bl_proxor import generate as bl_proxor_generate
-    from .bl_proxor import prx_format as bl_proxor_prx_format
+    from .bk_proxor._blender import draw as bk_proxor_draw
+    from .bk_proxor._blender import generate as bk_proxor_generate
+    from .bk_proxor import prx_format as bk_proxor_prx_format
 
-    bl_proxor_draw = reload(bl_proxor_draw)
-    bl_proxor_generate = reload(bl_proxor_generate)
-    bl_proxor_prx_format = reload(bl_proxor_prx_format)
+    bk_proxor_draw = reload(bk_proxor_draw)
+    bk_proxor_generate = reload(bk_proxor_generate)
+    bk_proxor_prx_format = reload(bk_proxor_prx_format)
 
     bl_ui_widget = reload(bl_ui_widget)
     bl_ui_label = reload(bl_ui_label)
     bl_ui_button = reload(bl_ui_button)
     bl_ui_image = reload(bl_ui_image)
-    # bl_ui_checkbox = reload(bl_ui_checkbox)
-    # bl_ui_slider = reload(bl_ui_slider)
-    # bl_ui_up_down = reload(bl_ui_up_down)
+
     bl_ui_drag_panel = reload(bl_ui_drag_panel)
     bl_ui_draw_op = reload(bl_ui_draw_op)
-    # bl_ui_textbox = reload(bl_ui_textbox)
+
 
 else:
     import bpy
@@ -145,6 +145,8 @@ else:
     from . import client_lib
     from . import client_tasks
     from . import client_thread
+    from . import clipboard_x11
+    from . import unlock_options
     from . import disclaimer_op
     from . import warning_dialog
     from . import download
@@ -157,6 +159,7 @@ else:
     from . import paths
     from . import ratings
     from . import ratings_utils
+    from . import rating_nudge
     from . import comments_utils
     from . import resolutions
     from . import search
@@ -177,13 +180,9 @@ else:
     from .bl_ui_widgets import bl_ui_button
     from .bl_ui_widgets import bl_ui_image
 
-    # from .bl_ui_widgets import bl_ui_checkbox
-    # from .bl_ui_widgets import bl_ui_slider
-    # from .bl_ui_widgets import bl_ui_up_down
     from .bl_ui_widgets import bl_ui_draw_op
     from .bl_ui_widgets import bl_ui_drag_panel
 
-    # from .bl_ui_widgets import bl_ui_textbox
 
 from math import pi
 
@@ -255,7 +254,7 @@ search_material_styles = (
 engines = (
     ("CYCLES", "Cycles", "Blender Cycles"),
     ("EEVEE", "Eevee", "Blender eevee renderer"),
-    ("EEEVE_NEXT", "Eevee Next", "Blender eevee renderer (new)"),
+    ("EEVEE_NEXT", "Eevee Next", "Blender eevee renderer (new)"),
     ("OCTANE", "Octane", "Octane render engine"),
     ("ARNOLD", "Arnold", "Arnold render engine"),
     ("V-RAY", "V-Ray", "V-Ray renderer"),
@@ -266,6 +265,8 @@ engines = (
     ("OTHER", "Other", "any other engine"),
     ("NONE", "None", "no more engine block"),
 )
+
+
 pbr_types = (
     ("METALLIC", "Metallic-Roughness", "Metallic/Roughness PBR material type"),
     ("SPECULAR", "Specular  Glossy", ""),
@@ -301,7 +302,7 @@ _asset_type_enum_cache_key = None
 def asset_type_callback(self, context):
     """
     Returns
-    items for Enum property, depending on the down_up property - BlenderKit is either in search or in upload mode.
+    items for Enum property, depending on the down_up property - Blendkit is either in search or in upload mode.
     """
     global _asset_type_enum_items, _asset_type_enum_cache_key
     addon = bpy.context.preferences.addons.get(__package__)
@@ -393,6 +394,63 @@ def run_drag_drop_update(self, context):
         self.drag_init_button = False
 
 
+class BlenderKitThumbnailSettings(PropertyGroup):
+    """Global, persisted thumbnail render settings.
+
+    Single source of truth for thumbnail settings that are shared between asset
+    types and remembered across sessions (saved through persistent_preferences).
+    Each field is built from the factories in autothumb.py, so the definitions
+    are not duplicated. Changing any field persists the preferences.
+    """
+
+    # common
+    thumbnail_render_engine: autothumb.thumbnail_render_engine_prop(
+        update=autothumb.save_thumbnail_settings
+    )
+    thumbnail_resolution: autothumb.thumbnail_resolution_prop(
+        update=autothumb.save_thumbnail_settings
+    )
+    thumbnail_samples: autothumb.thumbnail_samples_prop(
+        update=autothumb.save_thumbnail_settings
+    )
+    thumbnail_denoising: autothumb.thumbnail_denoising_prop(
+        update=autothumb.save_thumbnail_settings
+    )
+    thumbnail_background_lightness: autothumb.thumbnail_background_lightness_prop(
+        update=autothumb.save_thumbnail_settings
+    )
+
+    # model / printable
+    thumbnail_angle: autothumb.thumbnail_angle_prop(
+        update=autothumb.save_thumbnail_settings
+    )
+    thumbnail_snap_to: autothumb.thumbnail_snap_to_prop(
+        update=autothumb.save_thumbnail_settings
+    )
+    thumbnail_material_color: autothumb.thumbnail_material_color_prop(
+        update=autothumb.save_thumbnail_settings
+    )
+
+    # material
+    thumbnail_generator_type: autothumb.thumbnail_generator_type_prop(
+        update=autothumb.save_thumbnail_settings
+    )
+    thumbnail_scale: autothumb.thumbnail_scale_prop(
+        update=autothumb.save_thumbnail_settings
+    )
+    thumbnail_background: autothumb.thumbnail_background_prop(
+        update=autothumb.save_thumbnail_settings
+    )
+    adaptive_subdivision: autothumb.adaptive_subdivision_prop(
+        update=autothumb.save_thumbnail_settings
+    )
+
+    # render settings
+    thumbnail_use_gpu: autothumb.thumbnail_use_gpu_prop(
+        update=autothumb.save_thumbnail_settings
+    )
+
+
 class BlenderKitUIProps(PropertyGroup):
     down_up: EnumProperty(
         name="Download vs Upload",
@@ -401,7 +459,7 @@ class BlenderKitUIProps(PropertyGroup):
             ("UPLOAD", "Upload", "Activate uploading", "COPYDOWN", 1),
             # ('RATING', 'Rating', 'Activate rating', 'SOLO_ON', 2)
         ),
-        description="BlenderKit",
+        description="Blendkit",
         default="SEARCH",
         update=update_down_up,
     )
@@ -425,6 +483,21 @@ class BlenderKitUIProps(PropertyGroup):
         name="My Assets Only",
         description="Search only for your assets",
         default=False,
+        update=search.search_update,
+    )
+    # user assets verification status
+    own_verification_status: EnumProperty(
+        name="My Assets Status",
+        description="Search only for your assets with this verification status",
+        items=(
+            ("ALL", "All", "All"),
+            ("UPLOADING", "Uploading", "Uploading"),
+            ("UPLOADED", "Uploaded", "Uploaded"),
+            ("VALIDATED", "Validated", "Validated"),
+            ("ON_HOLD", "On Hold", "On Hold"),
+            ("REJECTED", "Rejected", "Rejected"),
+        ),
+        default="ALL",
         update=search.search_update,
     )
     # moved from per-asset search properties
@@ -703,6 +776,14 @@ class BlenderKitUIProps(PropertyGroup):
     new_comment: StringProperty(
         name="New comment", description="Write your comment", default=""
     )
+    new_comment_is_validation: BoolProperty(
+        name="Validation comment",
+        description="Mark the new thread as part of the validation process "
+        "(visible to validators only)",
+        # Checked by default: the vast majority of validator-started threads
+        # are validation; a casual public comment is the exception.
+        default=True,
+    )
     reply_id: IntProperty(
         name="Reply Id", description="Active comment id to reply to", default=0
     )
@@ -710,9 +791,9 @@ class BlenderKitUIProps(PropertyGroup):
     # Add search_keywords property
     search_keywords: StringProperty(
         name="Search",
-        description="Search BlenderKit for these keywords",
+        description="Search Blendkit for these keywords",
         default="",
-        update=search.search_update,
+        update=search.search_update_delayed,
     )
 
 
@@ -853,8 +934,8 @@ def update_free(self, context):
     if self.is_free == "FULL":
         self.is_free = "FREE"
         ui_panels.ui_message(
-            title="All BlenderKit materials are free",
-            message="Any material uploaded to BlenderKit is free."
+            title="All Blendkit materials are free",
+            message="Any material uploaded to Blendkit is free."
             " However, it can still earn money for the author,"
             " based on our fair share system. "
             "Part of subscription is sent to authors based on usage by paying users.\n",
@@ -1133,7 +1214,7 @@ class BlenderKitMaterialUploadProps(PropertyGroup, BlenderKitCommonUploadProps):
             ),
         ),
         description="Assets can be in Free or in Full plan. Also free assets generate credits. \n"
-        "All BlenderKit materials are free",
+        "All Blendkit materials are free",
         default="FREE",
         update=update_free,
     )
@@ -1159,72 +1240,33 @@ class BlenderKitMaterialUploadProps(PropertyGroup, BlenderKitCommonUploadProps):
         min=0,
     )
 
-    thumbnail_scale: FloatProperty(
-        name="Thumbnail Object Size",
-        description="Size of material preview object in meters."
-        "Change for materials that look better at sizes different than 1m",
-        default=1,
-        min=0.00001,
-        max=10,
-    )
-    thumbnail_background: BoolProperty(
-        name="Thumbnail Background (for Glass only)",
-        description="For refractive materials, you might need a background.\n"
-        "Don't use for other types of materials.\n"
-        "Transparent background is preferred",
-        default=False,
-    )
-    thumbnail_background_lightness: FloatProperty(
-        name="Thumbnail Background Lightness",
-        description="Set to make your material stand out with enough contrast",
+    thumbnail_render_engine: autothumb.thumbnail_render_engine_prop()
+
+    thumbnail_generator_type: autothumb.thumbnail_generator_type_prop()
+
+    thumbnail_scale: autothumb.thumbnail_scale_prop()
+
+    thumbnail_background: autothumb.thumbnail_background_prop()
+
+    thumbnail_background_lightness: autothumb.thumbnail_background_lightness_prop(
         default=0.7,
-        min=0.00001,
-        max=1,
-    )
-    thumbnail_samples: IntProperty(
-        name="Cycles Samples",
-        description="Cycles samples",
-        default=100,
-        min=5,
-        max=5000,
-    )
-    thumbnail_denoising: BoolProperty(
-        name="Use Denoising", description="Use denoising", default=True
-    )
-    adaptive_subdivision: BoolProperty(
-        name="Adaptive Subdivide",
-        description="Use adaptive displacement subdivision",
-        default=False,
+        lo=0.00001,
+        hi=1.0,
+        description="Set to make your material stand out with enough contrast",
     )
 
-    thumbnail_resolution: EnumProperty(
-        name="Resolution",
-        items=autothumb.thumbnail_resolutions,
-        description="Thumbnail resolution",
-        default="1024",
-    )
+    thumbnail_samples: autothumb.thumbnail_samples_prop()
 
-    thumbnail_generator_type: EnumProperty(
-        name="Thumbnail Style",
-        items=(
-            ("BALL", "Ball", ""),
-            (
-                "BALL_COMPLEX",
-                "Ball complex",
-                "Complex ball to highlight edgewear or material thickness",
-            ),
-            ("FLUID", "Fluid", "Fluid"),
-            ("CLOTH", "Cloth", "Cloth"),
-            ("HAIR", "Hair", "Hair  "),
-        ),
-        description="Style of asset",
-        default="BALL",
-    )
+    thumbnail_denoising: autothumb.thumbnail_denoising_prop()
+
+    adaptive_subdivision: autothumb.adaptive_subdivision_prop()
+
+    thumbnail_resolution: autothumb.thumbnail_resolution_prop()
 
     thumbnail: StringProperty(
         name="Thumbnail",
         description="Thumbnail path - 512x512 .jpg image, rendered with cycles.\n"
-        "Only standard BlenderKit previews will be accepted.\n"
+        "Only standard Blendkit previews will be accepted.\n"
         "Only exception are special effects like fire or similar",
         subtype="FILE_PATH",
         default="",
@@ -1453,53 +1495,27 @@ class BlenderKitModelUploadProps(PropertyGroup, BlenderKitCommonUploadProps):
         **EXTRA_PATH_OPTIONS,
     )
 
-    thumbnail_background_lightness: FloatProperty(
-        name="Thumbnail Background Lightness",
-        description="Set to make your Model stand out",
+    thumbnail_render_engine: autothumb.thumbnail_render_engine_prop()
+
+    thumbnail_background_lightness: autothumb.thumbnail_background_lightness_prop(
         default=0.7,
-        min=0.01,
-        max=10,
+        lo=0.01,
+        hi=10.0,
+        description="Set to make your Model stand out",
     )
 
     # for printable models
-    thumbnail_material_color: FloatVectorProperty(
-        name="Thumbnail Material Color",
-        description="Color of the material for printable models",
-        default=(random.random(), random.random(), random.random()),
-        subtype="COLOR",
-    )
+    thumbnail_material_color: autothumb.thumbnail_material_color_prop()
 
-    thumbnail_angle: EnumProperty(
-        name="Thumbnail Angle",
-        items=autothumb.thumbnail_angles,
-        default="ANGLE_1",
-        description="Thumbnailer angle",
-    )
+    thumbnail_angle: autothumb.thumbnail_angle_prop()
 
-    thumbnail_snap_to: EnumProperty(
-        name="Model Snaps To",
-        items=autothumb.thumbnail_snap,
-        default="GROUND",
-        description="Typical placing of the interior. Leave on ground for most objects that respect gravity",
-    )
+    thumbnail_snap_to: autothumb.thumbnail_snap_to_prop()
 
-    thumbnail_resolution: EnumProperty(
-        name="Resolution",
-        items=autothumb.thumbnail_resolutions,
-        description="Thumbnail resolution",
-        default="1024",
-    )
+    thumbnail_resolution: autothumb.thumbnail_resolution_prop()
 
-    thumbnail_samples: IntProperty(
-        name="Cycles Samples",
-        description="cycles samples setting",
-        default=100,
-        min=5,
-        max=5000,
-    )
-    thumbnail_denoising: BoolProperty(
-        name="Use Denoising", description="Use denoising", default=True
-    )
+    thumbnail_samples: autothumb.thumbnail_samples_prop()
+
+    thumbnail_denoising: autothumb.thumbnail_denoising_prop()
 
     use_design_year: BoolProperty(
         name="Use Design Year",
@@ -1676,11 +1692,6 @@ class BlenderKitModelUploadProps(PropertyGroup, BlenderKitCommonUploadProps):
         default="",
         update=autothumb.update_wire_thumbnail_preview,
         **EXTRA_PATH_OPTIONS,
-    )
-    wire_thumbnail_will_upload_on_website: BoolProperty(
-        name="I will upload wireframe thumbnail on website",
-        description="True if the wireframe thumbnail will upload on the website\n please read upload tutorial for more information",
-        default=False,
     )
 
     wire_thumbnail_generating_state: StringProperty(
@@ -2121,9 +2132,22 @@ def fix_subdir(self, context):
         ui_panels.ui_message(
             title="Fixed to relative path",
             message="This path should be always relative.\n"
-            " It's a directory BlenderKit creates where your .blend is \n "
+            " It's a directory Blendkit creates where your .blend is \n "
             "and uses it for storing assets.",
         )
+
+
+def update_create_asset_library(self, context):
+    """Save prefs and add or remove the Blendkit asset library entry accordingly.
+
+    When enabled, ensures Blender's Asset Libraries list contains the Blendkit
+    entry. When disabled, removes the Blendkit entry if it is present.
+    """
+    utils.save_prefs(self, context)
+    if self.create_asset_library:
+        paths.ensure_asset_library_path()
+    else:
+        paths.remove_asset_library_path()
 
 
 def update_unpack(self, context):
@@ -2152,17 +2176,17 @@ class BlenderKitAddonPreferences(AddonPreferences):
 
     keep_preferences: BoolProperty(
         name="Keep preferences on disabling",
-        description="When selected, the BlenderKit add-on preferences will be saved into JSON file and persisted even when the add-on is disabled and then re-enabled.",
+        description="When selected, the Blendkit add-on preferences will be saved into JSON file and persisted even when the add-on is disabled and then re-enabled.",
         default=False,
         update=persistent_preferences.property_keep_preferences_updated,
     )
 
     api_key: StringProperty(
-        name="BlenderKit API Key",
+        name="Blendkit API Key",
         description=(
             "Your unique API key authenticates downloads and requests inside the add-on. "
             "No manual setup is required, the API Key is auto-filled at login and cleared at logout. "
-            "However, you can also paste the key from your profile settings on the BlenderKit website."
+            "However, you can also paste the key from your profile settings on the Blendkit website."
         ),
         default="",
         subtype="PASSWORD",
@@ -2170,7 +2194,7 @@ class BlenderKitAddonPreferences(AddonPreferences):
     )
 
     api_key_refresh: StringProperty(
-        name="BlenderKit refresh API Key",
+        name="Blendkit refresh API Key",
         description="API key used to refresh the token regularly",
         default="",
         subtype="PASSWORD",
@@ -2184,7 +2208,7 @@ class BlenderKitAddonPreferences(AddonPreferences):
 
     login_attempt: BoolProperty(
         name="Login/Signup attempt",
-        description="When this is on, BlenderKit is trying to connect and login",
+        description="When this is on, Blendkit is trying to connect and login",
         default=False,
     )
 
@@ -2204,21 +2228,21 @@ class BlenderKitAddonPreferences(AddonPreferences):
 
     announcements_on_start: BoolProperty(
         name="Receive online announcements when starting Blender",
-        description="Show crucial online announcements from the BlenderKit service. These are official messages from the BlenderKit team regarding maintenance, events, and other relevant information.",
+        description="Show crucial online announcements from the Blendkit service. These are official messages from the Blendkit team regarding maintenance, events, and other relevant information.",
         default=True,
         update=utils.save_prefs,
     )
 
     search_in_header: BoolProperty(
-        name="Show BlenderKit search in 3D view header",
-        description="Show BlenderKit search in 3D view header",
+        name="Show Blendkit search in 3D view header",
+        description="Show Blendkit search in 3D view header",
         default=True,
         update=utils.save_prefs,
     )
 
     sidebar_panels: BoolProperty(
         name="Hide sidebar panels",
-        description="Hide BlenderKit sidebar panels (search, upload, and selected model functionality). This prevents upload and it's also the only place for import settings. Reenable this to access these features.",
+        description="Hide Blendkit sidebar panels (search, upload, and selected model functionality). This prevents upload and it's also the only place for import settings. Reenable this to access these features.",
         default=False,
         update=utils.save_prefs,
     )
@@ -2228,8 +2252,8 @@ class BlenderKitAddonPreferences(AddonPreferences):
     )
 
     show_VIEW3D_MT_blenderkit_model_properties: bpy.props.BoolProperty(
-        name="Show BlenderKit in Object Context Menu",
-        description="Show BlenderKit submenu in object context menu",
+        name="Show Blendkit in Object Context Menu",
+        description="Show Blendkit submenu in object context menu",
         default=True,
     )
 
@@ -2256,7 +2280,7 @@ class BlenderKitAddonPreferences(AddonPreferences):
 
     client_port: EnumProperty(
         name="Client port",
-        description="Port to be used for startup and communication with BlenderKit-Client. Changing the port will cancel all running downloads and searches",
+        description="Port to be used for startup and communication with Blendkit-Client. Changing the port will cancel all running downloads and searches",
         items=(
             ("62485", "62485", ""),
             ("65425", "65425", ""),
@@ -2273,7 +2297,7 @@ class BlenderKitAddonPreferences(AddonPreferences):
 
     client_polling: FloatProperty(
         name="Client Polling",
-        description="Time interval in which add-on polls the BlenderKit-Client for updates on running requests and tasks. The lower the more responsive the add-on is, but it requires more resources.",
+        description="Time interval in which add-on polls the Blendkit-Client for updates on running requests and tasks. The lower the more responsive the add-on is, but it requires more resources.",
         default=0.2,
         min=0.1,
         max=0.5,
@@ -2283,7 +2307,10 @@ class BlenderKitAddonPreferences(AddonPreferences):
     # USE OF CLIPBOARD SCAN
     use_clipboard_scan: BoolProperty(
         name="Use Clipboard Scan",
-        description="Use the info from BlenderKit website clipboard for visual search",
+        description="Use the info from Blendkit website clipboard for visual search.\n"
+        "On Linux/X11 this periodically reads the system clipboard, which can rarely\n"
+        "stall if another application left the clipboard in a bad state - disable this\n"
+        "option if you experience freezes",
         default=True,
         update=utils.save_prefs,
     )
@@ -2301,13 +2328,13 @@ class BlenderKitAddonPreferences(AddonPreferences):
     )
 
     create_asset_library: BoolProperty(
-        name="Register Local BlenderKit Asset Library",
-        description="Automatically add (and keep in sync) a 'BlenderKit' entry in Blender's Asset Libraries pointing to the global directory.\n\n"
+        name="Register Local Blendkit Asset Library",
+        description="Automatically add (and keep in sync) a 'Blendkit' entry in Blender's Asset Libraries pointing to the global directory.\n\n"
         "This allows you to easily access your downloaded assets in the Asset Browser, and also ensures that metadata like tags and descriptions are available for your assets across all your projects. "
-        "When disabled, BlenderKit will not modify your Asset Libraries list, and downloaded assets won't be unpacked in the background just to embed asset metadata "
-        "(unless 'Unpack Files' is enabled). Disable this if you don't want BlenderKit to manage your Asset Browser entries",
+        "When disabled, Blendkit will remove the 'Blendkit' entry from your Asset Libraries list (if present), and downloaded assets won't be unpacked in the background just to embed asset metadata "
+        "(unless 'Unpack Files' is enabled). Disable this if you don't want Blendkit to manage your Asset Browser entries",
         default=False,
-        update=utils.save_prefs,
+        update=update_create_asset_library,
     )
 
     # resolution download/import settings
@@ -2361,15 +2388,15 @@ class BlenderKitAddonPreferences(AddonPreferences):
             (
                 "ENABLED",
                 "Enabled SSL Verification",
-                "Activates SSL verification for outbound connections, ensuring secure communication between the BlenderKit-client and the blenderkit.com server",
+                "Activates SSL verification for outbound connections, ensuring secure communication between the Blendkit-client and the blendkit.com server",
             ),
             (
                 "DISABLED",
                 "Disabled SSL Verification - Insecure!",
-                "Deactivates SSL verification, bypassing the validation of SSL certificates by BlenderKit-client. This mode is insecure and recommended only for testing environments",
+                "Deactivates SSL verification, bypassing the validation of SSL certificates by Blendkit-client. This mode is insecure and recommended only for testing environments",
             ),
         ),
-        description="Secure communication between BlenderKit-client and blenderkit.com server by SSL",
+        description="Secure communication between Blendkit-client and blendkit.com server by SSL",
         default="ENABLED",
         update=timer.save_prefs_cancel_all_tasks_and_restart_client,
     )
@@ -2426,8 +2453,8 @@ In this case you should also set path to your system CA bundle containing proxy'
         description=(
             "Specify a path to a custom bundle of trusted certificates in .PEM format.\n\n"
             "If you're on corporate/institutional networks, using a VPN, or behind intermediaries like proxies, firewalls, antiviruses that manipulate HTTPS traffic, "
-            "the add-on might struggle to verify encrypted communication as signed by the BlenderKit server leading to CERTIFICATE_VERIFY_FAILED error. "
-            "This is because the traffic could be decrypted, possibly altered or logged, and then re-encrypted by the intermediary's certificate and not by BlenderKit certificate. "
+            "the add-on might struggle to verify encrypted communication as signed by the Blendkit server leading to CERTIFICATE_VERIFY_FAILED error. "
+            "This is because the traffic could be decrypted, possibly altered or logged, and then re-encrypted by the intermediary's certificate and not by Blendkit certificate. "
             "If you recognize and trust this intermediary, provide the path to its public certificates or their certificate authority here. "
             "This ensures the add-on communicates with a known, trusted entity, and not a potential threat.\n\n"
             "For those in corporate or educational institutions, it's advisable to consult your IT department about the relevant certificates. "
@@ -2469,33 +2496,25 @@ In this case you should also set path to your system CA bundle containing proxy'
         update=utils.save_prefs,
     )
 
-    thumbnail_use_gpu: BoolProperty(
-        name="Use GPU for Thumbnails Rendering (For assets upload)",
-        description="By default this is off so you can continue your work without any lag",
-        default=False,
-        update=utils.save_prefs,
-    )
-
-    thumbnail_disable_subdivision: BoolProperty(
-        name="Disable Subdivision for Thumbnails Rendering (For assets upload)",
-        description="By default this is off. Disable this for wireframe thumbnails to render faster",
-        default=False,
-        update=utils.save_prefs,
+    thumbnail_settings: PointerProperty(
+        type=BlenderKitThumbnailSettings,
+        description="Global thumbnail render settings, remembered across sessions",
     )
 
     maximized_assetbar_rows: IntProperty(
-        name="Maximized Assetbar Rows",
-        description="Maximum rows of assetbar in the 3D view when expanded",
+        name="Assetbar Rows",
+        description="Saved row count of the assetbar in the 3D view",
         default=4,
         min=2,
-        max=20,
+        max=asset_bar_op.ASSETBAR_MAX_VISIBLE_ASSETS,
         update=utils.save_prefs,
     )
 
     assetbar_expanded: BoolProperty(
         name="Assetbar Expanded",
-        description="Whether the assetbar is currently expanded to show maximum rows",
+        description="Remember whether the assetbar is expanded in the 3D view",
         default=False,
+        update=utils.save_prefs,
     )
 
     trackpad_scroll_sensitivity: FloatProperty(
@@ -2529,18 +2548,57 @@ In this case you should also set path to your system CA bundle containing proxy'
         description="Width of the search field in the assetbar in 3D view. 0 means automatic width",
     )
 
+    comments_order: EnumProperty(
+        name="Comments Order",
+        description="Order in which comments are shown in the asset detail popup",
+        items=(
+            ("default", "Default", "Keep the server order (based on ratings)"),
+            ("oldest", "Oldest first", "Show oldest comments at the top"),
+            ("newest", "Newest first", "Show newest comments at the top"),
+        ),
+        default="default",
+        update=utils.save_prefs,
+    )
+
+    proxor_enabled: BoolProperty(
+        name="Enable Proxor",
+        description="Enable Proxor, proxy visualization of assets in the 3D view while placing. Loads with mini delay after the default green placeholder.",
+        default=True,
+        update=utils.save_prefs,
+    )
+
+    rating_nudge_enabled: BoolProperty(
+        name="Ask me to rate downloaded assets",
+        description="Occasionally open a rating popup for assets you downloaded that don't have enough ratings yet",
+        default=True,
+        update=utils.save_prefs,
+    )
+
     experimental_features: BoolProperty(
         name="Enable experimental features",
-        description="Enable experimental features of BlenderKit, such as the Authors tab",
+        description="Enable experimental features of Blendkit, such as the Authors tab",
         default=False,
         update=utils.save_prefs,
+    )
+
+    send_usage_data: BoolProperty(
+        name="Send usage data to improve Blendkit",
+        description=(
+            "Report which Blendkit assets are in your file when you save or render "
+            "(asset ids and counts only, no file names or scene content). Helps rank "
+            "search results by what people actually use and, in the future, reward "
+            "creators for assets that get used. The choice is stored in Blendkit-Client "
+            "and shared by every Blendkit add-on on this machine"
+        ),
+        default=True,
+        update=utils.send_usage_data_updated,
     )
 
     accepted_ms_store_warning: BoolProperty(
         name="Accepted Microsoft Store Blender warning",
         description=(
             "Set after the user has acknowledged the in-viewport warning shown"
-            " when running BlenderKit on a Microsoft Store install of Blender."
+            " when running Blendkit on a Microsoft Store install of Blender."
             " Uncheck to see the warning again on the next asset bar launch"
             " (useful for debugging)."
         ),
@@ -2563,9 +2621,9 @@ In this case you should also set path to your system CA bundle containing proxy'
     )
 
     thread_communication: BoolProperty(
-        name="Threaded BlenderKit-Client communication",
+        name="Threaded Blendkit-Client communication",
         description=(
-            "Move communication with the BlenderKit-Client (report polling and"
+            "Move communication with the Blendkit-Client (report polling and"
             " selected fire-and-forget HTTP requests) onto a background thread."
             " This keeps Blender responsive when the local Client is slow to"
             " respond. Only takes effect while experimental features are enabled."
@@ -2675,14 +2733,6 @@ In this case you should also set path to your system CA bundle containing proxy'
         options={"SKIP_SAVE"},
     )
 
-    enable_wire_thumbnail_upload: BoolProperty(
-        name="Enable wire thumbnail upload",
-        description="If enabled, wireframe thumbnails will be uploaded.",
-        default=False,
-        # do not save prefs here, it's experimental
-        options={"SKIP_SAVE"},
-    )
-
     def draw(self, context):
         layout = self.layout
         login_box = layout.box()
@@ -2698,6 +2748,7 @@ In this case you should also set path to your system CA bundle containing proxy'
         login_box.prop(self, "keep_preferences")
         community_row = login_box.row()
         community_row.prop(self, "experimental_features")
+        login_box.prop(self, "send_usage_data")
         community_row.operator("wm.blenderkit_join_discord", icon="URL")
 
         if utils.profile_is_validator():
@@ -2705,14 +2756,16 @@ In this case you should also set path to your system CA bundle containing proxy'
             validator_box.label(text="Validator Settings")
             validator_box.prop(self, "categories_fix")
 
-        # REPORT PATHS
+        # REPORT BUG BUTTON
         report_settings = layout.box()
         report_settings.label(text="Report a Bug")
-        report_settings.label(
-            text="Create an issue report with version information to help us resolve the issue faster.",
+        report_row = report_settings.row()
+        report_row.operator(
+            "wm.blenderkit_report_bug", text="Open Bug Report", icon="ERROR"
         )
-        report_settings.operator(
-            "wm.blenderkit_report_bug", text="Submit Full Bug Report", icon="ERROR"
+        # report_row.label(text=f"Blendkit v{utils.get_addon_version()} · Blender {bpy.app.version_string}", icon="INFO")
+        report_row.operator(
+            "wm.blenderkit_copy_environment_info", text="Copy Info", icon="COPYDOWN"
         )
 
         # FILE PATHS
@@ -2732,16 +2785,28 @@ In this case you should also set path to your system CA bundle containing proxy'
         gui_settings.label(text="GUI settings")
         gui_settings.prop(self, "show_on_start")
         gui_settings.prop(self, "thumb_size")
-        gui_settings.prop(self, "maximized_assetbar_rows")
         gui_settings.prop(self, "trackpad_scroll_sensitivity")
         gui_settings.prop(self, "search_field_width")
         gui_settings.prop(self, "search_in_header")
         gui_settings.prop(self, "sidebar_panels")
         gui_settings.prop(self, "show_VIEW3D_MT_blenderkit_model_properties")
+        gui_settings.prop(self, "comments_order")
         gui_settings.prop(self, "tips_on_start")
         gui_settings.prop(self, "announcements_on_start")
         gui_settings.prop(self, "assetbar_follows_cursor")
         gui_settings.prop(self, "use_clipboard_scan")
+        gui_settings.prop(self, "proxor_enabled")
+        gui_settings.prop(self, "rating_nudge_enabled")
+
+        # THUMBNAIL SETTINGS
+        # These are machine-level preferences that should be set once, not
+        # toggled in every thumbnail render dialog.
+        thumbnail_settings = layout.box()
+        thumbnail_settings.alignment = "EXPAND"
+        thumbnail_settings.label(text="Thumbnail settings")
+        thumbnail_settings.prop(self.thumbnail_settings, "thumbnail_use_gpu")
+        if utils.elevated_experimental_enabled():
+            thumbnail_settings.prop(self.thumbnail_settings, "thumbnail_render_engine")
 
         # NETWORKING SETTINGS
         network_settings = layout.box()
@@ -2808,7 +2873,6 @@ In this case you should also set path to your system CA bundle containing proxy'
             experimental_settings.prop(self, "ignore_env_for_thumbnails")
             experimental_settings.prop(self, "thread_communication")
             experimental_settings.prop(self, "accepted_ms_store_warning")
-            # experimental_settings.prop(self, "enable_wire_thumbnail_upload")
 
 
 # registration
@@ -2835,6 +2899,8 @@ classes = (
 def register():
     reload(global_vars)
     global_vars.VERSION = VERSION
+    # Must be registered before the preferences class, which references it via PointerProperty.
+    bpy.utils.register_class(BlenderKitThumbnailSettings)
     bpy.utils.register_class(BlenderKitAddonPreferences)
 
     # Drop any downloads that might have been left running if the add-on was re-enabled mid-transfer.
@@ -2886,6 +2952,11 @@ def register():
     )
     bpy.types.Brush.blenderkit = PointerProperty(  # for uploads, not now...
         type=BlenderKitBrushUploadProps
+    )
+
+    # PRINTABLES
+    bpy.types.WindowManager.blenderkit_printables = PointerProperty(
+        type=BlenderKitModelSearchProps
     )
 
     # NodeGroups
@@ -2957,7 +3028,7 @@ def register():
 
 
 def unregister():
-    bk_logger.info("Unregistering BlenderKit add-on")
+    bk_logger.info("Unregistering Blendkit add-on")
     # Stop any in-flight downloads to avoid leaving stale UI state when disabling the add-on.
     download.cancel_running_downloads("addon unregister")
     timer.unregister_timers()
@@ -3013,6 +3084,7 @@ def unregister():
     addon_updater_ops.unregister()
 
     bpy.utils.unregister_class(BlenderKitAddonPreferences)
+    bpy.utils.unregister_class(BlenderKitThumbnailSettings)
 
     bpy.app.handlers.load_post.remove(scene_load)
 

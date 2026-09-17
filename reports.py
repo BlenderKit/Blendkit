@@ -16,6 +16,7 @@
 #
 # ##### END GPL LICENSE BLOCK #####
 
+import json
 from inspect import getframeinfo, stack
 from logging import getLogger
 from os.path import basename
@@ -33,6 +34,30 @@ bk_logger = getLogger(__name__)
 reports = []
 
 
+def humanize_server_message(text: str) -> str:
+    """Turn a raw server error string into a human-readable message.
+
+    Server errors often arrive wrapped like
+    'server returned non-OK status (403): {"detail": "...", "statusCode": 403}'.
+    When such a JSON payload with a string 'detail' is detected, return that
+    detail (which is written for end users). Otherwise return the text unchanged.
+    """
+    start = text.find("{")
+    end = text.rfind("}")
+    if start == -1 or end == -1 or end < start:
+        return text
+    try:
+        data = json.loads(text[start : end + 1])
+    except (json.JSONDecodeError, ValueError):
+        return text
+    if not isinstance(data, dict):
+        return text
+    detail = data.get("detail")
+    if not isinstance(detail, str) or detail.strip() == "":
+        return text
+    return detail.strip()
+
+
 # check for same reports and just make them longer by the timeout.
 def add_report(
     text: str = "",
@@ -42,10 +67,11 @@ def add_report(
 ) -> None:
     """Add text report to GUI. Function checks for same reports and make them longer by the timeout.
     Also log the text and details into the console with levels: ERROR=RED, INFO=GREEN, VALIDATOR=BLUE, WARNING=YELLOW.
-    When timeout is not specified, default 15s will be used for ERROR, 5s for INFO/VALIDATOR/WARNING.
+    When timeout is not specified, a default is used: ERROR=15s, others=5s, extended for long messages so they
+    stay readable.
     """
     global reports
-    text = text.strip()
+    text = humanize_server_message(text.strip())
     full_message = text
     details = details.strip()
     color = colors.GRAY
@@ -57,6 +83,9 @@ def add_report(
             timeout = 15
         else:
             timeout = 5
+        # Long messages (e.g. detailed server responses) need more time to read.
+        # Allow roughly one extra second per 18 characters, capped at 60s.
+        timeout = max(timeout, min(60, len(full_message) / 18))
 
     if type == "ERROR":
         regex = r"\[[^\[\]:]+:\d+\]"
@@ -124,4 +153,8 @@ class Report:
             bpy.context.area is not None
             and bpy.context.area.as_pointer() == self.active_area_pointer
         ):
-            ui_bgl.draw_text(self.text, x, y + 8, 16, self.draw_color)
+            lines = self.text.split("\n")
+            for i, line in enumerate(lines):
+                ui_bgl.draw_text(line, x, y + 8 - i * 20, 16, self.draw_color)
+            return len(lines)
+        return 1
