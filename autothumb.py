@@ -435,10 +435,7 @@ def start_model_thumbnailer(
         datafile,
         user_preferences.api_key,
     )
-    redacted_args = list(args)
-    if len(redacted_args) >= 2:
-        redacted_args[-2] = "******"
-    bk_logger.debug("%s", redacted_args)
+    bk_logger.debug("Prepared thumbnailer args for %s", SCRIPT_NAME)
 
     blender_user_scripts_dir = (
         Path(__file__).resolve().parents[2]
