@@ -2818,7 +2818,7 @@ class BlenderKitAssetBarOperator(BL_UI_OT_draw_operator):
         """
         # source dimensions: left/right 25x116, up/down 35x116
         if self.hcount > 1:
-            back_icon, fwd_icon = "arrow_up.png", "arrow_down.png"
+            back_icon, fwd_icon = "arrow_down.png", "arrow_up.png"
             src_w, src_h = 35, 116
         else:
             back_icon, fwd_icon = "arrow_left.png", "arrow_right.png"

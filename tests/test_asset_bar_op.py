@@ -1524,10 +1524,10 @@ class TestUpdateScrollButtonIcons(unittest.TestCase):
         asset_bar_op.BlenderKitAssetBarOperator.update_scroll_button_icons(dummy)
 
         dummy.button_scroll_down.set_image.assert_called_once_with(
-            paths.get_addon_thumbnail_path("arrow_up.png")
+            paths.get_addon_thumbnail_path("arrow_down.png")
         )
         dummy.button_scroll_up.set_image.assert_called_once_with(
-            paths.get_addon_thumbnail_path("arrow_down.png")
+            paths.get_addon_thumbnail_path("arrow_up.png")
         )
 
     def test_preserves_aspect_ratio(self):
