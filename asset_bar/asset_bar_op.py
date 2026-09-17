@@ -2199,6 +2199,7 @@ class BlenderKitAssetBarOperator(BL_UI_OT_draw_operator):
         self.button_expand.set_mouse_down(self.toggle_expand)
         self.widgets_panel.append(self.button_expand)
 
+        self.scroll_width = 30
         self.button_scroll_down = BL_UI_Button(
             -self.scroll_width, 0, self.scroll_width, self.bar_height
         )
