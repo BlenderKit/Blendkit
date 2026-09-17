@@ -1539,7 +1539,9 @@ class TestUpdateScrollButtonIcons(unittest.TestCase):
         dummy.button_scroll_up.set_image_size.assert_called_once_with(expected_size)
 
         expected_pos = (0, 40)
-        dummy.button_scroll_down.set_image_position.assert_called_once_with(expected_pos)
+        dummy.button_scroll_down.set_image_position.assert_called_once_with(
+            expected_pos
+        )
         dummy.button_scroll_up.set_image_position.assert_called_once_with(expected_pos)
 
     def test_clears_text_on_both_buttons(self):
