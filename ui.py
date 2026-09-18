@@ -148,7 +148,11 @@ def get_full_thumbnail_variant(asset_data, variant: str):
         bk_logger.log(1, f"No {variant} thumbnail file found in asset data")
         return None
 
-    file_url = file_data.get("thumbnailMiddleUrl")
+    webp_url = file_data.get("thumbnailMiddleUrlWebp")
+    if search._use_webp_thumbnail(webp_url):
+        file_url = webp_url
+    else:
+        file_url = file_data.get("thumbnailMiddleUrl")
     if file_url is None:
         bk_logger.warning(f"No thumbnail URL found in {variant} file")
         return None
@@ -156,7 +160,7 @@ def get_full_thumbnail_variant(asset_data, variant: str):
     # Get the directory and construct the path
     ui_props = bpy.context.window_manager.blenderkitUI
     directory = paths.get_temp_dir(f"{ui_props.asset_type.lower()}_search")
-    file_name = os.path.basename(file_url)
+    file_name = paths.extract_filename_from_url(file_url)
     tpath = os.path.join(directory, file_name)
 
     # Check if the download succeeded/failed via the images available dict
