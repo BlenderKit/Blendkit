@@ -1204,6 +1204,42 @@ def get_hierarchy(object) -> list[bpy.types.Object]:
     return obs
 
 
+def get_hierarchy_with_instances(object) -> list[bpy.types.Object]:
+    """Get all objects in a hierarchy tree, also following instance_collection
+    references on empties (collection instances).
+
+    This is needed for upload, where the asset can include collection-instance
+    empties whose actual mesh content lives inside referenced collections that
+    are not part of the regular parent/child hierarchy. Without following
+    instance_collection, those meshes would be missing from the uploaded file.
+    """
+    obs: list[bpy.types.Object] = []
+    seen: set[str] = set()
+    doobs = [object]
+    while len(doobs) > 0:
+        o = doobs.pop()
+        if o is None or o.name in seen:
+            continue
+        seen.add(o.name)
+        obs.append(o)
+        # regular children
+        doobs.extend(o.children)
+        # collection instances: empties pointing to a collection
+        ic = getattr(o, "instance_collection", None)
+        if ic is not None:
+            try:
+                doobs.extend(list(ic.all_objects))
+            except AttributeError:
+                # older Blender / fallback: walk collection.objects + children
+                doobs.extend(list(ic.objects))
+                stack = [ic]
+                while stack:
+                    c = stack.pop()
+                    stack.extend(list(c.children))
+                    doobs.extend(list(c.objects))
+    return obs
+
+
 def delete_hierarchy(object):
     """Delete object and all other objects in the hierarchy.
     In 3.2 and newer use temp_override to delete objects that are not selected.

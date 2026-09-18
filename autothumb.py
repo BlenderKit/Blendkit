@@ -435,7 +435,7 @@ def start_model_thumbnailer(
         datafile,
         user_preferences.api_key,
     )
-    bk_logger.debug("%s", args)
+    bk_logger.debug("Prepared thumbnailer args for %s", SCRIPT_NAME)
 
     blender_user_scripts_dir = (
         Path(__file__).resolve().parents[2]
@@ -697,7 +697,7 @@ class GenerateThumbnailOperator(bpy.types.Operator):
 
         bpy.ops.wm.save_as_mainfile(filepath=filepath, compress=False, copy=True)
         # get all included objects
-        obs = utils.get_hierarchy(asset)
+        obs = utils.get_hierarchy_with_instances(asset)
         obnames = []
         for ob in obs:
             obnames.append(ob.name)
