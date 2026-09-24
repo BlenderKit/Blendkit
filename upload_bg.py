@@ -436,12 +436,60 @@ if __name__ == "__main__":
                 obnames=obnames,
                 rotation=(0, 0, 0),
             )
+            # bpy.data.libraries.load (used inside append_objects) automatically
+            # resolves dependencies: when an empty with an instance_collection is
+            # appended, Blender also pulls in that collection and every object
+            # inside it. We must NOT load the same collections again -- doing so
+            # creates *.001 duplicates of every body mesh.
+            #
+            # Instead, discover which collections came along automatically by
+            # walking the appended empties' instance_collection references so we
+            # can keep them out of the scene root after building the asset
+            # collection.
+            instance_collection_names = export_data.get("instance_collections") or []
+            wanted_names = set(instance_collection_names)
+            appended_instance_collections: list[bpy.types.Collection] = []
+            seen_col_ids: set[int] = set()
+            for o in allobs:
+                ic = getattr(o, "instance_collection", None)
+                if ic is None:
+                    continue
+                if wanted_names and ic.name not in wanted_names:
+                    continue
+                if id(ic) in seen_col_ids:
+                    continue
+                seen_col_ids.add(id(ic))
+                appended_instance_collections.append(ic)
+
             g = build_model_asset_collection(
                 allobs,
                 upload_data,
                 thumbnail_path=export_data.get("thumbnail_path", ""),
             )
             asset_block = g  # collection is the asset, not the root object
+
+            # Body collections are auto-added to scene root by Blender's
+            # library loader when appending the instance empties. We must
+            # remove them from the scene so their geometry doesn't render
+            # directly at origin (which would duplicate every car/segment).
+            # They stay in bpy.data.collections because the empties still hold
+            # instance_collection references, so instance rendering continues
+            # to work. (LayerCollection.exclude was tried but in Blender 5.x
+            # it also suppresses instance rendering, causing a black render.)
+            if appended_instance_collections:
+                scene_root = bpy.context.scene.collection
+                for c in appended_instance_collections:
+                    # Remove from scene root if it was auto-linked there.
+                    try:
+                        scene_root.children.unlink(c)
+                    except (RuntimeError, ValueError):
+                        pass
+                    # Also check children of g in case an earlier code path
+                    # moved them there.
+                    try:
+                        g.children.unlink(c)
+                    except (RuntimeError, ValueError):
+                        pass
 
             try:
                 from .bk_proxor._blender import generate as proxor_generate

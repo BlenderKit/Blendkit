@@ -222,6 +222,20 @@ def draw_upload_common(layout, props, asset_type, context):
 
         layout.label(text="asset has a version online.")
 
+    # Validator-only: run the upload preprocessing locally without uploading,
+    # so we can inspect the produced .blend (hierarchy, instance collections,
+    # packed images, etc.).
+    if utils.profile_is_validator() and asset_type in ("MODEL", "PRINTABLE"):
+        layout.operator(
+            "object.blenderkit_upload_dryrun",
+            text="Dry-Run Upload (validators)",
+            icon="FILE_TICK",
+        )  # row = layout.row()
+        # row.enabled = False
+        # row.prop(props, 'asset_base_id', icon='FILE_TICK')
+        # row = layout.row()
+        # row.enabled = False
+        # row.prop(props, 'id', icon='FILE_TICK')
     row = layout.row()
     if props.is_private == "PUBLIC" and props.category == "NONE":
         row.alert = True

@@ -372,11 +372,40 @@ def get_upload_data(caller=None, context=None, asset_type=None):
 
         props = mainmodel.blenderkit
 
-        obs = utils.get_hierarchy(mainmodel)
+        obs = utils.get_hierarchy_with_instances(mainmodel)
+
+        # Collect names of collections referenced by collection-instance empties
+        # in the hierarchy. These must also be loaded by the bg upload script so
+        # that empty.instance_collection references survive the export and the
+        # contained meshes are not duplicated as loose objects.
+        instance_collection_names: list[str] = []
+        seen_collections: set[str] = set()
+        # Names of objects that live inside an instance_collection. They will
+        # be loaded by upload_bg.py via the collection load and must NOT be
+        # appended standalone too, otherwise we end up with duplicated meshes
+        # (one orphan copy at world origin + the real one inside the collection).
+        objects_in_instance_cols: set[str] = set()
+        for ob in obs:
+            ic = getattr(ob, "instance_collection", None)
+            if ic is None:
+                continue
+            if ic.name not in seen_collections:
+                seen_collections.add(ic.name)
+                instance_collection_names.append(ic.name)
+            try:
+                inner = list(ic.all_objects)
+            except AttributeError:
+                inner = list(ic.objects)
+            for io in inner:
+                objects_in_instance_cols.add(io.name)
+
         obnames = []
         for ob in obs:
+            if ob.name in objects_in_instance_cols:
+                continue
             obnames.append(ob.name)
         export_data["models"] = obnames
+        export_data["instance_collections"] = instance_collection_names
         export_data["thumbnail_path"] = bpy.path.abspath(props.thumbnail)
 
         # Add photo thumbnail path to export_data for printable assets
@@ -1323,6 +1352,80 @@ def auto_fix(asset_type=""):
         asset.name = props.name
 
 
+def _walk_layer_collection(layer_collection):
+    """Yield this LayerCollection and all descendants."""
+    yield layer_collection
+    for child in layer_collection.children:
+        yield from _walk_layer_collection(child)
+
+
+def _snapshot_and_project_visibility(context):
+    """Project per-view-layer eye-hide state and LayerCollection flags onto
+    datablock-level Object.hide_viewport / Collection.hide_viewport so that
+    the saved source copy preserves visibility through append.
+
+    Returns a snapshot dict that ``_restore_visibility`` can use to undo the
+    in-place edits, leaving the user's working scene unchanged.
+    """
+    obj_changes: list[tuple[bpy.types.Object, bool]] = []
+    col_changes: list[tuple[bpy.types.Collection, bool]] = []
+
+    # Use only the active view layer. ORing across layers leaks unrelated
+    # hide state, and `LayerCollection.exclude` is intentionally NOT treated
+    # as "hidden" -- excluded collections (typical for body collections that
+    # are only referenced through instance empties) must remain visible
+    # after append.
+    vl = getattr(context, "view_layer", None)
+    if vl is None:
+        scene = context.scene
+        if scene and len(scene.view_layers) > 0:
+            vl = scene.view_layers[0]
+    if vl is None:
+        return {"objects": obj_changes, "collections": col_changes}
+
+    # Object eye-hide (per-view-layer) -> Object.hide_viewport (datablock).
+    for ob in vl.objects:
+        try:
+            eye_hidden = bool(ob.hide_get(view_layer=vl))
+        except (TypeError, RuntimeError):
+            try:
+                eye_hidden = bool(ob.hide_get())
+            except RuntimeError:
+                eye_hidden = False
+        if eye_hidden and not ob.hide_viewport:
+            obj_changes.append((ob, ob.hide_viewport))
+            ob.hide_viewport = True
+
+    # LayerCollection eye-hide (NOT exclude) -> Collection.hide_viewport.
+    seen_cols: set[str] = set()
+    for lc in _walk_layer_collection(vl.layer_collection):
+        col = lc.collection
+        if col is None or col.name in seen_cols:
+            continue
+        seen_cols.add(col.name)
+        if bool(lc.hide_viewport) and not col.hide_viewport:
+            col_changes.append((col, col.hide_viewport))
+            col.hide_viewport = True
+
+    return {"objects": obj_changes, "collections": col_changes}
+
+
+def _restore_visibility(snapshot):
+    """Undo the in-place edits made by ``_snapshot_and_project_visibility``."""
+    if not snapshot:
+        return
+    for ob, prev in snapshot.get("objects", []):
+        try:
+            ob.hide_viewport = prev
+        except (ReferenceError, AttributeError):
+            pass
+    for col, prev in snapshot.get("collections", []):
+        try:
+            col.hide_viewport = prev
+        except (ReferenceError, AttributeError):
+            pass
+
+
 def prepare_asset_data(self, context, asset_type, reupload, upload_set):
     """Process asset and its data for upload."""
     props = utils.get_upload_props()
@@ -1422,9 +1525,21 @@ def prepare_asset_data(self, context, asset_type, reupload, upload_set):
         if bpy.app.version >= (3, 0, 0):
             bpy.context.preferences.filepaths.file_preview_type = "NONE"
 
-        bpy.ops.wm.save_as_mainfile(
-            filepath=export_data["source_filepath"], compress=False, copy=True
-        )
+        # Project per-view-layer "eye" hide state and LayerCollection
+        # exclude/hide flags onto Object.hide_viewport / Collection.hide_viewport
+        # respectively. Those datablock-level flags survive append into a fresh
+        # scene in upload_bg.py; the per-view-layer state would otherwise be
+        # lost (background script creates a new view layer with everything
+        # visible). The user's current scene state is restored after saving.
+        _vis_snapshot = _snapshot_and_project_visibility(bpy.context)
+        try:
+            bpy.ops.wm.save_as_mainfile(
+                filepath=export_data["source_filepath"],
+                compress=False,
+                copy=True,
+            )
+        finally:
+            _restore_visibility(_vis_snapshot)
 
     export_data["binary_path"] = bpy.app.binary_path
     export_data["debug_value"] = bpy.app.debug_value
