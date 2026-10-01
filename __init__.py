@@ -767,9 +767,10 @@ class BlenderKitUIProps(PropertyGroup):
     )
 
     nodegroup_upload: PointerProperty(
-        name="Upload Tool",
+        name="Node Group",
         type=bpy.types.GeometryNodeTree,
-        description="Pick the geometry node tool to upload",
+        description="Pick the Geometry Nodes group to upload",
+        poll=lambda self, ng: ng.bl_idname == "GeometryNodeTree",
     )
 
     new_comment: StringProperty(

@@ -558,10 +558,25 @@ def draw_panel_nodegroup_upload(self, context):
     ui_props = bpy.context.window_manager.blenderkitUI
     layout.enabled = True
 
-    layout.template_ID(ui_props, "nodegroup_upload")
+    box = layout.box()
+    box.label(text="Node group to upload:")
+    box.prop_search(
+        ui_props,
+        "nodegroup_upload",
+        bpy.data,
+        "node_groups",
+        text="",
+        icon="NODETREE",
+    )
     nodegroup = utils.get_active_nodegroup()
 
-    if nodegroup is not None:
+    if nodegroup is None:
+        utils.label_multiline(
+            box,
+            text="Pick a Geometry Nodes group from the list above to start the upload.",
+            icon="INFO",
+        )
+    else:
         props = nodegroup.blenderkit
 
         layout = self.layout
