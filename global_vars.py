@@ -27,7 +27,7 @@ except ImportError:
     # for release CI action
     import datas  # type: ignore
 
-CLIENT_VERSION = "v1.12"
+CLIENT_VERSION = "v1.13"
 """Pinned Blendkit-Client MINOR series (vX.Y) the add-on is API-compatible with.
 Only the minor version is pinned here; the exact patch (vX.Y.Z) of the bundled
 binary is resolved at build time from the matching GitHub release and recorded in

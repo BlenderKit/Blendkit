@@ -33,7 +33,7 @@ CLIENT_REPO = "BlenderKit/bk_client"
 def read_client_version_pin() -> str:
     """Read the pinned Client version from ``global_vars.CLIENT_VERSION``.
 
-    The pin is normally the MINOR series (e.g. ``v1.12``); a full ``vX.Y.Z`` is
+    The pin is normally the MINOR series (e.g. ``v1.13``); a full ``vX.Y.Z`` is
     also accepted. Parsed with a regex so we don't need to import the add-on
     (which would require Blender's ``bpy``).
     """
