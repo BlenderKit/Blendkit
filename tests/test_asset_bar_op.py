@@ -72,9 +72,7 @@ class TestAssetBarScrollUpdate(unittest.TestCase):
         addon = SimpleNamespace(preferences=prefs)
         fake_bpy = SimpleNamespace(
             context=SimpleNamespace(
-                preferences=SimpleNamespace(
-                    addons={asset_bar_op._ADDON_PACKAGE: addon}
-                )
+                preferences=SimpleNamespace(addons={asset_bar_op._ADDON_PACKAGE: addon})
             )
         )
         redraw = Mock()
