@@ -31,7 +31,6 @@ bl_info = {
 VERSION = (3, 21, 3, 261002)
 
 import logging
-import random
 import sys
 from importlib import reload
 from os import path
