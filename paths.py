@@ -76,22 +76,22 @@ _stable_system_id: str | None = None
 def get_system_id_filepath() -> str:
     """Where Blendkit-Client keeps the machine ID; the add-on only reads it."""
     preferences = bpy.context.preferences.addons[__package__].preferences
-    return os.path.join(bpy.path.abspath(preferences.global_dir), "system_id")
+    return os.path.join(bpy.path.abspath(preferences.global_dir), "client", "system_id")
 
 
 def get_stable_system_id() -> str:
     """Machine ID for telemetry: the 15 digits Blendkit-Client persisted, else ``uuid.getnode()``.
 
     The Client owns the ID. On its first start it writes its own MAC-derived
-    value to ``global_dir/system_id`` and reports that from then on, so a
+    value to ``global_dir/client/system_id`` and reports that from then on, so a
     machine keeps the ID the server already knows while MAC randomization, VPN
     adapters and Python's random fallback stop splitting one machine into many.
     The add-on must not seed the file itself: measured on production,
     ``uuid.getnode()`` picks a different adapter than the Client on 79% of
     Windows machines, so an add-on-written seed would rename most of them.
 
-    The legacy default directory is also read until the Client copies its ID
-    into the configured global directory, without removing the legacy file.
+    Previous root-level and default-directory files are also read until the
+    Client copies the ID into the client directory, without removing old files.
     A value read from the file is cached; the ``uuid.getnode()`` fallback is
     not, so a login before the Client's first write still picks the file up
     later. Deleting ``blenderkit_data`` only makes the Client re-seed from its
@@ -102,8 +102,11 @@ def get_stable_system_id() -> str:
     if _stable_system_id is not None:
         return _stable_system_id
 
+    current_filepath = get_system_id_filepath()
     for filepath in (
-        get_system_id_filepath(),
+        current_filepath,
+        os.path.join(os.path.dirname(os.path.dirname(current_filepath)), "system_id"),
+        os.path.join(default_global_dict(), "client", "system_id"),
         os.path.join(default_global_dict(), "system_id"),
     ):
         try:

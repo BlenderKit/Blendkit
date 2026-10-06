@@ -494,9 +494,10 @@ class TestStableSystemID(unittest.TestCase):
         self.addCleanup(setattr, paths, "_stable_system_id", None)
 
     def _id_filepath(self):
-        return os.path.join(self.tmp.name, "system_id")
+        return os.path.join(self.tmp.name, "client", "system_id")
 
     def _write(self, content, mode="w"):
+        os.makedirs(os.path.dirname(self._id_filepath()), exist_ok=True)
         with open(self._id_filepath(), mode) as f:
             f.write(content)
 
@@ -530,10 +531,11 @@ class TestStableSystemID(unittest.TestCase):
         with mock.patch.object(paths.uuid, "getnode", return_value=42):
             self.assertEqual(paths.get_stable_system_id(), "000000000000042")
 
-    def test_filepath_is_in_global_dir(self):
-        """The Client writes this exact path, so it must stay in the global data dir."""
+    def test_filepath_is_in_client_directory(self):
+        """The Client writes this exact path inside the configured global directory."""
         self.assertEqual(
-            paths.get_system_id_filepath(), os.path.join(self.tmp.name, "system_id")
+            paths.get_system_id_filepath(),
+            os.path.join(self.tmp.name, "client", "system_id"),
         )
 
     def test_reads_legacy_id_until_client_migrates_it(self):
@@ -547,5 +549,27 @@ class TestStableSystemID(unittest.TestCase):
         os.makedirs(paths.default_global_dict())
         with open(os.path.join(paths.default_global_dict(), "system_id"), "w") as file:
             file.write("000000000000321")
+        with open(os.path.join(self.tmp.name, "system_id"), "w") as file:
+            file.write("000000000000456")
         self._write("000000000000123")
         self.assertEqual(paths.get_stable_system_id(), "000000000000123")
+
+    def test_reads_previous_configured_root_before_default_directory(self):
+        os.makedirs(paths.default_global_dict())
+        with open(os.path.join(paths.default_global_dict(), "system_id"), "w") as file:
+            file.write("000000000000321")
+        with open(os.path.join(self.tmp.name, "system_id"), "w") as file:
+            file.write("000000000000456")
+        self.assertEqual(paths.get_stable_system_id(), "000000000000456")
+        self.assertFalse(os.path.exists(self._id_filepath()))
+
+    def test_reads_default_client_directory_before_default_root(self):
+        os.makedirs(os.path.join(paths.default_global_dict(), "client"))
+        with open(os.path.join(paths.default_global_dict(), "system_id"), "w") as file:
+            file.write("000000000000321")
+        with open(
+            os.path.join(paths.default_global_dict(), "client", "system_id"), "w"
+        ) as file:
+            file.write("000000000000789")
+        self.assertEqual(paths.get_stable_system_id(), "000000000000789")
+        self.assertFalse(os.path.exists(self._id_filepath()))
