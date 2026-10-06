@@ -90,6 +90,11 @@ class TestAssetBarScrollUpdate(unittest.TestCase):
             scroll_offset=2,
             scroll_update=Mock(),
         )
+        dummy._smooth_scroll_enabled = (
+            asset_bar_op.BlenderKitAssetBarOperator._smooth_scroll_enabled.__get__(
+                dummy
+            )
+        )
         context = SimpleNamespace(region=SimpleNamespace(tag_redraw=redraw))
         event = SimpleNamespace(type="WHEELDOWNMOUSE")
 
