@@ -80,6 +80,34 @@ class Test01ClientNotRunning(unittest.TestCase):
 ### CLIENT IS RUNNING ###
 
 
+class TestClientStartupPath(unittest.TestCase):
+    def test_global_directory_is_passed_to_client(self):
+        configured = os.path.join(os.getcwd(), "custom assets")
+        with (
+            mock.patch.object(client_lib, "bpy") as mock_bpy,
+            mock.patch.object(
+                client_lib, "get_client_log_path", return_value="client.log"
+            ),
+            mock.patch.object(client_lib.os, "makedirs"),
+            mock.patch("builtins.open", mock.mock_open()),
+            mock.patch.object(client_lib, "ensure_client_binary_installed"),
+            mock.patch.object(
+                client_lib, "get_client_binary_path", return_value=("client", "test")
+            ),
+            mock.patch.object(client_lib.subprocess, "Popen") as popen,
+            mock.patch.object(global_vars, "client_process"),
+        ):
+            mock_bpy.context.preferences.addons[
+                client_lib.__package__
+            ].preferences.global_dir = "//custom assets"
+            mock_bpy.path.abspath.return_value = configured
+            client_lib.start_blenderkit_client()
+            arguments = popen.call_args.kwargs["args"]
+            self.assertEqual(arguments[arguments.index("--global_dir") + 1], configured)
+            mock_bpy.path.abspath.assert_called_once_with("//custom assets")
+            self.assertNotIn("env", popen.call_args.kwargs)
+
+
 @unittest.skipIf(os.getenv("TESTS_TYPE") == "FAST", "slow")
 class Test02ClientRunning(unittest.TestCase):
     def test01_start_client_server(self):

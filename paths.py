@@ -75,20 +75,23 @@ _stable_system_id: str | None = None
 
 def get_system_id_filepath() -> str:
     """Where Blendkit-Client keeps the machine ID; the add-on only reads it."""
-    return os.path.join(default_global_dict(), "system_id")
+    preferences = bpy.context.preferences.addons[__package__].preferences
+    return os.path.join(bpy.path.abspath(preferences.global_dir), "system_id")
 
 
 def get_stable_system_id() -> str:
     """Machine ID for telemetry: the 15 digits Blendkit-Client persisted, else ``uuid.getnode()``.
 
     The Client owns the ID. On its first start it writes its own MAC-derived
-    value to ``blenderkit_data/system_id`` and reports that from then on, so a
+    value to ``global_dir/system_id`` and reports that from then on, so a
     machine keeps the ID the server already knows while MAC randomization, VPN
     adapters and Python's random fallback stop splitting one machine into many.
     The add-on must not seed the file itself: measured on production,
     ``uuid.getnode()`` picks a different adapter than the Client on 79% of
     Windows machines, so an add-on-written seed would rename most of them.
 
+    The legacy default directory is also read until the Client copies its ID
+    into the configured global directory, without removing the legacy file.
     A value read from the file is cached; the ``uuid.getnode()`` fallback is
     not, so a login before the Client's first write still picks the file up
     later. Deleting ``blenderkit_data`` only makes the Client re-seed from its
@@ -99,14 +102,18 @@ def get_stable_system_id() -> str:
     if _stable_system_id is not None:
         return _stable_system_id
 
-    try:
-        with open(get_system_id_filepath()) as f:
-            stored = f.read().strip()
-    except (OSError, UnicodeDecodeError):
-        stored = ""
-    if re.fullmatch(r"\d{15}", stored):
-        _stable_system_id = stored
-        return stored
+    for filepath in (
+        get_system_id_filepath(),
+        os.path.join(default_global_dict(), "system_id"),
+    ):
+        try:
+            with open(filepath) as f:
+                stored = f.read().strip()
+        except (OSError, UnicodeDecodeError):
+            continue
+        if re.fullmatch(r"\d{15}", stored):
+            _stable_system_id = stored
+            return stored
     return f"{uuid.getnode():015d}"
 
 

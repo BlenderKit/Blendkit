@@ -476,8 +476,17 @@ class TestStableSystemID(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
+        bpy_patcher = mock.patch.object(paths, "bpy")
+        mock_bpy = bpy_patcher.start()
+        self.addCleanup(bpy_patcher.stop)
+        mock_bpy.context.preferences.addons[
+            paths.__package__
+        ].preferences.global_dir = self.tmp.name
+        mock_bpy.path.abspath.side_effect = lambda value: value
         patcher = mock.patch.object(
-            paths, "default_global_dict", return_value=self.tmp.name
+            paths,
+            "default_global_dict",
+            return_value=os.path.join(self.tmp.name, "legacy"),
         )
         patcher.start()
         self.addCleanup(patcher.stop)
@@ -526,3 +535,17 @@ class TestStableSystemID(unittest.TestCase):
         self.assertEqual(
             paths.get_system_id_filepath(), os.path.join(self.tmp.name, "system_id")
         )
+
+    def test_reads_legacy_id_until_client_migrates_it(self):
+        os.makedirs(paths.default_global_dict())
+        with open(os.path.join(paths.default_global_dict(), "system_id"), "w") as file:
+            file.write("000000000000321\n")
+        self.assertEqual(paths.get_stable_system_id(), "000000000000321")
+        self.assertFalse(os.path.exists(self._id_filepath()))
+
+    def test_configured_directory_id_takes_precedence_over_legacy(self):
+        os.makedirs(paths.default_global_dict())
+        with open(os.path.join(paths.default_global_dict(), "system_id"), "w") as file:
+            file.write("000000000000321")
+        self._write("000000000000123")
+        self.assertEqual(paths.get_stable_system_id(), "000000000000123")
