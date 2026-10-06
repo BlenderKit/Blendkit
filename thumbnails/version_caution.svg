@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="48" height="48" viewBox="0 0 48 48">
+  <title>Caution: asset made in a newer Blender minor version</title>
+  <path d="M 27.46 7 C 25.92 4.33 22.08 4.33 20.54 7 L 4.1 35.5 C 2.56 38.17 4.48 41.5 7.56 41.5 L 40.44 41.5 C 43.52 41.5 45.44 38.17 43.9 35.5 Z"
+        fill="none" stroke="#f2c94c" stroke-width="3" stroke-linejoin="round"/>
+  <path d="M 24 17 L 24 27" fill="none" stroke="#f2c94c" stroke-width="3.5" stroke-linecap="round"/>
+  <circle cx="24" cy="33.5" r="1.9" fill="#f2c94c"/>
+</svg>

@@ -31,6 +31,17 @@ Unlock the complete potential (27,000+ models, 10,000+ materials, 750+ scenes, 1
 
 For more information, see the [Blendkit documentation](https://github.com/BlenderKit/blenderkit/wiki).
 
+### Blender version warnings
+
+A red warning triangle in the lower-left corner of an asset-bar thumbnail means
+the asset was made in a newer Blender major version ("Use at your own risk").
+Newer minor versions within the same major show "Caution advised" in the tooltip
+only, without a badge.
+
+Newer patch releases do not display a badge or version notice. Use a matching or
+newer Blender version to avoid compatibility problems. These badges do not block
+downloads; add-ons use their own compatibility checks instead.
+
 ## How to contribute
 Do you want to participate in the development of Blendkit? Here's how you can help:
 

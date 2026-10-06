@@ -45,6 +45,181 @@ class _FakeWidget:
         self.update = Mock()
 
 
+class TestAssetBarVersionBadge(unittest.TestCase):
+    def create_button(self):
+        return SimpleNamespace(
+            _grid_positioned=True,
+            button_index=0,
+            asset_index=0,
+            visible=True,
+            set_location=Mock(),
+            validation_icon=Mock(visible=True),
+            version_warning_icon=Mock(visible=True),
+            bookmark_button=Mock(visible=True),
+            author_button=Mock(visible=True),
+            progress_bar=Mock(visible=True),
+            red_alert=Mock(visible=True),
+        )
+
+    def create_operator(self, button):
+        return SimpleNamespace(
+            asset_buttons=[button],
+            scroll_offset=0,
+            button_size=100,
+            button_margin=4,
+            icon_size=24,
+            validation_icon_margin=3,
+            update_validation_icon=Mock(),
+            update_bookmark_icon=Mock(),
+            update_progress_bar=Mock(),
+            _update_manufacturer_data=Mock(),
+        )
+
+    def test_badge_initialized_with_image_size_and_grid_clipping(self):
+        operator = self.create_operator(None)
+        operator.validation_icons = []
+        operator.version_warning_icons = []
+        operator.bookmark_buttons = []
+        operator.author_buttons = []
+        operator.progress_bars = []
+        operator.red_alerts = []
+        operator.thumb_size = 92
+        operator.button_bg_color = (0.2, 0.2, 0.2, 1.0)
+        for name in (
+            "drag_drop_asset",
+            "asset_menu",
+            "enter_button",
+            "exit_button",
+            "handle_key_input",
+            "bookmark_asset",
+            "show_author_profile",
+        ):
+            setattr(operator, name, Mock())
+        validation_icon = Mock()
+        warning_icon = Mock()
+        with (
+            patch.object(asset_bar_op, "BL_UI_Button"),
+            patch.object(
+                asset_bar_op,
+                "BL_UI_Image",
+                side_effect=[validation_icon, warning_icon],
+            ) as image_widget,
+            patch.object(asset_bar_op, "BL_UI_Widget"),
+        ):
+            button = asset_bar_op.BlenderKitAssetBarOperator.asset_button_init(
+                operator, 10, 20, 0
+            )
+        self.assertIs(button.version_warning_icon, warning_icon)
+        self.assertEqual(operator.version_warning_icons, [warning_icon])
+        image_widget.assert_any_call(17, 89, 0, 0)
+        warning_icon.set_image_size.assert_called_once_with((24, 24))
+        warning_icon.set_image.assert_called_once_with(
+            asset_bar_op.paths.get_addon_thumbnail_path("version_warning.png")
+        )
+        self.assertFalse(warning_icon.visible)
+        self.assertTrue(warning_icon._is_grid_widget)
+
+    def update_button(self, operator, asset_data, *, thumb_loaded=True):
+        version_check = asset_bar_op.utils.asset_from_newer_blender_version
+        with (
+            patch.object(
+                asset_bar_op.search,
+                "get_active_history_step",
+                return_value={"search_results": [asset_data]},
+            ),
+            patch.object(asset_bar_op, "set_thumb_check", return_value=thumb_loaded),
+            patch.object(
+                asset_bar_op.utils, "profile_is_validator", return_value=False
+            ),
+            patch.object(
+                asset_bar_op.utils,
+                "is_addon_blender_compatible",
+                return_value=True,
+            ),
+            patch.object(
+                asset_bar_op.utils,
+                "asset_from_newer_blender_version",
+                side_effect=lambda data: version_check(data, (4, 1, 2)),
+            ),
+        ):
+            asset_bar_op.BlenderKitAssetBarOperator.update_buttons(operator)
+
+    def test_badge_tracks_newer_versions_and_clears_on_slot_reuse(self):
+        button = self.create_button()
+        operator = self.create_operator(button)
+        for version, icon_name in (
+            ("5.0.0", "version_warning.png"),
+            ("4.2.0", None),
+            ("5.1.0", "version_warning.png"),
+            ("4.1.3", None),
+            ("4.1.2", None),
+            ("4.1.1", None),
+            ("4.0.99", None),
+            ("3.99.99", None),
+            ("4.2", None),
+            ("4", None),
+        ):
+            with self.subTest(version=version):
+                button.version_warning_icon.set_image.reset_mock()
+                asset_data = {"assetType": "model", "sourceAppVersion": version}
+                self.update_button(operator, asset_data)
+                self.assertEqual(
+                    button.version_warning_icon.visible, icon_name is not None
+                )
+                button.version_warning_icon.set_image.assert_not_called()
+                self.assertTrue(button.validation_icon.visible)
+                self.assertTrue(button.bookmark_button.visible)
+
+    def test_authors_addons_and_placeholders_do_not_show_badge(self):
+        for asset_data in (
+            {"assetType": "author"},
+            {"assetType": "addon", "sourceAppVersion": "99.0.0"},
+            {"placeholder": True},
+        ):
+            with self.subTest(asset_data=asset_data):
+                button = self.create_button()
+                self.update_button(self.create_operator(button), asset_data)
+                self.assertFalse(button.version_warning_icon.visible)
+
+    def test_badge_hidden_while_thumbnail_loads_and_restored_when_ready(self):
+        button = self.create_button()
+        operator = self.create_operator(button)
+        asset_data = {"assetType": "material", "sourceAppVersion": "5.0.0"}
+        self.update_button(operator, asset_data, thumb_loaded=False)
+        self.assertFalse(button.version_warning_icon.visible)
+        self.update_button(operator, asset_data, thumb_loaded=True)
+        self.assertTrue(button.version_warning_icon.visible)
+
+    def test_badge_position_and_visibility_after_reassigning_slot(self):
+        button = self.create_button()
+        operator = self.create_operator(button)
+        asset_bar_op.BlenderKitAssetBarOperator._position_single_button(
+            operator, button, 10, 20, 1, 2
+        )
+        button.version_warning_icon.set_location.assert_called_once_with(17, 89)
+        self.assertFalse(button.version_warning_icon.visible)
+        self.assertTrue(button.visible)
+
+    def test_out_of_range_slot_hides_badge(self):
+        button = self.create_button()
+        operator = self.create_operator(button)
+        asset_bar_op.BlenderKitAssetBarOperator._position_single_button(
+            operator, button, 10, 20, 2, 2
+        )
+        self.assertFalse(button.version_warning_icon.visible)
+        self.assertFalse(button.visible)
+
+    def test_update_hides_badge_after_scroll_past_results(self):
+        button = self.create_button()
+        operator = self.create_operator(button)
+        operator.scroll_offset = 1
+        self.update_button(
+            operator, {"assetType": "model", "sourceAppVersion": "5.0.0"}
+        )
+        self.assertFalse(button.version_warning_icon.visible)
+        self.assertFalse(button.visible)
+
+
 class TestAssetBarScrollUpdate(unittest.TestCase):
     def test_scroll_update_ignores_missing_search_results(self):
         dummy = SimpleNamespace(

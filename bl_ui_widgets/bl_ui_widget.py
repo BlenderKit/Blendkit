@@ -75,6 +75,8 @@ def batched_region_redraw():
 
 
 class BL_UI_Widget:
+    _is_grid_widget: bool
+
     def __init__(self, x, y, width, height):
         self.x = x
         self.y = y

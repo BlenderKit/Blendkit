@@ -1955,6 +1955,25 @@ class BlenderKitAssetBarOperator(BL_UI_OT_draw_operator):
         self.validation_icons.append(validation_icon)
         new_button.validation_icon = validation_icon
 
+        version_warning_icon = BL_UI_Image(
+            asset_x + self.button_margin + self.validation_icon_margin,
+            asset_y
+            + self.button_size
+            - self.icon_size
+            - self.button_margin
+            - self.validation_icon_margin,
+            0,
+            0,
+        )
+        version_warning_icon.set_image_size((self.icon_size, self.icon_size))
+        version_warning_icon.set_image_position((0, 0))
+        version_warning_icon.set_image(
+            paths.get_addon_thumbnail_path("version_warning.png")
+        )
+        version_warning_icon.visible = False
+        self.version_warning_icons.append(version_warning_icon)
+        new_button.version_warning_icon = version_warning_icon
+
         bookmark_button = BL_UI_Button(
             asset_x
             + self.button_size
@@ -2029,6 +2048,7 @@ class BlenderKitAssetBarOperator(BL_UI_OT_draw_operator):
         # Tag all grid sub-widgets so the draw callback can apply scissor clipping
         new_button._is_grid_widget = True
         validation_icon._is_grid_widget = True
+        version_warning_icon._is_grid_widget = True
         bookmark_button._is_grid_widget = True
         author_button._is_grid_widget = True
         progress_bar._is_grid_widget = True
@@ -2045,6 +2065,7 @@ class BlenderKitAssetBarOperator(BL_UI_OT_draw_operator):
         self.buttons = []
         self.asset_buttons = []
         self.validation_icons = []
+        self.version_warning_icons = []
         self.bookmark_buttons = []
         self.author_buttons = []
         self.progress_bars = []
@@ -3124,6 +3145,14 @@ class BlenderKitAssetBarOperator(BL_UI_OT_draw_operator):
             - self.button_margin
             - self.validation_icon_margin,
         )
+        button.version_warning_icon.set_location(
+            asset_x + self.button_margin + self.validation_icon_margin,
+            asset_y
+            + self.button_size
+            - self.icon_size
+            - self.button_margin
+            - self.validation_icon_margin,
+        )
         button.bookmark_button.set_location(
             asset_x
             + self.button_size
@@ -3145,6 +3174,7 @@ class BlenderKitAssetBarOperator(BL_UI_OT_draw_operator):
             if getattr(button, "asset_index", -1) != asset_idx:
                 button.asset_index = asset_idx
                 button.validation_icon.visible = False
+                button.version_warning_icon.visible = False
                 button.bookmark_button.visible = False
                 button.author_button.visible = False
                 button.progress_bar.visible = False
@@ -3153,6 +3183,7 @@ class BlenderKitAssetBarOperator(BL_UI_OT_draw_operator):
         else:
             button.visible = False
             button.validation_icon.visible = False
+            button.version_warning_icon.visible = False
             button.bookmark_button.visible = False
             button.author_button.visible = False
             button.progress_bar.visible = False
@@ -3335,6 +3366,7 @@ class BlenderKitAssetBarOperator(BL_UI_OT_draw_operator):
                 button._grid_positioned = False
                 button.visible = False
                 button.validation_icon.visible = False
+                button.version_warning_icon.visible = False
                 button.bookmark_button.visible = False
                 button.author_button.visible = False
                 button.progress_bar.visible = False
@@ -3441,6 +3473,7 @@ class BlenderKitAssetBarOperator(BL_UI_OT_draw_operator):
         # we try to put bookmark_buttons before others, because they're on top
         widgets_panel.extend(self.bookmark_buttons)
         widgets_panel.extend(self.validation_icons)
+        widgets_panel.extend(self.version_warning_icons)
         widgets_panel.extend(self.author_buttons)
         widgets_panel.extend(self.progress_bars)
         # Scroll indicator goes last so it draws on top of every thumbnail
@@ -3859,6 +3892,7 @@ class BlenderKitAssetBarOperator(BL_UI_OT_draw_operator):
                 has_warning, difference = utils.asset_from_newer_blender_version(
                     asset_data
                 )
+                self.version_warning.text = ""
                 if has_warning:
                     if difference == "major_newer":
                         self.version_warning.text = f"Made in Blender {asset_data['sourceAppVersion']}! Use at your own risk."
@@ -3866,8 +3900,6 @@ class BlenderKitAssetBarOperator(BL_UI_OT_draw_operator):
                     elif difference == "minor":
                         self.version_warning.text = f"Made in Blender {asset_data['sourceAppVersion']}. Caution advised."
                         self.version_warning.text_color = self.caution_color
-                else:
-                    self.version_warning.text = ""
 
                 # Addon-specific compatibility warning. This takes precedence
                 # over the generic sourceAppVersion notice because it's based
@@ -4529,6 +4561,7 @@ class BlenderKitAssetBarOperator(BL_UI_OT_draw_operator):
                     asset_button.bookmark_button.visible = False
                     asset_button.author_button.visible = False
                     asset_button.validation_icon.visible = False
+                    asset_button.version_warning_icon.visible = False
                     asset_button.progress_bar.visible = False
                     asset_button.background_border = False
                     asset_button.background_border_color = None
@@ -4564,6 +4597,12 @@ class BlenderKitAssetBarOperator(BL_UI_OT_draw_operator):
                     asset_button.image_padding = 0.0
 
                 self.update_validation_icon(asset_button, asset_data)
+                has_version_warning, difference = (
+                    utils.asset_from_newer_blender_version(asset_data)
+                )
+                asset_button.version_warning_icon.visible = (
+                    has_version_warning and difference == "major_newer"
+                )
                 self.update_bookmark_icon(asset_button.bookmark_button)
                 self.update_progress_bar(asset_button, asset_data)
 
@@ -4590,13 +4629,14 @@ class BlenderKitAssetBarOperator(BL_UI_OT_draw_operator):
 
                 # When the thumbnail for this slot hasn't been downloaded
                 # yet, the slot is showing the "Loading..." placeholder.
-                # Suppress all overlay badges (validation icon, bookmark,
+                # Suppress all overlay badges (validation/version icons, bookmark,
                 # progress bar, red alert) so we don't draw stale or
                 # next-asset badges over a not-yet-loaded thumbnail while
                 # scrolling. The badges are restored by update_image() as
                 # soon as the real thumbnail arrives.
                 if not thumb_loaded:
                     asset_button.validation_icon.visible = False
+                    asset_button.version_warning_icon.visible = False
                     asset_button.bookmark_button.visible = False
                     asset_button.progress_bar.visible = False
                     asset_button.red_alert.visible = False
@@ -4606,6 +4646,7 @@ class BlenderKitAssetBarOperator(BL_UI_OT_draw_operator):
                 # Buffer button with out-of-range index – hide it
                 asset_button.visible = False
                 asset_button.validation_icon.visible = False
+                asset_button.version_warning_icon.visible = False
                 asset_button.bookmark_button.visible = False
                 asset_button.author_button.visible = False
                 asset_button.progress_bar.visible = False

@@ -6,6 +6,7 @@ import bpy
 import gpu
 
 from .. import image_utils, ui_bgl
+from .bl_ui_image import BL_UI_Image
 from .bl_ui_widget import BL_UI_Widget, region_redraw
 
 bk_logger = logging.getLogger(__name__)
@@ -13,6 +14,8 @@ bk_logger = logging.getLogger(__name__)
 
 class BL_UI_Button(BL_UI_Widget):
     """Image Button for assets in asset bar."""
+
+    version_warning_icon: BL_UI_Image
 
     def __init__(self, x, y, width, height):
         super().__init__(x, y, width, height)
