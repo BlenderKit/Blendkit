@@ -2199,7 +2199,6 @@ class BlenderKitAssetBarOperator(BL_UI_OT_draw_operator):
         self.button_expand.set_mouse_down(self.toggle_expand)
         self.widgets_panel.append(self.button_expand)
 
-        self.scroll_width = 30
         self.button_scroll_down = BL_UI_Button(
             -self.scroll_width, 0, self.scroll_width, self.bar_height
         )
@@ -2800,12 +2799,7 @@ class BlenderKitAssetBarOperator(BL_UI_OT_draw_operator):
         """set ui elements images, has to be done after init of UI."""
         # img_fp = paths.get_addon_thumbnail_path("vs_rejected.png")
         # self.button_close.set_image(img_fp)
-        self.button_scroll_down.set_image(
-            paths.get_addon_thumbnail_path("arrow_left.png")
-        )
-        self.button_scroll_up.set_image(
-            paths.get_addon_thumbnail_path("arrow_right.png")
-        )
+        self.update_scroll_button_icons()
         # if not comments_utils.check_notifications_read():
         #     img_fp = paths.get_addon_thumbnail_path('bell.png')
         #     self.button_notifications.set_image(img_fp)
@@ -2814,6 +2808,36 @@ class BlenderKitAssetBarOperator(BL_UI_OT_draw_operator):
         self.update_tab_icons()
 
         self.update_expand_button_icon()
+
+    def update_scroll_button_icons(self):
+        """Switch scroll button icons based on layout direction.
+
+        Single row uses left/right arrows, multi-row uses up/down arrows.
+        Image is fitted to button area preserving aspect ratio, then centered.
+        PNGs have padding baked in so no clipping occurs.
+        """
+        # source dimensions: left/right 25x116, up/down 35x116
+        if self.hcount > 1:
+            back_icon, fwd_icon = "arrow_up.png", "arrow_down.png"
+            src_w, src_h = 35, 116
+        else:
+            back_icon, fwd_icon = "arrow_left.png", "arrow_right.png"
+            src_w, src_h = 25, 116
+
+        scale = min(self.scroll_width / src_w, self.bar_height / src_h)
+        w = max(1, int(round(src_w * scale)))
+        h = max(1, int(round(src_h * scale)))
+        x = int((self.scroll_width - w) / 2)
+        y = int((self.bar_height - h) / 2)
+
+        for button, icon in (
+            (self.button_scroll_down, back_icon),
+            (self.button_scroll_up, fwd_icon),
+        ):
+            button.set_image_size((w, h))
+            button.set_image_position((x, y))
+            button.set_image(paths.get_addon_thumbnail_path(icon))
+            button.text = ""
 
     def update_tab_icons(self):
         """Update tab icons based on the active history step's asset type"""
@@ -3343,19 +3367,19 @@ class BlenderKitAssetBarOperator(BL_UI_OT_draw_operator):
 
         self.position_active_filter_buttons()
 
+        self.button_scroll_down.width = self.scroll_width
         self.button_scroll_down.height = self.bar_height
-        self.button_scroll_down.set_image_position(
-            (0, int((self.bar_height - self.button_size) / 2))
-        )
+        self.button_scroll_down.set_location(-self.scroll_width, 0)
+        self.button_scroll_up.width = self.scroll_width
         self.button_scroll_up.height = self.bar_height
-        self.button_scroll_up.set_image_position(
-            (0, int((self.bar_height - self.button_size) / 2))
-        )
+        self.button_scroll_up.set_location(self.bar_width, 0)
+        self.update_scroll_button_icons()
 
     # region setup
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
+        self.scroll_width = 30
         self._quad_view_state = None
         self._restart_pending = False
         self._reset_resize_state()
