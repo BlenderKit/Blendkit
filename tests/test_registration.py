@@ -143,7 +143,13 @@ class TestPreferencesAccessible(unittest.TestCase):
 
     def test_preferences_attributes(self):
         prefs = bpy.context.preferences.addons[__package__].preferences
-        for attr in ("api_key", "global_dir", "thumb_size", "client_port"):
+        for attr in (
+            "api_key",
+            "global_dir",
+            "thumb_size",
+            "client_port",
+            "smooth_scroll",
+        ):
             self.assertTrue(
                 hasattr(prefs, attr),
                 f"Preference attribute '{attr}' missing",

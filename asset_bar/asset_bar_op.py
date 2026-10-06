@@ -4971,6 +4971,14 @@ class BlenderKitAssetBarOperator(BL_UI_OT_draw_operator):
         except (KeyError, AttributeError):
             return SCROLL_TRACKPAD_SENSITIVITY_DEFAULT
 
+    def _smooth_scroll_enabled(self) -> bool:
+        """Return whether smooth scrolling is enabled in addon preferences."""
+        try:
+            prefs = bpy.context.preferences.addons[_ADDON_PACKAGE].preferences
+            return bool(getattr(prefs, "smooth_scroll", True))
+        except (KeyError, AttributeError):
+            return True
+
     def _handle_scroll_event(self, context, event) -> bool:
         """Centralized scroll input handler.
 
@@ -5012,8 +5020,9 @@ class BlenderKitAssetBarOperator(BL_UI_OT_draw_operator):
         # On Blender versions without GPU scissor we can't clip partial rows,
         # so smooth-scroll rows would visibly spill outside the bar. Fall
         # back to immediate integer-row stepping for wheel events and just
-        # ignore trackpad pan (which has no natural discrete equivalent).
-        if not SMOOTH_SCROLL_SUPPORTED:
+        # accumulate trackpad pan into discrete slot steps. Use the same
+        # behavior when the user disables smooth scrolling in preferences.
+        if not SMOOTH_SCROLL_SUPPORTED or not self._smooth_scroll_enabled():
             if event.type == "TRACKPADPAN":
                 # Accumulate trackpad delta into whole-slot steps without
                 # animating phase. We still respect the user's sensitivity.

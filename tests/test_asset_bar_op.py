@@ -67,6 +67,47 @@ class TestAssetBarScrollUpdate(unittest.TestCase):
         self.assertFalse(dummy.button_scroll_down.visible)
         self.assertFalse(dummy.button_scroll_up.visible)
 
+    def test_disabled_smooth_scroll_uses_immediate_wheel_scrolling(self):
+        prefs = SimpleNamespace(smooth_scroll=False)
+        addon = SimpleNamespace(preferences=prefs)
+        fake_bpy = SimpleNamespace(
+            context=SimpleNamespace(
+                preferences=SimpleNamespace(
+                    addons={asset_bar_op._ADDON_PACKAGE: addon}
+                )
+            )
+        )
+        redraw = Mock()
+        dummy = SimpleNamespace(
+            panel=SimpleNamespace(is_in_rect=Mock(return_value=True)),
+            mouse_x=10,
+            mouse_y=20,
+            hcount=1,
+            wcount=1,
+            _trackpad_axis_vertical=False,
+            scroll_phase=0.0,
+            _scroll_velocity=0.0,
+            _scroll_animating=False,
+            _scroll_travel_dir=0,
+            scroll_offset=2,
+            scroll_update=Mock(),
+        )
+        context = SimpleNamespace(region=SimpleNamespace(tag_redraw=redraw))
+        event = SimpleNamespace(type="WHEELDOWNMOUSE")
+
+        with (
+            patch.object(asset_bar_op, "bpy", fake_bpy),
+            patch.object(asset_bar_op, "SMOOTH_SCROLL_SUPPORTED", True),
+        ):
+            handled = asset_bar_op.BlenderKitAssetBarOperator._handle_scroll_event(
+                dummy, context, event
+            )
+
+        self.assertTrue(handled)
+        self.assertEqual(dummy.scroll_offset, 3)
+        dummy.scroll_update.assert_called_once_with()
+        redraw.assert_called_once_with()
+
 
 class TestAssetBarPositioning(unittest.TestCase):
     def create_drag_panel(self, *, drag_enabled=False, is_drag=False):
