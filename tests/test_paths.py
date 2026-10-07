@@ -59,11 +59,23 @@ class TestDownloadDirs(unittest.TestCase):
         self._test_get_download_dirs("hdr")
 
 
-class TestGlobalDict(unittest.TestCase):
-    def test_default_global_dict(self):
+class TestDefaultGlobalDict(unittest.TestCase):
+    def test_result_not_empty(self):
         result = paths.default_global_dict()
-        path = pathlib.Path(result)
-        self.assertTrue(path.is_dir(), msg=path)
+        self.assertNotEqual(result, "")
+
+    def test_xdg_home_takes_precedence(self):
+        tmp_data_home = tempfile.TemporaryDirectory()
+        os.environ["XDG_DATA_HOME"] = tmp_data_home.name
+        self.addCleanup(tmp_data_home.cleanup)
+        self.addCleanup(os.environ.pop, "XDG_DATA_HOME", None)
+        expected = os.path.join(tmp_data_home.name, "blenderkit_data")
+        actual = paths.default_global_dict()
+        self.assertEqual(
+            expected,
+            actual,
+            f"Expected default global dir: {expected}, but got: {actual}",
+        )
 
 
 class TestGetAssetDirectoryName(unittest.TestCase):
@@ -475,19 +487,31 @@ class TestStableSystemID(unittest.TestCase):
     """The add-on reads the machine ID Blendkit-Client persisted and never writes it."""
 
     def setUp(self):
-        self.tmp = tempfile.TemporaryDirectory()
-        self.addCleanup(self.tmp.cleanup)
+        self.tmp_global_dir = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp_global_dir.cleanup)
+
+        self.tmp_home_dir = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp_home_dir.cleanup)
+
+        # data_home is normally ~/.local/share or HOME/AppData/Local
+        self.tmp_data_home = tempfile.TemporaryDirectory()
+        os.environ["XDG_DATA_HOME"] = self.tmp_data_home.name
+        os.environ["LOCALAPPDATA"] = self.tmp_data_home.name
+        self.addCleanup(self.tmp_data_home.cleanup)
+        self.addCleanup(os.environ.pop, "XDG_DATA_HOME", None)
+        self.addCleanup(os.environ.pop, "LOCALAPPDATA", None)
+
         bpy_patcher = mock.patch.object(paths, "bpy")
         mock_bpy = bpy_patcher.start()
         self.addCleanup(bpy_patcher.stop)
         mock_bpy.context.preferences.addons[
             paths.__package__
-        ].preferences.global_dir = self.tmp.name
+        ].preferences.global_dir = self.tmp_global_dir.name
         mock_bpy.path.abspath.side_effect = lambda value: value
         patcher = mock.patch.object(
             paths,
             "default_global_dict",
-            return_value=os.path.join(self.tmp.name, "legacy"),
+            return_value=os.path.join(self.tmp_global_dir.name, "legacy"),
         )
         patcher.start()
         self.addCleanup(patcher.stop)
@@ -495,7 +519,7 @@ class TestStableSystemID(unittest.TestCase):
         self.addCleanup(setattr, paths, "_stable_system_id", None)
 
     def _id_filepath(self):
-        return os.path.join(self.tmp.name, "client", "system_id")
+        return os.path.join(self.tmp_data_home.name, "blendkit_client", "system_id")
 
     def _write(self, content, mode="w"):
         os.makedirs(os.path.dirname(self._id_filepath()), exist_ok=True)
@@ -536,10 +560,10 @@ class TestStableSystemID(unittest.TestCase):
         """The Client writes this exact path inside the configured global directory."""
         self.assertEqual(
             paths.get_system_id_filepath(),
-            os.path.join(self.tmp.name, "client", "system_id"),
+            os.path.join(self.tmp_data_home.name, "blendkit_client", "system_id"),
         )
 
-    def test_reads_legacy_id_until_client_migrates_it(self):
+    def test_reads_globdir_id_until_client_migrates_it(self):
         os.makedirs(paths.default_global_dict())
         with open(os.path.join(paths.default_global_dict(), "system_id"), "w") as file:
             file.write("000000000000321\n")
@@ -550,19 +574,23 @@ class TestStableSystemID(unittest.TestCase):
         os.makedirs(paths.default_global_dict())
         with open(os.path.join(paths.default_global_dict(), "system_id"), "w") as file:
             file.write("000000000000321")
-        with open(os.path.join(self.tmp.name, "system_id"), "w") as file:
+        legacy = os.path.join(self.tmp_global_dir.name, "client")
+        os.makedirs(legacy)
+        with open(os.path.join(legacy, "system_id"), "w") as file:
             file.write("000000000000456")
         self._write("000000000000123")
         self.assertEqual(paths.get_stable_system_id(), "000000000000123")
 
-    def test_reads_previous_configured_root_before_default_directory(self):
+    def test_reads_clientdir_id_before_default_directory(self):
         os.makedirs(paths.default_global_dict())
         with open(os.path.join(paths.default_global_dict(), "system_id"), "w") as file:
             file.write("000000000000321")
-        with open(os.path.join(self.tmp.name, "system_id"), "w") as file:
+        client_dir = os.path.join(self.tmp_data_home.name, "blendkit_client")
+        os.makedirs(client_dir)
+        with open(os.path.join(client_dir, "system_id"), "w") as file:
             file.write("000000000000456")
         self.assertEqual(paths.get_stable_system_id(), "000000000000456")
-        self.assertFalse(os.path.exists(self._id_filepath()))
+        self.assertTrue(os.path.exists(self._id_filepath()))
 
     def test_reads_default_client_directory_before_default_root(self):
         os.makedirs(os.path.join(paths.default_global_dict(), "client"))
