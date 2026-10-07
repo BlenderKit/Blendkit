@@ -76,9 +76,10 @@ _stable_system_id: str | None = None
 
 
 def get_system_id_filepath() -> str:
-    """Where Blendkit-Client keeps the machine ID; the add-on only reads it."""
-    preferences = bpy.context.preferences.addons[__package__].preferences
-    return os.path.join(bpy.path.abspath(preferences.global_dir), "client", "system_id")
+    """Where Blendkit-Client keeps the machine ID; the add-on only reads it.
+    Mirrors bk_client:utils.go-systemIDFilePath()."""
+    client_dir = client_lib.get_client_directory()
+    return os.path.join(client_dir, "system_id")
 
 
 def get_stable_system_id() -> str:
