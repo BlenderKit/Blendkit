@@ -2180,6 +2180,25 @@ class BlenderKitAddonPreferences(AddonPreferences):
         update=persistent_preferences.property_keep_preferences_updated,
     )
 
+    show_interface_settings: BoolProperty(
+        name="Interface Settings", default=True, options={"SKIP_SAVE"}
+    )
+    show_assetbar_settings: BoolProperty(
+        name="Asset Bar Settings", default=False, options={"SKIP_SAVE"}
+    )
+    show_performance_settings: BoolProperty(
+        name="Performance", default=False, options={"SKIP_SAVE"}
+    )
+    show_notification_settings: BoolProperty(
+        name="Notifications and Discovery", default=False, options={"SKIP_SAVE"}
+    )
+    show_thumbnail_settings: BoolProperty(
+        name="Thumbnail Settings", default=False, options={"SKIP_SAVE"}
+    )
+    show_network_settings: BoolProperty(
+        name="Networking Settings", default=False, options={"SKIP_SAVE"}
+    )
+
     api_key: StringProperty(
         name="Blendkit API Key",
         description=(
@@ -2765,6 +2784,23 @@ In this case you should also set path to your system CA bundle containing proxy'
             validator_box.label(text="Validator Settings")
             validator_box.prop(self, "categories_fix")
 
+        def draw_section(property_name, title):
+            is_expanded = getattr(self, property_name)
+            section = layout.box()
+            header = section.row(align=True)
+            header.alignment = "LEFT"
+            header.prop(
+                self,
+                property_name,
+                text="",
+                icon="TRIA_DOWN" if is_expanded else "TRIA_RIGHT",
+                emboss=False,
+            )
+            header.label(text=title)
+            if not is_expanded:
+                return None
+            return section.column()
+
         # REPORT BUG BUTTON
         report_settings = layout.box()
         report_settings.label(text="Report a Bug")
@@ -2788,48 +2824,65 @@ In this case you should also set path to your system CA bundle containing proxy'
         locations_settings.prop(self, "unpack_files")
         locations_settings.prop(self, "create_asset_library")
 
-        # GUI SETTINGS
-        gui_settings = layout.box()
-        gui_settings.alignment = "EXPAND"
-        gui_settings.label(text="GUI settings")
-        gui_settings.prop(self, "show_on_start")
-        gui_settings.prop(self, "thumb_size")
-        gui_settings.prop(self, "trackpad_scroll_sensitivity")
-        gui_settings.prop(self, "smooth_scroll")
-        gui_settings.prop(self, "search_field_width")
-        gui_settings.prop(self, "search_in_header")
-        gui_settings.prop(self, "sidebar_panels")
-        gui_settings.prop(self, "show_VIEW3D_MT_blenderkit_model_properties")
-        gui_settings.prop(self, "comments_order")
-        gui_settings.prop(self, "tips_on_start")
-        gui_settings.prop(self, "announcements_on_start")
-        gui_settings.prop(self, "assetbar_follows_cursor")
-        gui_settings.prop(self, "use_clipboard_scan")
-        gui_settings.prop(self, "proxor_enabled")
-        gui_settings.prop(self, "rating_nudge_enabled")
+        interface_settings = draw_section(
+            "show_interface_settings", "Interface Settings"
+        )
+        if interface_settings is not None:
+            interface_settings.prop(self, "show_on_start")
+            interface_settings.prop(self, "search_field_width")
+            interface_settings.prop(self, "search_in_header")
+            interface_settings.prop(self, "sidebar_panels")
+            interface_settings.prop(
+                self, "show_VIEW3D_MT_blenderkit_model_properties"
+            )
+            interface_settings.prop(self, "assetbar_follows_cursor")
+
+        assetbar_settings = draw_section("show_assetbar_settings", "Asset Bar Settings")
+        if assetbar_settings is not None:
+            assetbar_settings.prop(self, "thumb_size")
+            assetbar_settings.prop(self, "trackpad_scroll_sensitivity")
+
+        performance_settings = draw_section(
+            "show_performance_settings", "Performance"
+        )
+        if performance_settings is not None:
+            performance_settings.prop(self, "smooth_scroll")
+            performance_settings.prop(self, "client_polling")
+
+        notification_settings = draw_section(
+            "show_notification_settings", "Notifications and Discovery"
+        )
+        if notification_settings is not None:
+            notification_settings.prop(self, "comments_order")
+            notification_settings.prop(self, "tips_on_start")
+            notification_settings.prop(self, "announcements_on_start")
+            notification_settings.prop(self, "use_clipboard_scan")
+            notification_settings.prop(self, "proxor_enabled")
+            notification_settings.prop(self, "rating_nudge_enabled")
 
         # THUMBNAIL SETTINGS
         # These are machine-level preferences that should be set once, not
         # toggled in every thumbnail render dialog.
-        thumbnail_settings = layout.box()
-        thumbnail_settings.alignment = "EXPAND"
-        thumbnail_settings.label(text="Thumbnail settings")
-        thumbnail_settings.prop(self.thumbnail_settings, "thumbnail_use_gpu")
-        if utils.elevated_experimental_enabled():
-            thumbnail_settings.prop(self.thumbnail_settings, "thumbnail_render_engine")
+        thumbnail_settings = draw_section(
+            "show_thumbnail_settings", "Thumbnail Settings"
+        )
+        if thumbnail_settings is not None:
+            thumbnail_settings.prop(self.thumbnail_settings, "thumbnail_use_gpu")
+            if utils.elevated_experimental_enabled():
+                thumbnail_settings.prop(
+                    self.thumbnail_settings, "thumbnail_render_engine"
+                )
 
         # NETWORKING SETTINGS
-        network_settings = layout.box()
-        network_settings.alignment = "EXPAND"
-        network_settings.label(text="Networking settings")
-        network_settings.prop(self, "client_port")
-        network_settings.prop(self, "client_polling")
-        network_settings.prop(self, "ip_version")
-        network_settings.prop(self, "ssl_context")
-        network_settings.prop(self, "proxy_which")
-        if self.proxy_which == "CUSTOM":
-            network_settings.prop(self, "proxy_address")
-        network_settings.prop(self, "trusted_ca_certs")
+        network_settings = draw_section("show_network_settings", "Networking Settings")
+        if network_settings is not None:
+            network_settings.prop(self, "client_port")
+            network_settings.prop(self, "ip_version")
+            network_settings.prop(self, "ssl_context")
+            network_settings.prop(self, "proxy_which")
+            if self.proxy_which == "CUSTOM":
+                network_settings.prop(self, "proxy_address")
+            network_settings.prop(self, "trusted_ca_certs")
 
         # UPDATER SETTINGS
         addon_updater_ops.update_settings_ui(self, context)

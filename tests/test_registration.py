@@ -149,8 +149,22 @@ class TestPreferencesAccessible(unittest.TestCase):
             "thumb_size",
             "client_port",
             "smooth_scroll",
+            "show_performance_settings",
         ):
             self.assertTrue(
                 hasattr(prefs, attr),
                 f"Preference attribute '{attr}' missing",
             )
+
+    def test_preferences_section_state_is_not_saved(self):
+        prefs = bpy.context.preferences.addons[__package__].preferences
+        for attr in (
+            "show_interface_settings",
+            "show_assetbar_settings",
+            "show_performance_settings",
+            "show_notification_settings",
+            "show_thumbnail_settings",
+            "show_network_settings",
+        ):
+            prop = prefs.bl_rna.properties[attr]
+            self.assertIn("SKIP_SAVE", prop.options)
