@@ -166,4 +166,4 @@ class TestPreferencesAccessible(unittest.TestCase):
             "show_network_settings",
         ):
             prop = prefs.bl_rna.properties[attr]
-            self.assertIn("SKIP_SAVE", prop.options)
+            self.assertTrue(prop.is_skip_save)
