@@ -22,7 +22,6 @@ import sys
 
 from . import global_vars
 
-
 bk_logger = logging.getLogger(__name__)
 
 

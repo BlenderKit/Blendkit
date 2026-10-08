@@ -57,7 +57,6 @@ from ..bl_ui_widgets.bl_ui_widget import (
     set_font_size,
 )
 
-
 bk_logger = logging.getLogger(__name__)
 
 # Addon root package name. We live in <addon>.asset_bar, but addon

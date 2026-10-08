@@ -2,7 +2,6 @@ import json
 import re
 from urllib import request
 
-
 jobs = [
     # Blender 3 test just latest patch version of each minor version
     {

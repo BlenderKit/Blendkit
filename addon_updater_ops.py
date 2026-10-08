@@ -339,7 +339,7 @@ class AddonUpdaterUpdateNow(bpy.types.Operator):
                 atr = AddonUpdaterInstallManually.bl_idname.split(".")
                 getattr(getattr(bpy.ops, atr[0]), atr[1])("INVOKE_DEFAULT")
         elif updater.update_ready is None:
-            (update_ready, version, link) = updater.check_for_update(now=True)
+            update_ready, version, link = updater.check_for_update(now=True)
             # Re-launch this dialog.
             atr = AddonUpdaterInstallPopup.bl_idname.split(".")
             getattr(getattr(bpy.ops, atr[0]), atr[1])("INVOKE_DEFAULT")
@@ -853,7 +853,7 @@ def check_for_update_nonthreaded(self, context):
         minutes=settings.updater_interval_minutes,
     )
 
-    (update_ready, version, link) = updater.check_for_update(now=False)
+    update_ready, version, link = updater.check_for_update(now=False)
     if update_ready:
         atr = AddonUpdaterInstallPopup.bl_idname.split(".")
         getattr(getattr(bpy.ops, atr[0]), atr[1])("INVOKE_DEFAULT")

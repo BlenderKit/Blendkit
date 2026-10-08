@@ -46,7 +46,6 @@ import bpy
 
 from . import tasks_queue
 
-
 bk_logger = logging.getLogger(__name__)
 
 # -----------------------------------------------------------------------------

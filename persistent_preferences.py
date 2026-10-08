@@ -24,7 +24,6 @@ import bpy
 
 from . import paths, utils
 
-
 bk_logger = logging.getLogger(__name__)
 
 

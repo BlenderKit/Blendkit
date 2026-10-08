@@ -27,7 +27,6 @@ import addon_utils  # type: ignore
 
 from . import client_lib, download, paths
 
-
 bk_logger = logging.getLogger(__name__)
 
 

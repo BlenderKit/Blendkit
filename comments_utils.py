@@ -20,7 +20,6 @@ import logging
 
 from . import client_lib, client_tasks, global_vars
 
-
 bk_logger = logging.getLogger(__name__)
 
 

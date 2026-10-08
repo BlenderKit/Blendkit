@@ -38,7 +38,6 @@ from . import (
     download,
 )
 
-
 bk_logger = logging.getLogger(__name__)
 
 # Set by rating_nudge._show_rating_popup() right before invoking FastRateMenu with

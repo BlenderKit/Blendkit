@@ -7,7 +7,6 @@ from urllib.parse import unquote
 
 import bpy
 
-
 # ``test.py`` imports this as ``<addon>.tests.<name>``; strip ``.tests`` so
 # ``__package__`` is the add-on's own module - needed by the relative import
 # and any ``bpy...addons[__package__]`` lookups below. Scanning ``addons`` for

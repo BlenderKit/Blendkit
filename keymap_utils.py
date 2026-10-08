@@ -24,7 +24,6 @@ from dataclasses import dataclass, field
 import bpy
 import rna_keymap_ui
 
-
 bk_logger = logging.getLogger(__name__)
 
 

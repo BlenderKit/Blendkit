@@ -23,7 +23,6 @@ import time
 
 import bpy
 
-
 bk_logger = logging.getLogger(__name__)
 
 resolutions = {

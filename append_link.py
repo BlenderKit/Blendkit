@@ -25,7 +25,6 @@ import bpy
 
 from . import utils, reports
 
-
 bk_logger = logging.getLogger(__name__)
 
 

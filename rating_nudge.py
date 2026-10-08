@@ -40,7 +40,6 @@ import bpy
 
 from . import client_lib, global_vars, paths, tasks_queue, utils
 
-
 bk_logger = logging.getLogger(__name__)
 
 # --- Tunable thresholds (edit here) -----------------------------------------

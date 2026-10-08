@@ -2832,9 +2832,7 @@ In this case you should also set path to your system CA bundle containing proxy'
             interface_settings.prop(self, "search_field_width")
             interface_settings.prop(self, "search_in_header")
             interface_settings.prop(self, "sidebar_panels")
-            interface_settings.prop(
-                self, "show_VIEW3D_MT_blenderkit_model_properties"
-            )
+            interface_settings.prop(self, "show_VIEW3D_MT_blenderkit_model_properties")
             interface_settings.prop(self, "assetbar_follows_cursor")
 
         assetbar_settings = draw_section("show_assetbar_settings", "Asset Bar Settings")
@@ -2842,9 +2840,7 @@ In this case you should also set path to your system CA bundle containing proxy'
             assetbar_settings.prop(self, "thumb_size")
             assetbar_settings.prop(self, "trackpad_scroll_sensitivity")
 
-        performance_settings = draw_section(
-            "show_performance_settings", "Performance"
-        )
+        performance_settings = draw_section("show_performance_settings", "Performance")
         if performance_settings is not None:
             performance_settings.prop(self, "smooth_scroll")
             performance_settings.prop(self, "client_polling")

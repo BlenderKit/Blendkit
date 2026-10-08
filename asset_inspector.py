@@ -24,7 +24,6 @@ import bpy
 
 from . import utils
 
-
 RENDER_OBTYPES = ["MESH", "CURVE", "SURFACE", "METABALL", "TEXT"]
 
 _BLE_5_PLUS = bpy.app.version >= (5, 0, 0)

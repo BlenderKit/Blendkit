@@ -25,7 +25,6 @@ import zipfile
 import addon_utils  # type: ignore[import-not-found]
 import bpy
 
-
 # Datablock collections (on bpy.data) that can hold an asset_mark and that a
 # BlenderKit asset file might contain. Used to enforce "exactly one asset per
 # uploaded/unpacked .blend".

@@ -41,7 +41,6 @@ from . import (
     utils,
 )
 
-
 if bpy.app.version >= (4, 2, 0):
     from . import override_extension_draw
 

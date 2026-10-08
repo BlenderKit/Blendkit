@@ -48,7 +48,6 @@ from . import (
     utils,
 )
 
-
 bk_logger = logging.getLogger(__name__)
 reports_queue: queue.Queue = queue.Queue()
 pending_tasks = (

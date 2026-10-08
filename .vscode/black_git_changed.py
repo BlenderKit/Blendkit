@@ -10,6 +10,7 @@ Behavior:
 
 No script arguments by design (keep it simple like the original black_git_changed).
 """
+
 import subprocess
 import sys
 from pathlib import Path

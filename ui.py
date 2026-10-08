@@ -33,7 +33,6 @@ from . import (
     utils,
 )
 
-
 draw_time = 0
 eval_time = 0
 

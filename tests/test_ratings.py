@@ -29,7 +29,6 @@ if __package__:
     __package__ = __package__.rsplit(".tests", 1)[0]
 from . import ratings, utils
 
-
 ASSET_DATA = {"id": "abc123", "assetType": "model", "name": "Test Asset"}
 
 

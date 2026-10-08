@@ -26,7 +26,6 @@ import bpy
 
 from . import client_tasks, global_vars, paths
 
-
 bk_logger = logging.getLogger(__name__)
 
 

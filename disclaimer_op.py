@@ -30,7 +30,6 @@ from .bl_ui_widgets.bl_ui_draw_op import BL_UI_OT_draw_operator
 from .bl_ui_widgets.bl_ui_image import BL_UI_Image
 from .ui_bgl import get_text_size
 
-
 bk_logger = logging.getLogger(__name__)
 
 active_disclaimers = 0

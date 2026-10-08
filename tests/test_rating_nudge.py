@@ -23,13 +23,11 @@ import unittest
 
 import bpy
 
-
 for addon in bpy.context.preferences.addons:
     if "blenderkit" in addon.module:
         __package__ = addon.module
         break
 from . import datas, global_vars, rating_nudge, utils
-
 
 DAY = rating_nudge.DAY
 
