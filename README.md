@@ -17,11 +17,9 @@
 </div>
 
 ## About
-The Blendkit add-on, an official and free open-source extension for Blender 3D, connects users to the [Blendkit service](https://www.blendkit.com/), allowing you to search, download, upload and rate a vast array of assets.
-Access over 10,000 models, 10,000 materials, 250+ scenes, 1,000+ HDRIs, and 300+ brushes for free, no login required.
-Or sign in with the Free Plan to bookmark and rate assets, for even faster workflow.
-And there's more!
-Unlock the complete potential (27,000+ models, 10,000+ materials, 750+ scenes, 1,500+ HDRIs, 850+ brushes) with a BlenderKit [Full plan subscription](https://www.blendkit.com/plans/pricing/), supporting the creators of all assets.
+Blendkit is the official, free, open-source Blender add-on for searching, downloading, uploading, and rating assets from the [Blendkit service](https://www.blendkit.com/).
+
+Browse and download a selection of assets for free without an account. A free account lets you bookmark and rate assets. A [Full plan](https://www.blendkit.com/plans/pricing/) unlocks 150,000+ assets, including 81,687+ models, 40,938+ materials, 4,544+ scenes, 14,950+ HDRIs, and 7,063+ brushes, while supporting their creators. The marketplace also offers 600+ Blender add-ons.
 
 ## Get started
 1. Download the add-on from the [Blendkit website](https://www.blendkit.com/get-blendkit/).
