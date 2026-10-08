@@ -5433,6 +5433,17 @@ def handle_bkclientjs_get_asset(task: "search.client_tasks.Task"):
         bk_logger.error("No asset data found in task")
         return
 
+    # Download uses local profile and api_key, so we are here checking if user
+    # has full plan and overwriting the canDownload (which is based on web login).
+    if asset_data.get("access") == "full":
+        if utils.profile_has_full_plan() or utils.profile_is_validator():
+            asset_data["canDownload"] = True
+        else:
+            asset_data["canDownload"] = False
+            # TODO: implement a way for the download to use api key from web task
+            # so we can download for user logged on web but not logged in Blender
+            # api_key = task.result.get("api_key", "")
+
     # Parse the asset data
     parsed_asset_data = search.parse_result(asset_data)
     if not parsed_asset_data:

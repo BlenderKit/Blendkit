@@ -76,6 +76,43 @@ Communication between Client and Server currently happens also in one way Client
 
 ## Development
 
+### Preparing a patch release
+
+In GitHub **Actions**, select **Bump add-on patch version** and click **Run workflow**.
+The action always reads the repository's default branch, increments only the patch
+number, and sets the date to today's UTC date in `YYMMDD` format. It updates
+`bl_info["version"]` and `VERSION` in `__init__.py`, plus `version` in
+`blender_manifest.toml`. It fails without changing version metadata if those
+declarations disagree or are missing.
+
+The action opens a PR from `automation/bump-addon-version-X.Y.Z.YYMMDD` to the
+default branch (for example, `automation/bump-addon-version-3.21.4.261007`).
+Including both the version and date keeps subsequent releases distinct, even
+when prepared on the same day. Reruns with the same target version and UTC date
+update the same PR. A different date or target version creates a new branch and
+PR; close any superseded bump PR before merging. Review and merge the PR, then run the existing
+**Release** workflow with the version shown in the PR body (`X.Y.Z.YYMMDD`).
+The bump action does not tag, publish, or change the Client/submodule versions.
+
+Repository setup:
+
+- Enable **Settings > Actions > General > Workflow permissions > Allow GitHub
+  Actions to create and approve pull requests** (organization policy must also
+  permit it). The workflow requests `contents: write` and `pull-requests: write`.
+- With the default `GITHUB_TOKEN`, the generated PR does not automatically trigger
+  other workflows. Run the **PR** workflow manually, selecting
+  the generated `automation/bump-addon-version-X.Y.Z.YYMMDD` branch, to validate the bump.
+- To trigger PR checks automatically, optionally configure the repository secret
+  `VERSION_BUMP_TOKEN` with a fine-grained personal access token having access to
+  this repository and **Contents: read/write** and **Pull requests: read/write**.
+  The action uses that token when present; otherwise it uses `GITHUB_TOKEN`.
+
+The helper and its tests do not require Blender or third-party Python packages:
+
+```sh
+python -m unittest discover -s .github/tests -p test_bump_version.py -v
+```
+
 ### Logging
 
 Do not use `print()` statements in the code, use logging instead.

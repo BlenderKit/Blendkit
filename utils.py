@@ -1668,6 +1668,17 @@ def user_logged_in() -> bool:
     return True
 
 
+def profile_has_full_plan() -> bool:
+    """The currently logged-in profile has Full plan access. Please note that not all validators
+    have the Full plan, so it is better to combine this with profile_is_validator().
+    """
+    if global_vars.BKIT_PROFILE is None:
+        return False
+    if global_vars.BKIT_PROFILE.currentPlanName == "Full":
+        return True
+    return False
+
+
 def profile_is_validator() -> bool:
     """currently logged in profile is validator"""
     user_preferences = bpy.context.preferences.addons[__package__].preferences  # type: ignore

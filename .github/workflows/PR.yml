@@ -12,6 +12,8 @@ jobs:
       - uses: actions/checkout@v7
       - name: Python - install dependencies
         run: python -m pip install -r devs/requirements.txt
+      - name: Test version bump helper
+        run: python -m unittest discover -s .github/tests -p test_bump_version.py -v
       - name: ISORT
         run: python -m isort . --check-only --diff
         continue-on-error: true
