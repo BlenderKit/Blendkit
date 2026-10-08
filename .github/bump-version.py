@@ -5,7 +5,6 @@ import re
 from datetime import date, datetime, timezone
 from pathlib import Path
 
-
 TUPLE_VERSION = r"\d+,\s*\d+,\s*\d+,\s*\d{1,6}"
 BL_INFO_PATTERN = rf'^[ \t]*"version":\s*\((?P<value>{TUPLE_VERSION})\)'
 VERSION_PATTERN = rf"^VERSION\s*=\s*\((?P<value>{TUPLE_VERSION})\)"

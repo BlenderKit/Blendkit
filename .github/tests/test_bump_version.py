@@ -6,7 +6,6 @@ import unittest
 from datetime import date
 from pathlib import Path
 
-
 SCRIPT = Path(__file__).resolve().parents[1] / "bump-version.py"
 SPEC = importlib.util.spec_from_file_location("bump_version", SCRIPT)
 assert SPEC is not None and SPEC.loader is not None
