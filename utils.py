@@ -2004,7 +2004,7 @@ def check_globaldir_permissions():
     """
     global_dir = bpy.context.preferences.addons[__package__].preferences.global_dir
     global_dir = os.path.normpath(bpy.path.abspath(global_dir))
-    ok, message = _check_dir_permissions(global_dir, "Global directory")
+    ok, message = check_dir_permissions(global_dir, "Global directory")
     if ok:
         bk_logger.info("Global dir permissions are OK: %s", global_dir)
     else:
@@ -2012,7 +2012,7 @@ def check_globaldir_permissions():
     return ok, message
 
 
-def _check_dir_permissions(dir_path, dir_label="Directory"):
+def check_dir_permissions(dir_path, dir_label="Directory"):
     """Check if a directory path is valid, writable and usable for storing assets.
 
     Returns:
@@ -2080,7 +2080,7 @@ def try_recover_global_dir():
     if current_dir == default_dir_norm:
         return False  # already at default and it's still broken
 
-    ok, message = _check_dir_permissions(default_dir, "Default directory")
+    ok, message = check_dir_permissions(default_dir, "Default directory")
     if not ok:
         bk_logger.error("Default directory also not writable: %s", message)
         return False

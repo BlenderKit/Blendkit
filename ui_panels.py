@@ -316,7 +316,7 @@ class BLENDERKIT_OT_permissions_error_popup(bpy.types.Operator):
         # Check if path is already fixed (e.g. user clicked Set Default Folder)
         current_dir = context.preferences.addons[__package__].preferences.global_dir
         current_dir = os.path.normpath(bpy.path.abspath(current_dir))
-        current_ok, _ = utils._check_dir_permissions(current_dir, "Global directory")
+        current_ok, _ = utils.check_dir_permissions(current_dir, "Global directory")
         if not current_ok:
             bpy.ops.preferences.addon_show(module=__package__)
         return {"FINISHED"}
@@ -401,7 +401,7 @@ class BLENDERKIT_OT_set_default_directory(bpy.types.Operator):
 
     def execute(self, context):
         default_dir = paths.default_global_dict()
-        ok, message = utils._check_dir_permissions(default_dir, "Default directory")
+        ok, message = utils.check_dir_permissions(default_dir, "Default directory")
         if not ok:
             self.report({"ERROR"}, f"Default folder is not writable: {message}")
             return {"CANCELLED"}
