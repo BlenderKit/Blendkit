@@ -209,4 +209,4 @@ done
 echo "How to use the environment:"
 echo "  pdm shell                     # activate the venv"
 echo "  pdm run python -V             # run python from the venv"
-echo "  pdm run black .               # run tools from the venv"
+echo "  pdm run python dev.py format  # sort imports and format with Ruff"

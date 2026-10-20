@@ -1487,7 +1487,7 @@ class BlenderKitModelUploadProps(PropertyGroup, BlenderKitCommonUploadProps):
 
     thumbnail: StringProperty(
         name="Thumbnail",
-        description="Thumbnail path - 512x512 .jpg\n" "Rendered with cycles",
+        description="Thumbnail path - 512x512 .jpg\nRendered with cycles",
         subtype="FILE_PATH",
         default="",
         update=autothumb.update_upload_model_preview,
@@ -1762,7 +1762,7 @@ class BlenderKitSceneUploadProps(PropertyGroup, BlenderKitCommonUploadProps):
 
     thumbnail: StringProperty(
         name="Thumbnail",
-        description="Thumbnail path - 512x512 .jpg\n" "Rendered with cycles",
+        description="Thumbnail path - 512x512 .jpg\nRendered with cycles",
         subtype="FILE_PATH",
         default="",
         update=autothumb.update_upload_scene_preview,

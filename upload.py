@@ -22,21 +22,20 @@ import os
 import re
 import subprocess
 import sys
-import requests
 import tempfile
 from pathlib import Path
-from typing import Optional, Any
+from typing import Any, Optional
 
 import bpy
+import requests
 from bpy.props import (  # TODO only keep the ones actually used when cleaning
-    IntProperty,
     BoolProperty,
     EnumProperty,
+    IntProperty,
     StringProperty,
 )
 from bpy.types import Operator
 
-from .asset_bar import asset_bar_op
 from . import (
     asset_inspector,
     autothumb,
@@ -48,10 +47,12 @@ from . import (
     overrides,
     paths,
     reports,
+    search,
     ui_panels,
     utils,
-    search,
 )
+from .asset_bar import asset_bar_op
+
 
 NAME_MINIMUM = 3
 NAME_MAXIMUM = 40
@@ -194,7 +195,7 @@ def check_missing_data(asset_type, props, upload_set):
     if props.name == "":
         write_to_report(
             props,
-            "A name is required.\n" "   Please provide a name for your asset.",
+            "A name is required.\n   Please provide a name for your asset.",
         )
     elif len(props.name) < NAME_MINIMUM:
         write_to_report(
@@ -1616,10 +1617,14 @@ class UploadOperator(Operator):
     thumbnail: BoolProperty(name="thumbnail", default=False, options={"SKIP_SAVE"})  # type: ignore[valid-type]
 
     # Add new property for photo thumbnail
-    photo_thumbnail: BoolProperty(name="photo thumbnail", default=False, options={"SKIP_SAVE"})  # type: ignore[valid-type]
+    photo_thumbnail: BoolProperty(
+        name="photo thumbnail", default=False, options={"SKIP_SAVE"}
+    )  # type: ignore[valid-type]
 
     # Add new property for wire thumbnail
-    wire_thumbnail: BoolProperty(name="wire thumbnail", default=False, options={"SKIP_SAVE"})  # type: ignore[valid-type]
+    wire_thumbnail: BoolProperty(
+        name="wire thumbnail", default=False, options={"SKIP_SAVE"}
+    )  # type: ignore[valid-type]
 
     main_file: BoolProperty(name="main file", default=False, options={"SKIP_SAVE"})  # type: ignore[valid-type]
 
@@ -1994,14 +1999,16 @@ def handle_asset_metadata_upload(task: client_tasks.Task):
     return reports.add_report("Metadata upload successful")
 
 
-def patch_individual_parameter(asset_id="", param_name="", param_value="", api_key=""):
+def patch_individual_parameter(
+    asset_id: str = "", param_name: str = "", param_value: str = "", api_key: str = ""
+):
     """Changes individual parameter in the parameters dictionary of the assets.
 
     Args:
-        asset_id (str): ID of the asset to update
-        param_name (str): Name of the parameter to update
-        param_value (str): New value for the parameter
-        api_key (str): Blendkit API key
+        asset_id: ID of the asset to update
+        param_name: Name of the parameter to update
+        param_value: New value for the parameter
+        api_key: Blendkit API key
 
     Returns:
         bool: True if successful, False otherwise
@@ -2049,20 +2056,20 @@ def mark_for_thumbnail(
     markThumbnailRender parameter of the asset. Only non-None parameters will be included.
 
     Args:
-        asset_id (str): The ID of the asset to update
-        api_key (str): Blendkit API key
-        use_gpu (bool, optional): Use GPU for rendering
-        samples (int, optional): Number of render samples
-        resolution (int, optional): Resolution of render
-        denoising (bool, optional): Use denoising
-        background_lightness (float, optional): Background lightness (0-1)
-        angle (str, optional): Camera angle for models (DEFAULT, FRONT, SIDE, TOP)
-        snap_to (str, optional): Object placement for models (GROUND, WALL, CEILING, FLOAT)
-        thumbnail_type (str, optional): Type of material preview (BALL, BALL_COMPLEX, FLUID, CLOTH, HAIR)
-        thumbnail_render_engine (str, optional): Render engine for materials (CYCLES, EEVEE)
-        scale (float, optional): Scale of preview object for materials
-        background (bool, optional): Use background for transparent materials
-        adaptive_subdivision (bool, optional): Use adaptive subdivision for materials
+        asset_id: The ID of the asset to update
+        api_key: Blendkit API key
+        use_gpu: Use GPU for rendering, or leave unchanged if None
+        samples: Number of render samples, or leave unchanged if None
+        resolution: Resolution of render, or leave unchanged if None
+        denoising: Use denoising, or leave unchanged if None
+        background_lightness: Background lightness (0-1), or leave unchanged if None
+        angle: Camera angle for models (DEFAULT, FRONT, SIDE, TOP)
+        snap_to: Object placement for models (GROUND, WALL, CEILING, FLOAT)
+        thumbnail_type: Type of material preview (BALL, BALL_COMPLEX, FLUID, CLOTH, HAIR)
+        thumbnail_render_engine: Render engine for materials (CYCLES, EEVEE)
+        scale: Scale of preview object for materials
+        background: Use background for transparent materials
+        adaptive_subdivision: Use adaptive subdivision for materials
 
     Returns:
         bool: True if successful, False otherwise

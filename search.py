@@ -26,14 +26,13 @@ import shutil
 import unicodedata
 import urllib.parse
 import uuid
-from typing import Optional, Union
+from typing import Any, Optional, Union
 
 import bpy
 from bpy.app.handlers import persistent
 from bpy.props import BoolProperty, StringProperty
 from bpy.types import Operator
 
-from .asset_bar import asset_bar_op
 from . import (
     categories,
     client_lib,
@@ -46,12 +45,14 @@ from . import (
     image_utils,
     paths,
     reports,
-    search_price,
     resolutions,
+    search_price,
     tasks_queue,
     ui_bgl,
     utils,
 )
+from .asset_bar import asset_bar_op
+
 
 if bpy.app.version >= (4, 2, 0):
     from . import override_extension_draw
@@ -1044,9 +1045,9 @@ def persist_prxc_after_asset_download(asset_data: dict) -> None:
 
     persistent_path = _copy_prxc_to_asset_dir(asset_base_id, src_path)
     if persistent_path:
-        global_vars.DATA.setdefault("prxc available", {})[
-            asset_base_id
-        ] = persistent_path
+        global_vars.DATA.setdefault("prxc available", {})[asset_base_id] = (
+            persistent_path
+        )
         bk_logger.debug(
             f"prxc persisted after asset download for {asset_base_id}: {persistent_path}"
         )
@@ -1663,7 +1664,9 @@ def build_query_author(props, ui_props) -> dict:
     return query
 
 
-def filter_addon_search_results(search_results, filter_installed_only=False):
+def filter_addon_search_results(
+    search_results: list[dict[str, Any]], filter_installed_only: bool = False
+):
     """
     Filter addon search results based on local installation status.
     This is called after search results arrive since installation info isn't stored on server.

@@ -1,12 +1,12 @@
+from contextlib import contextmanager
+from typing import Union
+
 import blf
 import bpy
 import gpu
 from gpu_extras.batch import batch_for_shader
 
 from .. import ui_bgl
-
-from contextlib import contextmanager
-from typing import Union
 
 
 def clamp(value, min_value=0.0, max_value=1.0):

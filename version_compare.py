@@ -67,8 +67,12 @@ def version_eq(v1, v2):
     return Version(v1) == Version(v2)
 
 
-def compare_versions(v1, v2):
+def compare_versions(v1: str, v2: str):
     """Compare two version strings.
+
+    Args:
+        v1: First version string.
+        v2: Second version string.
 
     Returns:
         -1 if v1 < v2

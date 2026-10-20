@@ -18,7 +18,6 @@
 
 from __future__ import annotations
 
-import addon_utils  # type: ignore
 import copy
 import json
 import logging
@@ -27,6 +26,8 @@ import shutil
 import time
 from typing import Any, Optional
 
+import addon_utils  # type: ignore
+import bpy  # type: ignore
 import requests
 
 from . import (
@@ -43,7 +44,6 @@ from . import (
     utils,
 )
 
-import bpy  # type: ignore
 
 if bpy.app.version >= (4, 2, 0):
     from . import override_extension_draw
@@ -51,11 +51,12 @@ from bpy.app.handlers import persistent  # type: ignore
 from bpy.props import (  # type: ignore
     BoolProperty,
     EnumProperty,
-    FloatVectorProperty,
     FloatProperty,
+    FloatVectorProperty,
     IntProperty,
     StringProperty,
 )
+
 
 bk_logger = logging.getLogger(__name__)
 
@@ -90,6 +91,9 @@ def get_blenderkit_repository() -> tuple[Optional[Any], int]:
 
 def get_addon_installation_status(asset_data: dict[str, Any]) -> dict[str, Any]:
     """Get the installation and enablement status of an addon.
+
+    Args:
+        asset_data: Asset metadata containing the extension identifier.
 
     Returns:
         dict: {
@@ -263,6 +267,10 @@ def install_addon_from_local_file(
         asset_data: Asset metadata dictionary
         file_path: Path to the downloaded zip file
         enable_on_install: If True, enable the addon after installation (default: True)
+
+    Raises:
+        Exception: If Blender is unsupported, the file or repository is missing,
+            or installation fails or cannot be verified.
     """
 
     addon_name = asset_data.get("name", "Unknown Addon")
@@ -2547,7 +2555,6 @@ class BlenderkitDownloadOperator(bpy.types.Operator):
 
         # Handle addon assets with popup
         if asset_type == "addon":
-
             bpy.ops.scene.blenderkit_addon_choice(
                 "INVOKE_DEFAULT", asset_data=json.dumps(self.asset_data)
             )

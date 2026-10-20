@@ -20,6 +20,7 @@ import types
 import unittest
 from unittest import mock
 
+
 if __package__:
     __package__ = __package__.rsplit(".tests", 1)[0]
 from . import client_tasks, datas, global_vars, ratings, ratings_utils, timer

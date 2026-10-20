@@ -7,18 +7,19 @@ The original method is then called from the new method, with the same arguments,
 """
 
 import json
-import os
-import time
-import re
 import logging
+import os
+import re
+import time
+
+import bl_pkg.bl_extension_ui as exui
+import blf
+import bpy
+from bpy.props import IntProperty, StringProperty
+from bpy.types import Operator
 
 from . import icons, version_compare
 
-import blf
-import bpy
-import bl_pkg.bl_extension_ui as exui
-from bpy.props import IntProperty, StringProperty
-from bpy.types import Operator
 
 EXTENSIONS_API_URL = "https://www.blendkit.com/api/v1/extensions/"
 # Legacy repository URL used before the rename from BlenderKit to Blendkit.
@@ -738,9 +739,8 @@ def ensure_repo_cache():
         return False
 
     elif (
-        cache_key in wm and (stored_mtime is None or stored_mtime != current_mtime)
-    ) or (
-        cache_key not in wm and current_mtime is not None
+        (cache_key in wm and (stored_mtime is None or stored_mtime != current_mtime))
+        or (cache_key not in wm and current_mtime is not None)
     ):  # Reload if cache exists and is outdated, OR if cache doesn't exist but file does
         should_reload = True  # Cache exists but is outdated or missing mtime.
 
@@ -842,7 +842,6 @@ def ensure_repo_order():
     remove_online_repos = []
     for r in all_repos:
         if r.remote_url != EXTENSIONS_API_URL and r.remote_url != "":
-
             repo_dict = {
                 "name": r.name,
                 "module": r.module,
@@ -968,7 +967,6 @@ def ensure_repository(api_key: str = ""):
     blenderkit_repository = get_repository_by_url(EXTENSIONS_API_URL)
 
     if blenderkit_repository is None:
-
         blenderkit_repository = bpy.context.preferences.extensions.repos.new()
         blenderkit_repository.name = "www.blenderkit.com"
         blenderkit_repository.module = "www_blenderkit_com"

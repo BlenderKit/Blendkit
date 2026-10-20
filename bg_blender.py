@@ -25,7 +25,7 @@ import threading
 import bpy
 from bpy.props import EnumProperty
 
-from . import utils, reports
+from . import reports, utils
 
 
 def _safe_eval_target(eval_path: str, name: str):
@@ -85,9 +85,7 @@ def threadread(tcom: ThreadCom):
             continue
         # Background Blender already formats logs; strip a leading emoji/prefix to avoid double branding.
         line = inline.strip()
-        line = re.sub(
-            r"^(?:[🐞ℹ️⚠️❌🔥]\s*)?blendkit:\s*", "", line, flags=re.IGNORECASE
-        )
+        line = re.sub(r"^(?:[🐞ℹ️⚠️❌🔥]\s*)?blendkit:\s*", "", line, flags=re.IGNORECASE)
         bk_logger.info(line)
         progress = re.findall(r"progress\{(.*?)\}", inline)
         if len(progress) > 0:

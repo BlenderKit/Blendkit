@@ -19,11 +19,16 @@
 
 import logging
 import uuid
-from typing import Optional
+from typing import TYPE_CHECKING, Optional, Sequence
+
+
+if TYPE_CHECKING:
+    from mathutils import Euler, Vector
 
 import bpy
 
-from . import utils, reports
+from . import reports, utils
+
 
 bk_logger = logging.getLogger(__name__)
 
@@ -115,17 +120,17 @@ def append_brush(file_name, brushname=None, link=False, fake_user=True):
 
 
 def append_nodegroup(
-    file_name,
-    nodegroupname=None,
-    link=False,
-    fake_user=True,
-    node_x=0,
-    node_y=0,
-    target_object=None,
-    nodegroup_mode="",
-    model_location=(0, 0, 0),
-    model_rotation=(0, 0, 0),
-    **kwargs,
+    file_name: str,
+    nodegroupname: Optional[str] = None,
+    link: bool = False,
+    fake_user: bool = True,
+    node_x: float = 0,
+    node_y: float = 0,
+    target_object: Optional[str] = None,
+    nodegroup_mode: str = "",
+    model_location: "Sequence[float] | Vector" = (0, 0, 0),
+    model_rotation: "Sequence[float] | Euler | Vector" = (0, 0, 0),
+    **kwargs: object,
 ):
     """Append selected node group. If nodegroupname is None, first node group is appended.
     If node group with the same name is already in the scene, it is not appended again.
@@ -143,9 +148,13 @@ def append_nodegroup(
         nodegroup_mode: How to add the nodegroup - "MODIFIER" for new modifier, "NODE" for node in editor, "" for default behavior
         model_location: Location for the target object (used when creating new target)
         model_rotation: Rotation for the target object (used when creating new target)
+        **kwargs: Additional compatibility arguments; currently unused.
 
     Returns:
         tuple: (nodegroup, added_to_editor) - The nodegroup and whether it was added to an editor
+
+    Raises:
+        KeyError: If no node group can be loaded from the blend file.
     """
     nodegroups_before = set(bpy.data.node_groups[:])
     with bpy.data.libraries.load(file_name, link=link, relative=True) as (
@@ -550,7 +559,8 @@ def link_collection(
         if target_collection:
             # Find and activate the layer collection
             layer_collection = find_layer_collection(
-                bpy.context.view_layer.layer_collection, collection  # type: ignore[union-attr]
+                bpy.context.view_layer.layer_collection,
+                collection,  # type: ignore[union-attr]
             )
             if layer_collection:
                 bpy.context.view_layer.active_layer_collection = layer_collection  # type: ignore[union-attr]
@@ -703,7 +713,8 @@ def append_objects(
             if target_collection:
                 # Find and activate the layer collection
                 layer_collection = find_layer_collection(
-                    bpy.context.view_layer.layer_collection, collection  # type: ignore[union-attr]
+                    bpy.context.view_layer.layer_collection,
+                    collection,  # type: ignore[union-attr]
                 )
                 if layer_collection:
                     bpy.context.view_layer.active_layer_collection = layer_collection  # type: ignore[union-attr]
@@ -778,9 +789,9 @@ def append_objects(
                 else:
                     to_hidden_collection.append(ob)
 
-        assert (
-            main_object != None
-        ), f"asset {kwargs['name']} not found in scene after appending"
+        assert main_object != None, (
+            f"asset {kwargs['name']} not found in scene after appending"
+        )
         if kwargs.get("rotation"):
             main_object.rotation_euler = kwargs["rotation"]
 

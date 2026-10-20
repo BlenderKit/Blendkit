@@ -10,76 +10,62 @@ dependencies = [
 [dependency-groups]
 dev = [
     ## dev dependencies
-    "black~=26.10",
-    "isort~=7.0",
+    "ruff==0.15.6",
+    "pydoclint==0.8.3",
     "mypy==1.13.0",
 
     ## I would like to enable these in the future
     "bandit>=1.9.4", # code is currently invalid for bandit
-    "ruff>=0.15.6", # code is currently invalid for ruff
-    "pydoclint>=0.8.3", # code is currently invalid for pydoclint
 ]
-
-[tool.isort]
-multi_line_output = 3
-lines_after_imports = 2
-skip = ["lib", "out", ".venv"]
-profile = "black"
-exclude = ["lib", "out", ".venv", "bk_client", "bk_proxor"]
-
-[tool.black]
-target-version = ['py310']
-include = '\.pyi?$'
-exclude = '''
-/(\.git|\.venv|lib|out|client|bk_client|bk_proxor)/
-'''
 
 [tool.ruff]
+required-version = "==0.15.6"
 target-version = "py310"
-line-length = 120
-include = ["pyproject.toml",
-    "**/*.py",
-    "*.py"
-    ]
+line-length = 88
+force-exclude = true
 exclude = [
+  ".bzr",
+  ".direnv",
+  ".eggs",
+  ".git",
+  ".git-rewrite",
+  ".hg",
+  ".mypy_cache",
+  ".nox",
+  ".pants.d",
+  ".pytype",
+  ".ruff_cache",
+  ".svn",
+  ".tox",
+  ".venv",
+  "__pypackages__",
+  "_build",
+  "buck-out",
+  "dist",
+  "node_modules",
+  "venv",
+]
+extend-exclude = [
   "lib",
   "out",
-  "addon_updater.py",
-  "addon_updater_ops.py",
-  "_debug/**",
-  "_bck/**",
+    "client",
+    "**/_bck/**",
   "*.tmp",
-  "__pycache__/**",
-  ".venv/**",
-  "*.pyi",
-  "sentry_sdk",
   "bk_client",
   "bk_proxor",
-]
-ignore = [
-    "E501", # Line too long
 ]
 
 [tool.ruff.format]
 line-ending = "auto"
 
 [tool.ruff.lint]
-select = ["F", "E", "W", "C90", "I", "N", "D", "UP", "S1", "S2", "S3", "S5", "BLE", "FBT",
-    "B", "A", "C4", "COM", "DTZ", "T10", "FA", "ISC", "ICN", "LOG", "G", "INP", "PIE", "T20", "Q", "RSE", "RET", "SLF",
-    "SLOT", "SIM", "TID",
-    "TC001", "TC004", "TC005", "TC010",
-    "INT", "ARG", "FIX", "ERA", "PL", "TRY", "FLY", "PERF", "RUF"
-]
+select = ["I"]
 
-ignore = [
-    "D105", # https://docs.astral.sh/ruff/rules/undocumented-magic-method/
-    "D107", # https://docs.astral.sh/ruff/rules/undocumented-public-init/
-    "PLC0415", # https://docs.astral.sh/ruff/rules/import-outside-top-level/
-    "RET504", # https://docs.astral.sh/ruff/rules/unnecessary-assign/
-]
+[tool.ruff.lint.per-file-ignores]
+"./__init__.py" = ["I001"]
 
-[tool.ruff.lint.pydocstyle]
-convention = "google"
+[tool.ruff.lint.isort]
+lines-after-imports = 2
 
 
 [tool.mypy]
@@ -105,4 +91,4 @@ arg-type-hints-in-docstring = false
 check-return-types = false
 ignore-private-args = true
 ignore-underscore-args = true
-exclude = "\\.venv|\\sentry_sdk"
+exclude = '(^|[\\/])(\.venv|venv|lib|out|client|bk_client|bk_proxor|_debug|_bck|__pycache__|\.git)([\\/]|$)'

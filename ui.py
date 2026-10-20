@@ -33,6 +33,7 @@ from . import (
     utils,
 )
 
+
 draw_time = 0
 eval_time = 0
 
@@ -127,12 +128,12 @@ def get_large_thumbnail_image(asset_data):
     return img
 
 
-def get_full_thumbnail_variant(asset_data, variant: str):
+def get_full_thumbnail_variant(asset_data: dict[str, Any], variant: str):
     """Get full thumbnail variant from asset data.
 
     Args:
         asset_data: The asset data dictionary.
-        variant (str): The variant type to retrieve ('photo' or 'wire').
+        variant: The variant type to retrieve ('photo' or 'wire').
     Returns:
         The Blender image object for the requested variant, or None if not found.
     """

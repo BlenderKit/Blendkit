@@ -1,10 +1,11 @@
-import os
 import logging
+import os
 
 import gpu
 
 from .. import image_utils, ui_bgl
 from .bl_ui_widget import BL_UI_Widget
+
 
 bk_logger = logging.getLogger(__name__)
 

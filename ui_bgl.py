@@ -16,23 +16,22 @@
 #
 # ##### END GPL LICENSE BLOCK #####
 
-import os
 import logging
+import math
+import os
 from collections.abc import Mapping
 from contextlib import contextmanager, suppress
 from typing import Optional, Tuple, Union
-import math
-
-from mathutils import Matrix, Vector
 
 import blf
 import bpy
-from bpy import app
-
 import gpu
+from bpy import app
 from gpu_extras.batch import batch_for_shader
+from mathutils import Matrix, Vector
 
 from .image_utils import IMG
+
 
 bk_logger = logging.getLogger(__name__)
 
@@ -703,6 +702,18 @@ def draw_image_runtime(
 
     Supports optional rounded corner clipping by supplying ``corner_radius``.
 
+    Args:
+        x: Horizontal drawing position.
+        y: Vertical drawing position.
+        width: Width of the image in pixels.
+        height: Height of the image in pixels.
+        image: Image or image descriptor to draw.
+        transparency: Opacity multiplier for the image.
+        crop: Normalized texture coordinates defining the visible image region.
+        batch: Existing GPU batch to reuse, or None to build or retrieve one.
+        corner_radius: Rounded-corner radius specification, or None for square corners.
+        corner_segments: Number of segments used to approximate each rounded corner.
+
     Returns:
         The batch object if successful, or None if the image is invalid.
     """
@@ -891,6 +902,9 @@ def path_to_gpu_texture(path: str) -> Optional[gpu.types.GPUTexture]:
     upload the image's full-resolution pixels into an RGBA16F texture, bypassing
     the clamp so previews stay sharp. Colour matches: image.pixels are already
     linear-decoded, exactly what the draw shader expects.
+
+    Args:
+        path: Filesystem path of the image to load or retrieve from the texture cache.
 
     Returns:
         The GPU texture if successful, or None if the image is invalid.

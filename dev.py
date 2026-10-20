@@ -23,9 +23,11 @@ import os
 import re
 import shutil
 import subprocess
+import sys
 import tempfile
 import urllib.request
 import zipfile
+
 
 CLIENT_REPO = "BlenderKit/bk_client"
 
@@ -391,7 +393,6 @@ def do_build(
 
     # Handle multiple install locations
     if install_at is not None:
-
         for location in install_at:
             print(f"Copying to {location}/blenderkit")
             shutil.rmtree(f"{location}/blenderkit", ignore_errors=True)
@@ -468,12 +469,37 @@ def run_go_tests():
 
 
 def format_code():
-    """Sort, format and lint the code."""
+    """Sort imports and format the code with Ruff."""
+    workspace_root = os.path.dirname(os.path.abspath(__file__))
     print("***** SORTING IMPORTS on ALL files *****")
-    subprocess.call(["isort", "."])
+    subprocess.run(
+        [sys.executable, "-m", "ruff", "check", ".", "--fix"],
+        cwd=workspace_root,
+        check=True,
+    )
 
     print("\n***** FORMATTING CODE on ALL files *****")
-    subprocess.call(["black", "."])
+    subprocess.run(
+        [sys.executable, "-m", "ruff", "format", "."],
+        cwd=workspace_root,
+        check=True,
+    )
+
+
+def lint_code():
+    """Check imports, formatting, and docstrings without modifying files."""
+    workspace_root = os.path.dirname(os.path.abspath(__file__))
+    for module, arguments in (
+        ("ruff", ["check", "."]),
+        ("ruff", ["format", ".", "--check", "--diff"]),
+        ("pydoclint.main", ["--quiet", "."]),
+    ):
+        print(f"***** CHECKING {module} {' '.join(arguments)} *****", flush=True)
+        subprocess.run(
+            [sys.executable, "-m", module, *arguments],
+            cwd=workspace_root,
+            check=True,
+        )
 
 
 ### COMMAND LINE INTERFACE
@@ -484,9 +510,10 @@ def main():
     parser.add_argument(
         "command",
         default="build",
-        choices=["format", "build", "test", "release"],
+        choices=["format", "lint", "build", "test", "release"],
         help="""
-  FORMAT = isort imports, format code with Black and lint it with Ruff.
+    FORMAT = sort imports and format code with Ruff.
+    LINT = check imports, formatting, and docstrings with Ruff and pydoclint.
   TEST = build with test files and run tests
   BUILD = copy relevant files into ./out/blenderkit.
   RELEASE = build the add-on .zip (Client from the pinned GitHub release by default).
@@ -557,6 +584,8 @@ def main():
         run_tests(args)
     elif args.command == "format":
         format_code()
+    elif args.command == "lint":
+        lint_code()
     else:
         parser.print_help()
 

@@ -23,11 +23,13 @@ import unittest
 
 import bpy
 
+
 for addon in bpy.context.preferences.addons:
     if "blenderkit" in addon.module:
         __package__ = addon.module
         break
 from . import datas, global_vars, rating_nudge, utils
+
 
 DAY = rating_nudge.DAY
 
@@ -61,8 +63,8 @@ class RatingNudgeTest(unittest.TestCase):
         self._orig_logged_in = utils.user_logged_in
         self._orig_is_owner = utils.user_is_owner
         utils.user_logged_in = lambda: True
-        utils.user_is_owner = (
-            lambda asset_data=None: bool(asset_data)
+        utils.user_is_owner = lambda asset_data=None: (
+            bool(asset_data)
             and int(asset_data.get("author", {}).get("id", -2))
             == global_vars.BKIT_PROFILE.id
         )

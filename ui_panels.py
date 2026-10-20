@@ -25,7 +25,7 @@ import platform
 import random
 import sys
 import time
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from urllib.parse import quote
 from webbrowser import open_new_tab
 
@@ -40,7 +40,6 @@ from bpy.props import (
 )
 from bpy.types import Context, Menu, Panel, UILayout
 
-from .asset_bar import asset_bar_op
 from . import (
     addon_updater_ops,
     autothumb,
@@ -62,6 +61,12 @@ from . import (
     upload,
     utils,
 )
+from .asset_bar import asset_bar_op
+
+
+if TYPE_CHECKING:
+    from . import BlenderKitUIProps
+
 
 ACCEPTABLE_ENGINES = ("CYCLES", "BLENDER_EEVEE", "BLENDER_EEVEE_NEXT")
 
@@ -600,7 +605,7 @@ def draw_panel_nodegroup_search(self, context):
     utils.label_multiline(layout, text=props.report)
 
 
-def draw_common_filters(layout, ui_props):
+def draw_common_filters(layout: UILayout, ui_props: BlenderKitUIProps):
     """Draw common filter elements shared by multiple asset type panels.
 
     Args:
@@ -798,9 +803,9 @@ def draw_panel_model_search(self, context):
         icon = "ERROR"
     utils.label_multiline(layout, text=props.report, icon=icon)
     if props.report == "You need Full plan to get this item.":
-        layout.operator("wm.url_open", text="Get Full plan", icon="URL").url = (
-            paths.url_with_utm(paths.BLENDKIT_PLANS_URL, "premium_wall_panel")
-        )
+        layout.operator(
+            "wm.url_open", text="Get Full plan", icon="URL"
+        ).url = paths.url_with_utm(paths.BLENDKIT_PLANS_URL, "premium_wall_panel")
 
 
 def draw_panel_printable_search(self, context):
@@ -817,9 +822,9 @@ def draw_panel_printable_search(self, context):
         icon = "ERROR"
     utils.label_multiline(layout, text=props.report, icon=icon)
     if props.report == "You need Full plan to get this item.":
-        layout.operator("wm.url_open", text="Get Full plan", icon="URL").url = (
-            paths.url_with_utm(paths.BLENDKIT_PLANS_URL, "premium_wall_panel")
-        )
+        layout.operator(
+            "wm.url_open", text="Get Full plan", icon="URL"
+        ).url = paths.url_with_utm(paths.BLENDKIT_PLANS_URL, "premium_wall_panel")
 
 
 def draw_panel_scene_search(self, context):
@@ -1108,8 +1113,10 @@ class VIEW3D_PT_blenderkit_profile(Panel):
                     row.label(text=f"Remaining:")
                     row.label(text=size_str)
 
-            layout.operator("wm.url_open", text="See my uploads", icon="URL").url = (
-                paths.url_with_utm(paths.BLENDKIT_USER_ASSETS_URL, "profile_my_uploads")
+            layout.operator(
+                "wm.url_open", text="See my uploads", icon="URL"
+            ).url = paths.url_with_utm(
+                paths.BLENDKIT_USER_ASSETS_URL, "profile_my_uploads"
             )
 
         draw_login_buttons(layout)
@@ -2672,7 +2679,7 @@ def draw_asset_context_menu(
         and asset_data["verificationStatus"] != "validated"
     ):
         op.url = paths.url_with_utm(
-            f'{paths.BLENDKIT_USER_ASSETS_URL}/{asset_data["assetBaseId"]}/?preview#',
+            f"{paths.BLENDKIT_USER_ASSETS_URL}/{asset_data['assetBaseId']}/?preview#",
             "uploads_preview",
         )
     else:
@@ -2819,7 +2826,7 @@ def draw_asset_context_menu(
                 icon="GREASEPENCIL",
             )
             op.url = paths.url_with_utm(
-                f'{paths.BLENDKIT_USER_ASSETS_URL}/{asset_data["assetBaseId"]}/?edit#',
+                f"{paths.BLENDKIT_USER_ASSETS_URL}/{asset_data['assetBaseId']}/?edit#",
                 "uploads_edit",
             )
 
@@ -2859,7 +2866,7 @@ def draw_asset_context_menu(
             text="Edit Asset Online",
             icon="GREASEPENCIL",
         )
-        op.url = f'{paths.BLENDKIT_ASSETS_EDIT_URL}/{asset_data["assetBaseId"]}/'
+        op.url = f"{paths.BLENDKIT_ASSETS_EDIT_URL}/{asset_data['assetBaseId']}/"
 
         # output asset debug info to console, for easier diagnostics
         op = layout.operator(
@@ -3309,7 +3316,6 @@ class AssetPopupCard(bpy.types.Operator, ratings_utils.RatingProperties):
 
         # Special pricing display for addons
         if self.asset_data.get("assetType") == "addon":
-
             can_download = self.asset_data.get("canDownload")
             is_free = self.asset_data.get("isFree")
 
@@ -4025,7 +4031,7 @@ class AssetPopupCard(bpy.types.Operator, ratings_utils.RatingProperties):
             split = split.split()
             row.alert = False
             op = row.operator("wm.url_open", text="", icon="GREASEPENCIL")
-            op.url = f'{global_vars.SERVER}/bksecretadmin/django_comments_xtd/xtdcomment/{comment["id"]}/change/'  # type: ignore
+            op.url = f"{global_vars.SERVER}/bksecretadmin/django_comments_xtd/xtdcomment/{comment['id']}/change/"  # type: ignore
 
         if utils.user_logged_in():
             # row = rows[-1]
@@ -4865,7 +4871,6 @@ class NodegroupDropDialog(bpy.types.Operator):
 
         # Handle modifier overwrite if requested
         if self.add_mode == "MODIFIER" and self.overwrite_modifier and target_object:
-
             target_obj = bpy.data.objects.get(target_object)
             if target_obj:
                 existing_geo_modifiers = self.get_existing_geometry_modifiers(

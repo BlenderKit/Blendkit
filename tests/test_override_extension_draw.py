@@ -22,6 +22,7 @@ from unittest.mock import patch
 
 import bpy
 
+
 # ``test.py`` imports this as ``<addon>.tests.<name>``; strip ``.tests`` so
 # ``__package__`` is the add-on's own module - needed by the relative imports.
 if __package__:

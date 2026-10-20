@@ -160,15 +160,17 @@
 
 
         {
-            "name": "[BLACK] Run black on all",
+            "name": "[RUFF] Check formatting",
             "type": "debugpy",
             "request": "launch",
-            "module": "black",
+            "module": "ruff",
             "args": [
+                "format",
                 ".",
                 "--check", "--diff",
             ],
             "console": "integratedTerminal",
+            "cwd": "${workspaceFolder}",
             "windows": {
                 "python": "${workspaceFolder}/.venv/Scripts/python.exe",
             },
@@ -181,10 +183,10 @@
         },
 
         {
-            "name": "[BLACK] Run black on git changed files",
+            "name": "[RUFF] Check git changed files",
             "type": "debugpy",
             "request": "launch",
-            "program": "${workspaceFolder}/.vscode/black_git_changed.py",
+            "program": "${workspaceFolder}/.vscode/ruff_git_changed.py",
             "args": [],
             "console": "integratedTerminal",
             "cwd": "${workspaceFolder}",
@@ -262,7 +264,7 @@
         },
 
         {
-            "name": "[FUTURE][RUFF] Check All",
+            "name": "[RUFF] Check imports",
             "type": "debugpy",
             "request": "launch",
             "module": "ruff",
@@ -338,21 +340,22 @@
         },
 
         {
-            "name": "[FUTURE][PYDOCS] Check All",
-            "type": "node",
+            "name": "[PYDOCS] Check All",
+            "type": "debugpy",
             "request": "launch",
-            "args": ["."],
+            "module": "pydoclint.main",
+            "args": ["--quiet", "."],
             "console": "integratedTerminal",
             "cwd": "${workspaceFolder}",
 
             "windows": {
-                "runtimeExecutable": "${workspaceFolder}/.venv/Scripts/pydoclint.exe",
+                "python": "${workspaceFolder}/.venv/Scripts/python.exe",
             },
             "linux": {
-                "runtimeExecutable": "${workspaceFolder}/.venv/bin/pydoclint",
+                "python": "${workspaceFolder}/.venv/bin/python",
             },
             "osx": {
-                "runtimeExecutable": "${workspaceFolder}/.venv/bin/pydoclint",
+                "python": "${workspaceFolder}/.venv/bin/python",
             }
         },
 

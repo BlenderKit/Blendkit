@@ -26,6 +26,7 @@ import sys
 
 import bpy
 
+
 bk_logger = logging.getLogger(__name__)
 
 # Top-level addon package - used to look up addon preferences.

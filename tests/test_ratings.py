@@ -23,11 +23,13 @@ from unittest import mock
 import bpy
 from mathutils import Vector
 
+
 # ``test.py`` imports this as ``<addon>.tests.<name>``; strip ``.tests`` so
 # ``__package__`` is the add-on's own module for the relative import below.
 if __package__:
     __package__ = __package__.rsplit(".tests", 1)[0]
 from . import ratings, utils
+
 
 ASSET_DATA = {"id": "abc123", "assetType": "model", "name": "Test Asset"}
 

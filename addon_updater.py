@@ -27,9 +27,9 @@ __version__ = "1.1.1"
 import errno
 import fnmatch
 import json
+import logging
 import os
 import platform
-import logging
 import shutil
 import ssl
 import threading
@@ -38,6 +38,7 @@ import urllib
 import urllib.request
 import zipfile
 from datetime import datetime, timedelta
+from typing import TYPE_CHECKING, Optional, Protocol
 
 import addon_utils
 
@@ -46,7 +47,15 @@ import bpy
 
 from . import tasks_queue
 
+
 bk_logger = logging.getLogger(__name__)
+
+if TYPE_CHECKING:
+
+    class _UpdateCallback(Protocol):
+        """Receive the updated module name and an optional error message."""
+
+        def __call__(self, module_name: str, res: Optional[str] = None) -> None: ...
 
 # -----------------------------------------------------------------------------
 # The main class
@@ -1399,7 +1408,13 @@ class SingletonUpdater:
         if not tg:
             raise ValueError("Version tag not found: " + name)
 
-    def run_update(self, force=False, revert_tag=None, clean=False, callback=None):
+    def run_update(
+        self,
+        force: bool = False,
+        revert_tag: Optional[str] = None,
+        clean: bool = False,
+        callback: "Optional[_UpdateCallback]" = None,
+    ):
         """Runs an install, update, or reversion of an addon from online source
 
         Arguments:
@@ -1407,6 +1422,10 @@ class SingletonUpdater:
             revert_tag: Version to install, if none uses detected update link
             clean: not used, but in future could use to totally refresh addon
             callback: used to run function on update completion
+
+        Returns:
+            Zero on success, or an error code or message if the update fails.
+            May return None when staging fails without an error message.
         """
         self._json["update_ready"] = False
         self._json["ignore"] = False  # clear ignore flag

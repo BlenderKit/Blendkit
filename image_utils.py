@@ -17,12 +17,13 @@
 # ##### END GPL LICENSE BLOCK #####
 
 import logging
-from dataclasses import dataclass
-from functools import lru_cache
 import os
 import time
+from dataclasses import dataclass
+from functools import lru_cache
 
 import bpy
+
 
 bk_logger = logging.getLogger(__name__)
 
@@ -544,8 +545,8 @@ def check_nmap_ogl_vs_dx(i, mask=None, generated_test_images=False):
                 last_height_x = ogl[max(x - 1, 0), min(y, height - 1)]
                 last_height_y = ogl[max(x, 0), min(y - 1, height - 1)]
 
-                diff_x = (na[x, y, 0] - rmean) / ((na[x, y, 2] - 0.5))
-                diff_y = (na[x, y, 1] - gmean) / ((na[x, y, 2] - 0.5))
+                diff_x = (na[x, y, 0] - rmean) / (na[x, y, 2] - 0.5)
+                diff_y = (na[x, y, 1] - gmean) / (na[x, y, 2] - 0.5)
                 calc_height = (last_height_x + last_height_y) - diff_x - diff_y
                 calc_height = calc_height / 2
                 ogl[x, y] = calc_height
@@ -557,8 +558,8 @@ def check_nmap_ogl_vs_dx(i, mask=None, generated_test_images=False):
                 last_height_x = dx[max(x - 1, 0), min(y, height - 1)]
                 last_height_y = dx[max(x, 0), min(y - 1, height - 1)]
 
-                diff_x = (na[x, y, 0] - rmean) / ((na[x, y, 2] - 0.5))
-                diff_y = (na[x, y, 1] - gmean) / ((na[x, y, 2] - 0.5))
+                diff_x = (na[x, y, 0] - rmean) / (na[x, y, 2] - 0.5)
+                diff_y = (na[x, y, 1] - gmean) / (na[x, y, 2] - 0.5)
                 calc_height = (last_height_x + last_height_y) - diff_x + diff_y
                 calc_height = calc_height / 2
                 dx[x, y] = calc_height

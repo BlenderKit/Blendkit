@@ -26,9 +26,9 @@ from functools import partial
 from types import SimpleNamespace
 from typing import Any, Dict, Optional, Union
 
+import blf
 import bpy
 import gpu
-import blf
 from bpy.props import BoolProperty, StringProperty
 
 from .. import (
@@ -48,7 +48,7 @@ from ..bl_ui_widgets.bl_ui_button import BL_UI_Button
 from ..bl_ui_widgets.bl_ui_drag_panel import BL_UI_Drag_Panel
 from ..bl_ui_widgets.bl_ui_draw_op import BL_UI_OT_draw_operator
 from ..bl_ui_widgets.bl_ui_image import BL_UI_Image
-from ..bl_ui_widgets.bl_ui_label import BL_UI_Label, BL_UI_DuoLabel
+from ..bl_ui_widgets.bl_ui_label import BL_UI_DuoLabel, BL_UI_Label
 from ..bl_ui_widgets.bl_ui_resize_handle import BL_UI_Resize_Handle
 from ..bl_ui_widgets.bl_ui_widget import (
     BL_UI_Widget,
@@ -56,6 +56,7 @@ from ..bl_ui_widgets.bl_ui_widget import (
     region_redraw,
     set_font_size,
 )
+
 
 bk_logger = logging.getLogger(__name__)
 
@@ -718,6 +719,11 @@ def set_thumb_check(
     """Set image in case it is loaded in search results. Checks global_vars.DATA["images available"].
     - if image download failed, it will be set to 'thumbnail_not_available.jpg'
     - if image doesn't exist, it will be set to 'thumbnail_notready.jpg'
+
+    Args:
+        element: Widget whose thumbnail image should be updated.
+        asset: Asset metadata containing the thumbnail filename and asset type.
+        thumb_type: Metadata key identifying the thumbnail variant to display.
 
     Returns:
         True if the slot is showing its real/intended thumbnail (loaded, gravatar,
@@ -5366,9 +5372,9 @@ class BlenderKitAssetBarOperator(BL_UI_OT_draw_operator):
         # make original tab original background color
         self.tab_buttons[global_vars.TABS["active_tab"]].bg_color = self.button_bg_color
         # make also tab close button original background color
-        self.close_tab_buttons[global_vars.TABS["active_tab"]].bg_color = (
-            self.button_bg_color
-        )
+        self.close_tab_buttons[
+            global_vars.TABS["active_tab"]
+        ].bg_color = self.button_bg_color
 
         global_vars.TABS["active_tab"] = tab_index
         global_vars.TABS["tabs"][tab_index]["history_index"] = history_index
@@ -5416,9 +5422,9 @@ class BlenderKitAssetBarOperator(BL_UI_OT_draw_operator):
             c_tab_index = tab_button.tab_index
             if c_tab_index == tab_index:
                 tab_button.bg_color = self.button_selected_color
-                self.close_tab_buttons[tab_index].bg_color = (
-                    self.button_selected_color_dim
-                )
+                self.close_tab_buttons[
+                    tab_index
+                ].bg_color = self.button_selected_color_dim
 
             else:
                 tab_button.bg_color = self.button_bg_color

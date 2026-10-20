@@ -1,6 +1,7 @@
 import sys
-from pathlib import Path
 import unittest
+from pathlib import Path
+
 
 try:  # Allow these tests to run both inside Blender and via plain Python.
     import bpy  # type: ignore

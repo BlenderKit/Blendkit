@@ -19,14 +19,15 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import sys
 import traceback
 import urllib.request
 import uuid
-import logging
 
 import bpy
+
 
 bk_logger = logging.getLogger(__name__)
 
