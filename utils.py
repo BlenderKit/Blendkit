@@ -30,10 +30,10 @@ import tempfile
 import uuid
 from typing import Optional, Union
 
-import requests
-
 import bpy
+import requests
 from mathutils import Vector
+
 
 # Cached result of available_render_engines(). Blender's EnumProperty items
 # callback must keep a persistent Python reference to the returned strings,
@@ -170,6 +170,7 @@ from . import (
     search,
 )
 
+
 bk_logger = logging.getLogger(__name__)
 
 ABOVE_NORMAL_PRIORITY_CLASS = 0x00008000
@@ -215,9 +216,7 @@ def elevated_experimental_enabled() -> bool:
     addon = bpy.context.preferences.addons.get(__package__)  # type: ignore
     if addon is None:
         return False
-    return bool(
-        addon.preferences.experimental_features and profile_is_validator()
-    )  # type: ignore
+    return bool(addon.preferences.experimental_features and profile_is_validator())  # type: ignore
 
 
 def proxor_enabled() -> bool:
@@ -1099,10 +1098,10 @@ def files_size_to_text(size: int) -> str:
     Convert a file size in bytes to a human-readable string in bytes, KiB, MiB, GiB or TiB.
 
     Args:
-    size (int): The size in bytes.
+        size: The size in bytes.
 
     Returns:
-    str: The human-readable file size string. E.g.: "18.9 MiB", "1.2 GiB", "1 GiB" etc.
+        The human-readable file size string, such as "18.9 MiB" or "1 GiB".
     """
     if size < 0:
         print("Size must be non-negative")
@@ -1606,7 +1605,7 @@ def fmt_dimensions(p):
     else:
         unit = "mm"
         unitscale = 1000
-    s = f"{fmt_length(dims[0]*unitscale)}×{fmt_length(dims[1]*unitscale)}×{fmt_length(dims[2]*unitscale)} {unit}"
+    s = f"{fmt_length(dims[0] * unitscale)}×{fmt_length(dims[1] * unitscale)}×{fmt_length(dims[2] * unitscale)} {unit}"
     return s
 
 
@@ -2012,8 +2011,14 @@ def check_globaldir_permissions():
     return ok, message
 
 
-def _check_dir_permissions(dir_path, dir_label="Directory"):
+def _check_dir_permissions(
+    dir_path: Union[str, os.PathLike[str]], dir_label: str = "Directory"
+) -> tuple[bool, str]:
     """Check if a directory path is valid, writable and usable for storing assets.
+
+    Args:
+        dir_path: Directory to create if necessary and test for write access.
+        dir_label: Human-readable directory label used in error messages.
 
     Returns:
         tuple: (ok: bool, message: str)

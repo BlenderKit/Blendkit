@@ -21,6 +21,7 @@ import unittest
 
 import bpy
 
+
 # ``test.py`` imports this as ``<addon>.tests.<name>``; strip ``.tests`` so
 # ``__package__`` is the add-on's own module for the relative import below.
 if __package__:

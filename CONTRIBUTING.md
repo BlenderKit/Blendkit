@@ -138,37 +138,88 @@ except Exception as e:
 
 ### Codestyle
 
-We use `isort` for imports sorting.
-We use `black` for codestyle.
-We try to type statically with `mypy.`.
-We use `go fmt` for formatting Go code in `./client`.
-We will use `ruff` for linting.
+We use Ruff for Python formatting and import sorting. The enforced lint policy
+is currently import sorting only (`I` rules); broader lint rules are deferred.
+The configuration in `pyproject.toml` targets Python 3.10, uses an 88-column line
+length, and keeps two blank lines after imports.
 
-We define versions in `devs/requirements.txt` so the local development environment is consistent with CI/CD (Github Actions).
-To install them in correct versions run: `pip3 install -U --user -r devs/requirements.txt`.
+The same exact Ruff version is pinned in `pyproject.toml` and
+`devs/requirements.txt`, and enforced by Ruff's `required-version` setting.
+Update both pins together and regenerate `pdm.lock` when upgrading Ruff.
+Install development dependencies with `pdm install`, or install just the CI
+formatting tool with `python -m pip install -r devs/requirements.txt`.
 
-Before committing your changes, please run:
-```
-pdm run mypy .
-pdm run isort .
-pdm run black .
-```
+To sort imports and format all first-party Python, including tests and tooling:
 
-or if installed locally:
-```
-mypy .
-isort .
-black .
+```sh
+pdm run python dev.py format
 ```
 
-or just run `python3 dev.py format` to run all of them automatically.
+With the repository environment activated, the equivalent commands are:
 
-Right now `isort` and `black` are required.
-Pull requests will fail in CI/CD if they are not formatted properly and isort or black throws an error.
+```sh
+python -m ruff check . --fix
+python -m ruff format .
+```
 
-We are migrating towards `ruff` as well, but it is not required yet.
-Please run `ruff` on files you have edited and try to fix all the errors.
-Slowly we will add the ruff as a required check in CI/CD.
+To run the same read-only checks as CI:
+
+```sh
+python -m ruff check .
+python -m ruff format . --check --diff
+```
+
+Both checks are required in PR, main-push, and release workflows. Vendored
+libraries, generated output, cached Client binaries, backup directories, and
+the independently configured `bk_client` and `bk_proxor` submodules are excluded.
+Exclusions also apply to explicit file paths when using the root configuration.
+The branch helper selects that configuration explicitly; running Ruff directly
+inside a submodule instead uses that submodule's own configuration.
+The root add-on initializer is formatted but exempt from import sorting to
+preserve its startup and reload import order.
+
+In VS Code, install the recommended Ruff extension (`charliermarsh.ruff`) and
+select the repository's `.venv` interpreter. Workspace settings enable Ruff
+formatting and import sorting on save, with Auto Save on focus change so save
+actions run. Keep Ruff installed in that environment to match CI; a different
+bundled version will be rejected by `required-version`.
+The Ruff debug configurations check formatting, imports, or Python files
+committed on the current branch relative to its merge base. The branch helper
+does not select uncommitted-only files; use the full checks above for those.
+
+Mypy remains available separately for type checking (`pdm run mypy .`).
+Go code continues to use `go fmt` in the Client submodule.
+
+### Docstrings
+
+Pydoclint checks Google-style docstrings against function signatures, return
+values, yields, and raised exceptions. Argument types belong in the function
+signature rather than the docstring. The configured checks retain their existing
+short-summary, private-argument, and underscore-argument exemptions; this is not
+a requirement to add a docstring to every function.
+
+Pydoclint is pinned to the same version in `pyproject.toml` and
+`devs/requirements.txt`. Update both pins and regenerate `pdm.lock` together.
+Vendored code, generated output, cached Client files, debug/backup directories,
+virtual environments, and the independent submodules are excluded. Tests and
+development helpers are included.
+
+Run all three read-only checks used by CI:
+
+```sh
+pdm run python dev.py lint
+```
+
+Or run just the documentation check:
+
+```sh
+python -m pydoclint.main --quiet .
+```
+
+Use `pydoclint.main`, not `python -m pydoclint`, because the pinned release has no
+package-level module entry point. VS Code provides `[PYDOCS] Check All` using the
+repository environment. Ruff import sorting, Ruff formatting, and pydoclint are
+required in the PR, main-push, and release workflows.
 
 
 ## Testing
@@ -185,8 +236,8 @@ The tests are defined in `tests/test_<name-of-tested-file>.py` files and their s
 2. install developers dependencies `pdm install`
 3. Verify installation:
 ```
-pdm run black --version
-pdm run isort --version
+pdm run ruff --version
+pdm run python -m pip show pydoclint
 pdm run mypy --version
 ```
 
@@ -221,8 +272,9 @@ PR will be reviewed by the team and if it passes the automated tests and checks,
 We run automated tests on: Pull Requests.
 The tests and checks which must pass for PR to be accepted are:
 - unit/integration tests on several versions of Blender 3.x.,
-- `isort` check for validity of import sorting,
-- `black` check for codestyle,
+- `ruff check` for import sorting,
+- `ruff format --check` for Python formatting,
+- `pydoclint` for Google-style docstring consistency,
 - `go fmt` check for formatting Go code in `./client`,
 - automated build of the add-on.
 

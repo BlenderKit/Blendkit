@@ -10,6 +10,7 @@ import os
 import shutil
 import sys
 
+
 THIS_REPO = os.path.abspath(os.path.join(os.path.dirname(__file__), "..")).replace(
     "\\", "/"
 )

@@ -20,6 +20,7 @@ import os
 import sys
 import unittest
 
+
 COLLECT_COVERAGE = os.getenv("COVERAGE") == "1"
 if COLLECT_COVERAGE:
     try:
@@ -38,6 +39,7 @@ if COLLECT_COVERAGE:
         print("WARNING: coverage module not available, skipping coverage collection")
 
 import addon_utils
+
 
 print(f"----- Tests preparation ----- (mode:{os.getenv('TESTS_TYPE', 'all')})")
 
@@ -74,6 +76,7 @@ print(f"- addon enabled: {name_match}")
 # parent package and fail. Importing under ``name_match`` makes relative imports
 # resolve identically in both modes.
 import importlib
+
 
 runner = unittest.TextTestRunner(buffer=False)
 suite = unittest.TestSuite()

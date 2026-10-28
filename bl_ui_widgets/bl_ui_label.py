@@ -1,8 +1,7 @@
-import blf
-import bpy
-
 from typing import Tuple, Union
 
+import blf
+import bpy
 from gpu_extras.batch import batch_for_shader
 
 from .bl_ui_widget import BL_UI_Widget, region_redraw, set_font_size

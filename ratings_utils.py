@@ -42,6 +42,7 @@ from . import (
     utils,
 )
 
+
 bk_logger = logging.getLogger(__name__)
 
 
@@ -470,7 +471,7 @@ def wh_enum_callback(self, context):
     for w in possible_wh_values:
         if w > 0:
             if w < 1:
-                icon_name = f"BK{int(w*10)/10}"
+                icon_name = f"BK{int(w * 10) / 10}"
             else:
                 icon_name = f"BK{int(w)}"
             if icon_name not in pcoll:

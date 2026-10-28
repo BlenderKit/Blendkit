@@ -22,14 +22,20 @@
 Implements draw calls, popups, and operators that use the addon_updater.
 """
 
+import logging
 import os
 import traceback
-import logging
+from typing import TYPE_CHECKING, Any, Optional
 
 import bpy
 from bpy.app.handlers import persistent
 
 from . import client_lib, utils
+
+
+if TYPE_CHECKING:
+    from .addon_updater import SingletonUpdater
+
 
 bk_logger = logging.getLogger(__name__)
 
@@ -477,9 +483,9 @@ class AddonUpdaterInstallManually(bpy.types.Operator):
         row = layout.row()
 
         if updater.update_link is not None:
-            row.operator("wm.url_open", text="Direct download").url = (
-                updater.update_link
-            )
+            row.operator(
+                "wm.url_open", text="Direct download"
+            ).url = updater.update_link
         else:
             row.operator("wm.url_open", text="(failed to retrieve direct download)")
             row.enabled = False
@@ -752,7 +758,7 @@ def background_update_callback(update_ready):
     updater.print_verbose("Attempted popup prompt")
 
 
-def post_update_callback(module_name, res=None):
+def post_update_callback(module_name: str, res: Optional[str] = None) -> None:
     """Callback for once the run_update function has completed.
 
     Only makes sense to use this if "auto_reload_post_update" == False,
@@ -1258,7 +1264,7 @@ def update_settings_ui_condensed(self, context, element=None):
         row.label(text="Last check: Never")
 
 
-def skip_tag_function(self, tag):
+def skip_tag_function(self: "SingletonUpdater", tag: dict[str, Any]):
     """A global function for tag skipping.
 
     A way to filter which tags are displayed, e.g. to limit downgrading too
@@ -1266,7 +1272,7 @@ def skip_tag_function(self, tag):
 
     Args:
         self: The instance of the singleton addon update.
-        tag: the text content of a tag from the repo, e.g. "v1.2.3".
+        tag: Repository tag metadata containing a name such as "v1.2.3".
 
     Returns:
         bool: True to skip this tag name (ie don't allow for downloading this

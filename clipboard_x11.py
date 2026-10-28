@@ -40,6 +40,7 @@ import select
 import sys
 import time
 
+
 bk_logger = logging.getLogger(__name__)
 
 # X protocol constants

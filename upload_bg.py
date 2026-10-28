@@ -18,12 +18,13 @@
 
 import json
 import os
-import sys
 import shutil
+import sys
 import zipfile
 
 import addon_utils  # type: ignore[import-not-found]
 import bpy
+
 
 # Datablock collections (on bpy.data) that can hold an asset_mark and that a
 # BlenderKit asset file might contain. Used to enforce "exactly one asset per
@@ -443,8 +444,8 @@ if __name__ == "__main__":
             asset_block = g  # collection is the asset, not the root object
 
             try:
-                from .bk_proxor._blender import generate as proxor_generate
                 from .bk_proxor import prx_format as proxor_prx_format
+                from .bk_proxor._blender import generate as proxor_generate
 
                 proxor_objects = [o for o in allobs if getattr(o, "type", "") == "MESH"]
                 if proxor_objects:

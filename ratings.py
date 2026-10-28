@@ -27,6 +27,7 @@ from mathutils import Matrix
 from . import (
     client_lib,
     datas,
+    download,
     global_vars,
     icons,
     ratings_utils,
@@ -35,8 +36,8 @@ from . import (
     ui,
     ui_panels,
     utils,
-    download,
 )
+
 
 bk_logger = logging.getLogger(__name__)
 

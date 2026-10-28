@@ -67,9 +67,7 @@ class SearchData:
     platform_version: str = ""
     api_key: str = ""
     app_id: int = 0
-    is_validator: bool = (
-        False  # Client makes some extra stuff for validators - like fetching all the ratings right away
-    )
+    is_validator: bool = False  # Client makes some extra stuff for validators - like fetching all the ratings right away
     history_id: str = ""
     search_order_by: str = (
         "default"  # mirrors ui_props.search_order_by; used for client-side post-sort

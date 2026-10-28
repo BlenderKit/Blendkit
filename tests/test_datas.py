@@ -1,5 +1,6 @@
 import unittest
 
+
 # ``test.py`` imports this as ``<addon>.tests.<name>``; strip ``.tests`` so
 # ``__package__`` is the add-on's own module - needed by the relative import.
 if __package__:

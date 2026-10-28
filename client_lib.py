@@ -28,15 +28,15 @@ import subprocess
 import sys
 import tempfile
 import threading
+from http.client import responses as http_responses
 from os import path
 from typing import Optional, Union
-from http.client import responses as http_responses
-
 
 import bpy
 import requests
 
 from . import datas, global_vars, reports, utils
+
 
 bk_logger = logging.getLogger(__name__)
 NO_PROXIES = {"http": "", "https": ""}

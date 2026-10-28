@@ -12,13 +12,14 @@ jobs:
       - uses: actions/checkout@v7
       - name: Python - install dependencies
         run: python -m pip install -r devs/requirements.txt
-      - name: Test version bump helper
-        run: python -m unittest discover -s .github/tests -p test_bump_version.py -v
-      - name: ISORT
-        run: python -m isort . --check-only --diff
-        continue-on-error: true
-      - name: BLACK
-        run: python -m black . --check --diff
+      - name: Test development helpers
+        run: python -m unittest discover -s .github/tests -v
+      - name: Ruff import sorting
+        run: python -m ruff check . --output-format=github
+      - name: Ruff formatting
+        run: python -m ruff format . --check --diff
+      - name: Pydoclint documentation
+        run: python -m pydoclint.main --quiet .
 
   Build:
     runs-on: ubuntu-latest

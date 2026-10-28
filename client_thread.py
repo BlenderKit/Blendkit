@@ -45,6 +45,7 @@ from typing import Any, Callable, List, Optional, Tuple
 
 import requests
 
+
 bk_logger = logging.getLogger(__name__)
 
 NO_PROXIES = {"http": "", "https": ""}

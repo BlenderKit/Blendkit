@@ -20,11 +20,10 @@ import logging
 import os
 import queue
 import time
-import requests
 
 import bpy
+import requests
 
-from .asset_bar import asset_bar_op
 from . import (
     addon_updater_ops,
     bg_blender,
@@ -47,12 +46,12 @@ from . import (
     upload,
     utils,
 )
+from .asset_bar import asset_bar_op
+
 
 bk_logger = logging.getLogger(__name__)
 reports_queue: queue.Queue = queue.Queue()
-pending_tasks = (
-    list()
-)  # pending tasks are tasks that were not parsed correctly and should be tried to be parsed later.
+pending_tasks = list()  # pending tasks are tasks that were not parsed correctly and should be tried to be parsed later.
 
 # Max wall-clock time (seconds) spent building thumbnail GPU textures per timer
 # step. A search can complete many thumbnail downloads within one poll

@@ -18,12 +18,12 @@
 """The save-time presence report: which Blendkit assets are still in the file."""
 
 import unittest
-
-import bpy
 from types import SimpleNamespace
 from unittest import mock
 
+import bpy
 import requests
+
 
 if __package__:
     __package__ = __package__.rsplit(".tests", 1)[0]

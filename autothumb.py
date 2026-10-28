@@ -29,12 +29,13 @@ from bpy.props import (
     BoolProperty,
     EnumProperty,
     FloatProperty,
-    IntProperty,
     FloatVectorProperty,
+    IntProperty,
     StringProperty,
 )
 
-from . import bg_blender, paths, tasks_queue, utils, upload, search
+from . import bg_blender, paths, search, tasks_queue, upload, utils
+
 
 bk_logger = logging.getLogger(__name__)
 BLENDKIT_EXPORT_DATA_FILE = "data.json"

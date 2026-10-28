@@ -33,7 +33,6 @@ from .. import (
     bg_blender,
     client_lib,
     colors,
-    unlock_options,
     download,
     global_vars,
     image_utils,
@@ -43,6 +42,7 @@ from .. import (
     ui,
     ui_bgl,
     ui_panels,
+    unlock_options,
     utils,
     viewport_utils,
 )
@@ -50,6 +50,7 @@ from ..bl_ui_widgets.bl_ui_button import BL_UI_Button
 from ..bl_ui_widgets.bl_ui_drag_panel import BL_UI_Drag_Panel
 from ..bl_ui_widgets.bl_ui_draw_op import BL_UI_OT_draw_operator
 from ..bl_ui_widgets.bl_ui_image import BL_UI_Image
+
 
 bk_logger = logging.getLogger(__name__)
 
@@ -723,7 +724,9 @@ def floor_raycast(
     )
 
 
-def deep_ray_cast(ray_origin: Vector, vec: Vector) -> Tuple[
+def deep_ray_cast(
+    ray_origin: Vector, vec: Vector
+) -> Tuple[
     bool,
     Vector,
     Vector,
@@ -2184,7 +2187,6 @@ class AssetDragOperator(bpy.types.Operator):
             return {"CANCELLED"}
 
         if not self.asset_data.get("canDownload"):
-
             variant = unlock_options.get_unlock_variant()
             url = paths.get_unlock_asset_url(
                 self.asset_data["id"], "asset_unlock_drag", variant.identifier

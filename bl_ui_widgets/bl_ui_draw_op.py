@@ -9,6 +9,7 @@ from bpy.types import Operator
 from .. import ui_bgl
 from .bl_ui_widget import region_redraw
 
+
 bk_logger = logging.getLogger(__name__)
 
 

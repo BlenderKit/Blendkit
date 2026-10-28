@@ -18,6 +18,7 @@ import subprocess
 import sys
 import zipfile
 
+
 THIS_REPO = os.path.abspath(os.path.join(os.path.dirname(__file__), "..")).replace(
     "\\", "/"
 )

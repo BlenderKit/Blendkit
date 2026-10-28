@@ -32,6 +32,7 @@ import logging
 import random
 from dataclasses import dataclass
 
+
 bk_logger = logging.getLogger(__name__)
 
 
@@ -76,9 +77,7 @@ _HARDCODED_VARIANTS: tuple[UnlockVariant, ...] = (
     UnlockVariant(
         identifier="now",
         header="This asset is included in Full Plan.",
-        message="Unlock all assets\n"
-        "Support creators & open-source\n"
-        "Subscribe now",
+        message="Unlock all assets\nSupport creators & open-source\nSubscribe now",
         button_text="Get Full Plan",
     ),
     UnlockVariant(

@@ -28,10 +28,12 @@ import sys
 import tempfile
 import uuid
 from functools import lru_cache
+from typing import Any
 
 import bpy
 
 from . import client_lib, global_vars, reports, utils
+
 
 bk_logger = logging.getLogger(__name__)
 
@@ -334,8 +336,7 @@ def ensure_asset_library_path(
         return
 
     target_path = _normalize_path(
-        global_dir
-        or bpy.context.preferences.addons[__package__].preferences.global_dir  # type: ignore
+        global_dir or bpy.context.preferences.addons[__package__].preferences.global_dir  # type: ignore
     )
     if not target_path:
         return
@@ -542,19 +543,23 @@ def round_to_closest_resolution(res):
     return p2res
 
 
-def get_res_file(asset_data, resolution, find_closest_with_url=False):
-    """
-    Returns closest resolution that current asset can offer.
-    If there are no resolutions, return orig file.
-    If orig file is requested, return it.
-    params
-    asset_data
-    resolution - ideal resolution
-    find_closest_with_url:
-        returns only resolutions that already contains url in the asset data, used in scenes where asset is/was already present.
+def get_res_file(
+    asset_data: dict[str, Any],
+    resolution: str,
+    find_closest_with_url: bool = False,
+):
+    """Select the requested or closest available asset resolution.
+
+    Falls back to the original blend file or zip archive when no resolution
+    variant is available.
+
+    Args:
+        asset_data: Asset metadata containing the available files.
+        resolution: Preferred resolution file type, or "blend" for the original.
+        find_closest_with_url: Reserved compatibility flag; currently unused.
+
     Returns:
-        resolution file
-        resolution, so that other processes can pass correctly which resolution is downloaded.
+        A pair containing the selected file metadata and its resolution file type.
     """
     orig = None
     zipf = None

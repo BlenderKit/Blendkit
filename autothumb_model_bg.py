@@ -176,6 +176,9 @@ def replace_materials(
     Args:
         obs: List of Blender objects to modify.
         material_name: Name of the wireframe material to use.
+
+    Returns:
+        The assigned material, or None if the named material was not found.
     """
     # Create or get the wireframe material
     if material_name in bpy.data.materials:
@@ -225,6 +228,9 @@ def _set_modifier_input(mod: Any, node_group: Any, name: str, value: Any) -> boo
         node_group: The node group assigned to the modifier.
         name: The display name of the input socket.
         value: The value to assign.
+
+    Returns:
+        True if the socket was found and its value was assigned, otherwise False.
     """
     for item in node_group.interface.items_tree:
         if item.item_type == "SOCKET" and item.in_out == "INPUT" and item.name == name:

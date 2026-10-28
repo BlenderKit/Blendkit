@@ -2,6 +2,7 @@ import unittest
 
 import bpy
 
+
 # ``test.py`` imports this as ``<addon>.tests.<name>``; strip ``.tests`` so
 # ``__package__`` is the add-on's own module - needed by the relative import
 # and any ``bpy...addons[__package__]`` lookups below. Scanning ``addons`` for
@@ -12,7 +13,6 @@ from . import upload
 
 
 class TestCheckTagsFormat(unittest.TestCase):
-
     def test_valid_tag(self):
         tags_string = "red"
         result, problematic_tags = upload.check_tags_format(tags_string)
