@@ -555,6 +555,15 @@ class TestClientProcessState(unittest.TestCase):
         self.assertEqual(code, 44)
         self.assertIn("Access denied", msg)
 
+    def test_return_code_networking_error_has_actionable_guidance(self):
+        global_vars.client_process = mock.Mock(poll=mock.Mock(return_value=41))
+        code, msg = client_lib.check_blenderkit_client_return_code()
+        self.assertEqual(code, 41)
+        self.assertIn("local TCP server", msg)
+        self.assertIn("localhost (127.0.0.1)", msg)
+        self.assertIn("Networking Settings", msg)
+        self.assertIn(client_lib.get_client_log_path(), msg)
+
 
 class TestDecideClientBinaryName(unittest.TestCase):
     def test_windows_amd64(self):
