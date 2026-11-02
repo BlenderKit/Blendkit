@@ -1,8 +1,10 @@
 import platform
 import sys
+import tempfile
 import unittest
+from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 from urllib.parse import unquote
 
 import bpy
@@ -14,7 +16,237 @@ import bpy
 # "blenderkit" is unreliable when several blenderkit* add-ons are enabled.
 if __package__:
     __package__ = __package__.rsplit(".tests", 1)[0]
-from . import global_vars, ui_panels
+from . import autothumb, global_vars, ui_panels
+
+
+class TestThumbnailFilePicker(unittest.TestCase):
+    def make_operator(self, target=None, name="thumbnail"):
+        return SimpleNamespace(
+            _target=target,
+            property_name=name,
+            filepath="",
+            relative_path=False,
+            report=Mock(),
+        )
+
+    def test_image_filter_defaults(self):
+        cls = ui_panels.BLENDERKIT_OT_select_thumbnail
+        registered = cls.is_registered
+        if not registered:
+            bpy.utils.register_class(cls)
+            self.addCleanup(bpy.utils.unregister_class, cls)
+        props = bpy.ops.wm.blenderkit_select_thumbnail.get_rna_type().properties
+        self.assertTrue(props["filter_image"].default)
+        self.assertTrue(props["filter_folder"].default)
+        self.assertEqual(props["filter_glob"].default, "*.jpg;*.jpeg;*.png")
+
+    def test_invoke_captures_target_and_initial_path(self):
+        target = SimpleNamespace(thumbnail="//existing.png")
+        operator = self.make_operator()
+        context = SimpleNamespace(
+            blenderkit_thumbnail_target=target,
+            window_manager=SimpleNamespace(fileselect_add=Mock()),
+            preferences=SimpleNamespace(
+                filepaths=SimpleNamespace(use_relative_paths=True)
+            ),
+        )
+        with patch.object(bpy.path, "abspath", return_value="/tmp/existing.png"):
+            result = ui_panels.BLENDERKIT_OT_select_thumbnail.invoke(
+                operator, context, None
+            )
+        self.assertEqual(result, {"RUNNING_MODAL"})
+        self.assertIs(operator._target, target)
+        self.assertEqual(operator.filepath, "/tmp/existing.png")
+        self.assertTrue(operator.relative_path)
+        context.window_manager.fileselect_add.assert_called_once_with(operator)
+        self.assertEqual(target.thumbnail, "//existing.png")
+
+    def test_selection_updates_only_original_target_and_requested_slot(self):
+        for name in ("thumbnail", "photo_thumbnail", "wire_thumbnail"):
+            with self.subTest(name=name), tempfile.TemporaryDirectory() as directory:
+                filepath = str(Path(directory) / "custom.PNG")
+                Path(filepath).touch()
+                target = SimpleNamespace(
+                    thumbnail="original.jpg",
+                    photo_thumbnail="photo.jpg",
+                    wire_thumbnail="wire.jpg",
+                )
+                before = vars(target).copy()
+                operator = self.make_operator(target, name)
+                operator.filepath = filepath
+                result = ui_panels.BLENDERKIT_OT_select_thumbnail.execute(
+                    operator, SimpleNamespace()
+                )
+                self.assertEqual(result, {"FINISHED"})
+                before[name] = filepath
+                self.assertEqual(vars(target), before)
+
+    def test_relative_path_is_preserved_for_saved_blend(self):
+        with tempfile.TemporaryDirectory() as directory:
+            filepath = str(Path(directory) / "custom.png")
+            Path(filepath).touch()
+            target = SimpleNamespace(thumbnail="original.jpg")
+            operator = self.make_operator(target)
+            operator.filepath = filepath
+            operator.relative_path = True
+            with (
+                patch.object(ui_panels, "bpy", wraps=bpy) as mocked_bpy,
+                patch.object(bpy.path, "relpath", return_value="//custom.png"),
+            ):
+                mocked_bpy.data = SimpleNamespace(filepath="/tmp/asset.blend")
+                result = ui_panels.BLENDERKIT_OT_select_thumbnail.execute(
+                    operator, None
+                )
+            self.assertEqual(result, {"FINISHED"})
+            self.assertEqual(target.thumbnail, "//custom.png")
+
+    def test_unsaved_blend_keeps_absolute_path(self):
+        with tempfile.TemporaryDirectory() as directory:
+            filepath = str(Path(directory) / "custom.jpeg")
+            Path(filepath).touch()
+            target = SimpleNamespace(thumbnail="original.jpg")
+            operator = self.make_operator(target)
+            operator.filepath = filepath
+            operator.relative_path = True
+            with patch.object(ui_panels, "bpy", wraps=bpy) as mocked_bpy:
+                mocked_bpy.data = SimpleNamespace(filepath="")
+                result = ui_panels.BLENDERKIT_OT_select_thumbnail.execute(
+                    operator, None
+                )
+            self.assertEqual(result, {"FINISHED"})
+            self.assertEqual(target.thumbnail, filepath)
+
+    def test_cross_drive_relative_path_uses_absolute_path_with_warning(self):
+        with tempfile.TemporaryDirectory() as directory:
+            filepath = str(Path(directory) / "custom.png")
+            Path(filepath).touch()
+            target = SimpleNamespace(thumbnail="original.jpg")
+            operator = self.make_operator(target)
+            operator.filepath = filepath
+            operator.relative_path = True
+            with (
+                patch.object(ui_panels, "bpy", wraps=bpy) as mocked_bpy,
+                patch.object(
+                    bpy.path, "relpath", side_effect=ValueError("Different drives")
+                ),
+                self.assertLogs(ui_panels.bk_logger, level="WARNING"),
+            ):
+                mocked_bpy.data = SimpleNamespace(filepath="/tmp/asset.blend")
+                result = ui_panels.BLENDERKIT_OT_select_thumbnail.execute(
+                    operator, None
+                )
+            self.assertEqual(result, {"FINISHED"})
+            self.assertEqual(target.thumbnail, filepath)
+            operator.report.assert_called_once()
+            self.assertEqual(operator.report.call_args.args[0], {"WARNING"})
+
+    def test_invalid_selection_reports_error_without_changing_path(self):
+        with tempfile.TemporaryDirectory() as directory:
+            unsupported = Path(directory) / "custom.txt"
+            unsupported.touch()
+            for filepath in (
+                "",
+                str(unsupported),
+                str(Path(directory) / "missing.png"),
+            ):
+                with self.subTest(filepath=filepath):
+                    target = SimpleNamespace(thumbnail="original.jpg")
+                    operator = self.make_operator(target)
+                    operator.filepath = filepath
+                    result = ui_panels.BLENDERKIT_OT_select_thumbnail.execute(
+                        operator, None
+                    )
+                    self.assertEqual(result, {"CANCELLED"})
+                    self.assertEqual(target.thumbnail, "original.jpg")
+                    operator.report.assert_called_once()
+                    self.assertEqual(operator.report.call_args.args[0], {"ERROR"})
+
+    def test_missing_target_reports_error(self):
+        operator = self.make_operator()
+        result = ui_panels.BLENDERKIT_OT_select_thumbnail.invoke(
+            operator, SimpleNamespace(), None
+        )
+        self.assertEqual(result, {"CANCELLED"})
+        operator.report.assert_called_once()
+
+    def test_deleted_target_reports_error_without_mutating_other_asset(self):
+        with tempfile.TemporaryDirectory() as directory:
+            filepath = str(Path(directory) / "custom.png")
+            Path(filepath).touch()
+            target = Mock()
+            type(target).thumbnail = property(
+                fset=Mock(side_effect=ReferenceError("Target removed"))
+            )
+            operator = self.make_operator(target)
+            operator.filepath = filepath
+            with self.assertLogs(ui_panels.bk_logger, level="ERROR"):
+                result = ui_panels.BLENDERKIT_OT_select_thumbnail.execute(
+                    operator, None
+                )
+            self.assertEqual(result, {"CANCELLED"})
+            operator.report.assert_called_once()
+
+    def test_thumbnail_properties_do_not_draw_a_second_native_browser(self):
+        addon = sys.modules[__package__]
+        for cls, names in (
+            (
+                addon.BlenderKitModelUploadProps,
+                ("thumbnail", "photo_thumbnail", "wire_thumbnail"),
+            ),
+            (addon.BlenderKitMaterialUploadProps, ("thumbnail",)),
+            (addon.BlenderKitSceneUploadProps, ("thumbnail",)),
+            (addon.BlenderKitBrushUploadProps, ("thumbnail",)),
+            (addon.BlenderKitNodeGroupUploadProps, ("thumbnail",)),
+        ):
+            for name in names:
+                with self.subTest(cls=cls.__name__, name=name):
+                    prop = cls.__annotations__[name]
+                    self.assertEqual(prop.keywords["subtype"], "NONE")
+                    if not cls.is_registered:
+                        bpy.utils.register_class(cls)
+                        self.addCleanup(bpy.utils.unregister_class, cls)
+                    self.assertEqual(cls.bl_rna.properties[name].subtype, "NONE")
+                    if bpy.app.version >= (4, 5, 0):
+                        self.assertIn(
+                            "PATH_SUPPORTS_BLEND_RELATIVE", prop.keywords["options"]
+                        )
+        self.assertIs(
+            addon.BlenderKitModelUploadProps.__annotations__["thumbnail"].keywords[
+                "update"
+            ],
+            autothumb.update_upload_model_preview,
+        )
+
+    def test_path_control_keeps_editable_field_and_uses_custom_picker(self):
+        row = Mock()
+        layout = Mock()
+        layout.row.return_value = row
+        target = SimpleNamespace(thumbnail="")
+        ui_panels.draw_thumbnail_path(layout, target, "thumbnail")
+        row.prop.assert_called_once_with(target, "thumbnail")
+        row.context_pointer_set.assert_called_once_with(
+            "blenderkit_thumbnail_target", target
+        )
+        row.operator.assert_called_once_with(
+            "wm.blenderkit_select_thumbnail", text="", icon="FILE_FOLDER"
+        )
+        self.assertEqual(row.operator_context, "INVOKE_DEFAULT")
+        self.assertEqual(row.operator.return_value.property_name, "thumbnail")
+
+    def test_required_thumbnail_fields_use_custom_control(self):
+        for name in ("thumbnail", "photo_thumbnail", "wire_thumbnail"):
+            with self.subTest(name=name):
+                layout = Mock()
+                props = SimpleNamespace()
+                with patch.object(ui_panels, "draw_thumbnail_path") as draw:
+                    ui_panels.prop_needed(layout, props, name)
+                draw.assert_called_once_with(layout.row.return_value, props, name)
+        with patch.object(ui_panels, "draw_thumbnail_path") as draw:
+            layout = Mock()
+            props = SimpleNamespace()
+            ui_panels.prop_needed(layout, props, "name")
+        draw.assert_not_called()
+        layout.row.return_value.prop.assert_called_once_with(props, "name")
 
 
 class TestGetEnvironmentInfoString(unittest.TestCase):
