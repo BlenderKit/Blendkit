@@ -816,7 +816,15 @@ def check_blenderkit_client_return_code() -> tuple[int, str]:
     if exit_code == rcServerStartOtherError:
         msg = f"Other starting problem."
     if exit_code == rcServerStartOtherNetworkingError:
-        msg = f"Other networking problem."
+        return (
+            exit_code,
+            "Blendkit-Client could not start its local TCP server. A firewall or "
+            "security tool may be blocking localhost connections, or the configured "
+            "ports may be unavailable. Allow Blender and Blendkit-Client to "
+            "communicate over localhost (127.0.0.1), then try another Client port "
+            "in Preferences > Networking Settings. If it still fails, report the "
+            f"issue with the Client log: {get_client_log_path()}",
+        )
     if exit_code == rcServerStartOtherSyscallError:
         msg = f"Other syscall error."
 
