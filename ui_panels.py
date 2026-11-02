@@ -305,7 +305,9 @@ class BLENDERKIT_OT_select_thumbnail(bpy.types.Operator):
         options={"HIDDEN", "SKIP_SAVE"},
     )
 
-    _target: bpy.types.PropertyGroup | None = None
+    # Not annotated: Blender evaluates class annotations as RNA properties, and
+    # `X | None` breaks registration on Python 3.9 (Blender 3.0).
+    _target = None
 
     def invoke(self, context, event):
         # Capture the actual property group, not the active asset after browsing.
