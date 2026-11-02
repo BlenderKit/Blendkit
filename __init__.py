@@ -1267,7 +1267,7 @@ class BlenderKitMaterialUploadProps(PropertyGroup, BlenderKitCommonUploadProps):
         description="Thumbnail path - 512x512 .jpg image, rendered with cycles.\n"
         "Only standard Blendkit previews will be accepted.\n"
         "Only exception are special effects like fire or similar",
-        subtype="FILE_PATH",
+        subtype="NONE",
         default="",
         update=autothumb.update_upload_material_preview,
         **EXTRA_PATH_OPTIONS,
@@ -1358,7 +1358,7 @@ class BlenderKitBrushUploadProps(PropertyGroup, BlenderKitCommonUploadProps):
     thumbnail: StringProperty(
         name="Thumbnail",
         description="Thumbnail path - at least 1024x1024 .jpg or .png",
-        subtype="FILE_PATH",
+        subtype="NONE",
         default="",
         update=autothumb.update_upload_brush_preview,
         **EXTRA_PATH_OPTIONS,
@@ -1382,7 +1382,7 @@ class BlenderKitNodeGroupUploadProps(PropertyGroup, BlenderKitCommonUploadProps)
         name="Thumbnail",
         description="Thumbnail path - minimum 1024x1024 square .jpg\n"
         "And make it beautiful!",
-        subtype="FILE_PATH",
+        subtype="NONE",
         default="",
         **EXTRA_PATH_OPTIONS,
         # update=autothumb.update_upload_model_preview,
@@ -1488,7 +1488,7 @@ class BlenderKitModelUploadProps(PropertyGroup, BlenderKitCommonUploadProps):
     thumbnail: StringProperty(
         name="Thumbnail",
         description="Thumbnail path - 512x512 .jpg\nRendered with cycles",
-        subtype="FILE_PATH",
+        subtype="NONE",
         default="",
         update=autothumb.update_upload_model_preview,
         **EXTRA_PATH_OPTIONS,
@@ -1674,7 +1674,7 @@ class BlenderKitModelUploadProps(PropertyGroup, BlenderKitCommonUploadProps):
     photo_thumbnail: StringProperty(
         name="Photo Thumbnail",
         description="Photo of the 3D printed object (JPG or PNG, preferred size is 1024x1024 or higher)",
-        subtype="FILE_PATH",
+        subtype="NONE",
         default="",
         **EXTRA_PATH_OPTIONS,
     )
@@ -1687,7 +1687,7 @@ class BlenderKitModelUploadProps(PropertyGroup, BlenderKitCommonUploadProps):
     wire_thumbnail: StringProperty(
         name="Wireframe Thumbnail",
         description="Wireframe thumbnail (JPG or PNG, preferred size is 1024x1024 or higher)",
-        subtype="FILE_PATH",
+        subtype="NONE",
         default="",
         update=autothumb.update_wire_thumbnail_preview,
         **EXTRA_PATH_OPTIONS,
@@ -1763,7 +1763,7 @@ class BlenderKitSceneUploadProps(PropertyGroup, BlenderKitCommonUploadProps):
     thumbnail: StringProperty(
         name="Thumbnail",
         description="Thumbnail path - 512x512 .jpg\nRendered with cycles",
-        subtype="FILE_PATH",
+        subtype="NONE",
         default="",
         update=autothumb.update_upload_scene_preview,
         **EXTRA_PATH_OPTIONS,

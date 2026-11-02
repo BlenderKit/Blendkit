@@ -260,10 +260,96 @@ def prop_needed(layout, props, name, value: Any = "", is_not_filled: Any = ""):
     row = layout.row()
     if value == is_not_filled:
         row.alert = True
-        row.prop(props, name)  # , icon="ERROR")
-        row.alert = False
+    if name in {"thumbnail", "photo_thumbnail", "wire_thumbnail"}:
+        draw_thumbnail_path(row, props, name)
     else:
         row.prop(props, name)
+    row.alert = False
+
+
+def draw_thumbnail_path(layout, props, name):
+    """Draw a plain-string path with an image-filtered browse button."""
+    row = layout.row(align=True)
+    row.prop(props, name)
+    row.context_pointer_set("blenderkit_thumbnail_target", props)
+    row.operator_context = "INVOKE_DEFAULT"
+    op = row.operator("wm.blenderkit_select_thumbnail", text="", icon="FILE_FOLDER")
+    op.property_name = name
+
+
+class BLENDERKIT_OT_select_thumbnail(bpy.types.Operator):
+    """Choose a JPG or PNG image for this asset's thumbnail"""
+
+    bl_idname = "wm.blenderkit_select_thumbnail"
+    bl_label = "Select Thumbnail"
+    bl_options = {"INTERNAL"}
+
+    filepath: StringProperty(subtype="FILE_PATH", options={"SKIP_SAVE"})  # type: ignore[valid-type]
+    filter_image: BoolProperty(default=True, options={"HIDDEN", "SKIP_SAVE"})  # type: ignore[valid-type]
+    filter_folder: BoolProperty(default=True, options={"HIDDEN", "SKIP_SAVE"})  # type: ignore[valid-type]
+    filter_glob: StringProperty(  # type: ignore[valid-type]
+        default="*.jpg;*.jpeg;*.png", options={"HIDDEN", "SKIP_SAVE"}
+    )
+    relative_path: BoolProperty(  # type: ignore[valid-type]
+        name="Relative Path",
+        description="Store the thumbnail path relative to the saved blend file",
+        default=True,
+        options={"SKIP_SAVE"},
+    )
+    property_name: EnumProperty(  # type: ignore[valid-type]
+        items=(
+            ("thumbnail", "Thumbnail", ""),
+            ("photo_thumbnail", "Photo Thumbnail", ""),
+            ("wire_thumbnail", "Wireframe Thumbnail", ""),
+        ),
+        options={"HIDDEN", "SKIP_SAVE"},
+    )
+
+    # Not annotated: Blender evaluates class annotations as RNA properties, and
+    # `X | None` breaks registration on Python 3.9 (Blender 3.0).
+    _target = None
+
+    def invoke(self, context, event):
+        # Capture the actual property group, not the active asset after browsing.
+        self._target = getattr(context, "blenderkit_thumbnail_target", None)
+        if self._target is None:
+            self.report({"ERROR"}, "No thumbnail target was provided")
+            return {"CANCELLED"}
+        current_path = getattr(self._target, self.property_name)
+        self.filepath = bpy.path.abspath(current_path) if current_path else ""
+        self.relative_path = context.preferences.filepaths.use_relative_paths
+        context.window_manager.fileselect_add(self)
+        return {"RUNNING_MODAL"}
+
+    def execute(self, context):
+        if self._target is None:
+            self.report({"ERROR"}, "The thumbnail target is no longer available")
+            return {"CANCELLED"}
+        extension = os.path.splitext(self.filepath)[1].lower()
+        if not os.path.isfile(self.filepath) or extension not in {
+            ".jpg",
+            ".jpeg",
+            ".png",
+        }:
+            self.report({"ERROR"}, "Select an existing JPG or PNG image")
+            return {"CANCELLED"}
+        filepath = self.filepath
+        if self.relative_path and bpy.data.filepath:
+            try:
+                filepath = bpy.path.relpath(filepath)
+            except ValueError as exc:
+                bk_logger.warning("Cannot make thumbnail path relative: %s", exc)
+                self.report(
+                    {"WARNING"},
+                    "Cannot make thumbnail path relative; using an absolute path",
+                )
+        try:
+            setattr(self._target, self.property_name, filepath)
+        except ReferenceError:
+            bk_logger.exception("Thumbnail target was removed while browsing")
+            self.report({"ERROR"}, "The thumbnail target is no longer available")
+            return {"CANCELLED"}
+        return {"FINISHED"}
 
 
 class BLENDERKIT_OT_show_validation_popup(bpy.types.Operator):
@@ -711,7 +797,7 @@ def draw_panel_model_upload(self, context):
         col = layout.column()
         if getattr(props, "is_generating_wire_thumbnail", False):
             col.enabled = False
-        col.prop(props, "wire_thumbnail")
+        draw_thumbnail_path(col, props, "wire_thumbnail")
 
     if props.is_generating_thumbnail:
         row = layout.row(align=True)
@@ -4912,6 +4998,7 @@ class NodegroupDropDialog(bpy.types.Operator):
 
 
 classes = (
+    BLENDERKIT_OT_select_thumbnail,
     BLENDERKIT_OT_hdr_thumbnail_tune,
     BLENDERKIT_OT_show_validation_popup,
     BLENDERKIT_OT_permissions_error_popup,
