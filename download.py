@@ -24,6 +24,7 @@ import logging
 import os
 import shutil
 import time
+from textwrap import fill, shorten
 from typing import Any, Optional
 
 import addon_utils  # type: ignore
@@ -1319,6 +1320,78 @@ def replace_resolution_appended(
 #     return .5
 
 
+def _report_download_error(task_id: str, reason: str, details: str = "") -> None:
+    """Show an actionable error while keeping task diagnostics in the console."""
+    task = download_tasks[task_id]
+    asset = task.get("asset_data", {})
+    reason = reason.strip() or "The Client did not provide an error reason."
+    message = reports.humanize_server_message(reason)
+    lower_message = message.lower()
+
+    if "local blendkit client" in lower_message:
+        hint = "Restart Blender to reconnect to the local Blendkit Client, then retry."
+    elif any(
+        text in lower_message
+        for text in ("no space left", "disk is full", "not enough space", "disk full")
+    ):
+        hint = "Free up disk space in your asset download folder, then retry."
+    elif any(
+        text in lower_message for text in ("permission denied", "access is denied")
+    ):
+        hint = (
+            "Check write permission for your asset download folder and whether "
+            "security software is blocking access."
+        )
+    elif any(
+        text in lower_message
+        for text in ("x509:", "certificate verify failed", "certificate_verify_failed")
+    ):
+        hint = (
+            "Check your computer's date/time and proxy certificate settings. "
+            "Keep SSL verification enabled."
+        )
+    elif any(
+        text in lower_message
+        for text in ("no such host", "name resolution", "getaddrinfo")
+    ):
+        hint = "Check your connection, DNS and proxy settings, then retry."
+    elif any(
+        text in lower_message
+        for text in (
+            "timeout",
+            "timed out",
+            "connection refused",
+            "connection reset",
+            "no reachable download source",
+        )
+    ):
+        hint = "Check your connection and proxy/firewall settings, then retry."
+    else:
+        hint = "Retry the download; if it fails again, restart Blender."
+
+    lines = [
+        f'Could not load "{asset.get("name", "Asset")}".',
+        shorten(message, width=352, placeholder="... (full error in Blender console)"),
+        f"Last status: {task.get('text') or 'Waiting for download status'} "
+        f"({task.get('progress', 0)}%).",
+        hint,
+        "Still failing? Preferences > Add-ons > Blendkit > Client log.",
+        "Copy the log text into your bug report (no file attachment needed).",
+    ]
+    diagnostics = (
+        f"Download task: {task_id}; asset: {asset.get('id')}; "
+        f"download folders: {task.get('download_dirs', [])}; "
+        f"original error: {reason}"
+    )
+    if details.strip():
+        diagnostics += f"; Client details: {details.strip()}"
+    reports.add_report(
+        "\n".join(fill(line, width=88) for line in lines),
+        type="ERROR",
+        details=diagnostics,
+    )
+
+
 def handle_download_task(task: client_tasks.Task) -> None:
     """Handle incoming task information.
     Update progress. Print messages. Fire post-download functions.
@@ -1342,12 +1415,18 @@ def handle_download_task(task: client_tasks.Task) -> None:
             return
         except Exception as e:
             bk_logger.exception("Asset appending/linking has failed: %s", e)
-            task.message = f"Append failed: {e}"
+            task.message = f"The file downloaded, but Blender could not import it: {e}"
             task.status = "error"
 
     if task.status == "error":
-        reports.add_report(task.message, type="ERROR")
-        download_tasks.pop(task.task_id)
+        _report_download_error(
+            task.task_id,
+            task.message.strip() or task.message_detailed,
+            details=task.message_detailed,
+        )
+        asset_id = download_tasks.pop(task.task_id).get("asset_data", {}).get("id")
+        if asset_id:
+            _reset_progress_for_asset_ids({asset_id})
     else:
         download_write_progress(task.task_id, task)
 
@@ -1412,12 +1491,13 @@ def prune_stalled_downloads(
 
         asset_info = task.get("asset_data", {})
         asset_id = asset_info.get("id")
-        asset_name = asset_info.get("name", "Asset")
-
-        reports.add_report(
-            f"Download for {asset_name} stalled and was cancelled. Please try again.",
-            type="ERROR",
+        reason = (
+            f"No status update for {now - last_report_time:.0f} seconds; "
+            "download cancelled."
         )
+        if global_vars.CLIENT_ACCESSIBLE is False:
+            reason += " Blender cannot reach the local Blendkit Client."
+        _report_download_error(task_id, reason)
 
         if asset_id:
             stalled_asset_ids.add(asset_id)

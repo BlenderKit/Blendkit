@@ -29,6 +29,19 @@ Browse and download a selection of assets for free without an account. A free ac
 
 For more information, see the [Blendkit documentation](https://github.com/BlenderKit/blenderkit/wiki).
 
+## Download troubleshooting
+
+Download errors show the asset name, the reported reason and the last known
+download step and percentage. A cancelled download with no status updates does
+not, by itself, identify an internet or disk problem. If Blender cannot reach
+the local Blendkit Client, the message says so separately.
+Long errors are shortened on screen; full diagnostics remain in Blender's console.
+
+Follow the suggested troubleshooting steps and retry. If the failure continues,
+open `Preferences > Add-ons > Blendkit > Client log` immediately after the error.
+You can copy the log's text into a bug report instead of attaching the file.
+Remove credentials or other private information before sharing logs.
+
 ## How to contribute
 Do you want to participate in the development of Blendkit? Here's how you can help:
 
