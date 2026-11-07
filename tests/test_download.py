@@ -101,6 +101,10 @@ class AddonVariantInstallTests(unittest.TestCase):
         self.assertEqual(status.call_args.args[0]["id"], "pro")
         operator.layout.prop.assert_any_call(operator, "variant_id")
 
+    @unittest.skipIf(
+        download.bpy.app.version < (4, 2, 0),
+        "Add-on installation requires Blender 4.2 or newer",
+    )
     def test_explicit_variant_replacement_overwrites_shared_package(self):
         asset = {"name": "Pro", "replaceInstalledVariant": True}
         with (
@@ -124,6 +128,10 @@ class AddonVariantInstallTests(unittest.TestCase):
             repo="test_repo", filepath="pro.zip", enable_on_install=True, overwrite=True
         )
 
+    @unittest.skipIf(
+        download.bpy.app.version < (4, 2, 0),
+        "Add-on installation requires Blender 4.2 or newer",
+    )
     def test_installed_standalone_is_not_overwritten(self):
         with (
             mock.patch.object(download.os.path, "exists", return_value=True),

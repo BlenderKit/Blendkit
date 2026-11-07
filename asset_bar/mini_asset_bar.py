@@ -1,15 +1,17 @@
 import math
 
-from .. import ui_bgl
+from .. import colors, ui_bgl
 from ..bl_ui_widgets.bl_ui_button import BL_UI_Button
-from ..bl_ui_widgets.bl_ui_label import BL_UI_Label
+from ..bl_ui_widgets.bl_ui_label import BL_UI_DuoLabel, BL_UI_Label
 from ..bl_ui_widgets.bl_ui_widget import BL_UI_Widget
 
 
-def mini_bar_layout(count, tile_size, width, height, mouse_x, mouse_y, text_size=12):
+def mini_bar_layout(
+    count, tile_size, width, height, mouse_x, mouse_y, text_size=12, price_rows=1
+):
     margin = 8
     header = max(28, text_size + 16)
-    row_height = tile_size + 2 * text_size + 20
+    row_height = tile_size + (1 + price_rows) * text_size + 20 + (price_rows - 1) * 7
     columns = max(1, min(count, int((width - margin * 4) // tile_size)))
     rows = max(
         1,
@@ -54,6 +56,29 @@ def fit_label(text, width, size):
     return ""
 
 
+def price_bubble_style(asset):
+    if asset.get("isPrivate"):
+        return " Private ", "", colors.GRAY
+    if asset.get("isFree"):
+        return " Free ", "", colors.GREEN_PRICE
+    if asset.get("isForSale"):
+        if asset.get("canDownload"):
+            return " Purchased ", "", colors.PURPLE_PRICE
+        price = asset.get("userPrice")
+        original = asset.get("basePrice")
+        if price is not None and original is not None and str(price) != str(original):
+            return f" ${price} ", f" (${original}) ", colors.PURPLE_PRICE
+        price = price if price is not None else original
+        return (
+            (f" ${price} " if price is not None else " Paid "),
+            "",
+            colors.PURPLE_PRICE,
+        )
+    if asset.get("assetType") == "addon":
+        return " Full Plan ", "", colors.ORANGE_FULL
+    return asset.get("mini_label", ""), "", colors.GRAY
+
+
 class MiniAssetBar:
     def __init__(
         self,
@@ -76,7 +101,18 @@ class MiniAssetBar:
         self.thumbnail_size = thumbnail_size
         self.text_size = text_size
         self.header_height = max(28, text_size + 16)
-        self.label_height = 2 * text_size + 20
+        self.price_rows = 1
+        for asset in self.assets:
+            current, original, background = price_bubble_style(asset)
+            if (
+                original
+                and ui_bgl.get_text_size(1, current + original, text_size)[0] + 4
+                > tile_size - 8
+            ):
+                self.price_rows = 2
+        self.label_height = (
+            (1 + self.price_rows) * text_size + 20 + (self.price_rows - 1) * 7
+        )
         self.set_thumbnail = set_thumbnail
         self.on_select = on_select
         self.on_context = on_context
@@ -89,6 +125,7 @@ class MiniAssetBar:
             mouse_x,
             mouse_y,
             text_size,
+            self.price_rows,
         )
         self.widgets = []
         self.buttons = []
@@ -137,20 +174,52 @@ class MiniAssetBar:
                 self.tile_size - 8,
                 self.text_size,
             )
-            price = BL_UI_Label(
-                x + 4,
-                y + self.tile_size + self.text_size + 9,
-                self.tile_size - 8,
-                self.text_size + 2,
-            )
-            price.text_size = self.text_size
-            price.text = fit_label(
-                asset.get("mini_label", ""), self.tile_size - 8, self.text_size
-            )
             self.buttons.append(button)
-            self.widgets.extend((button, label, price))
+            self.widgets.extend((button, label))
+            self.widgets.extend(
+                self.price_widgets(
+                    asset, x + 4, y + self.tile_size + self.text_size + 9
+                )
+            )
         for widget in self.widgets:
             widget.init(self.context)
+
+    def price_widgets(self, asset, x, y):
+        current, original, background = price_bubble_style(asset)
+        width = self.tile_size - 8
+        wrap = (
+            original
+            and ui_bgl.get_text_size(1, current + original, self.text_size)[0] + 4
+            > width
+        )
+        price = BL_UI_DuoLabel(x, y, width, self.text_size + 2)
+        price.text_size = self.text_size
+        price.text_a = fit_label(current, width, self.text_size)
+        price.text_b = "" if wrap else original
+        price.text_a_color = colors.WHITE
+        price.text_b_color = colors.TEXT_DIM
+        price.use_rounded_background = True
+        price.background_corner_radius = "50%"
+        price.segment_backgrounds = True
+        price.segment_background_color_a = background
+        price.segment_background_color_b = background
+        price.strikethrough_b = bool(original) and not wrap
+        widgets = [price]
+        if wrap:
+            previous = BL_UI_DuoLabel(
+                x, y + self.text_size + 7, width, self.text_size + 2
+            )
+            previous.text_size = self.text_size
+            previous.text_a = fit_label(original, width, self.text_size)
+            previous.text_b = ""
+            previous.text_a_color = colors.TEXT_DIM
+            previous.use_rounded_background = True
+            previous.background_corner_radius = "50%"
+            previous.segment_backgrounds = True
+            previous.segment_background_color_a = background
+            previous.strikethrough_a = True
+            widgets.append(previous)
+        return widgets
 
     def hover(self, widget):
         self.widgets[1].text = fit_label(

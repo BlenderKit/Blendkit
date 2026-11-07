@@ -3,7 +3,75 @@ from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
 from ..asset_bar import asset_bar_op
-from ..asset_bar.mini_asset_bar import MiniAssetBar, fit_label, mini_bar_layout
+from ..asset_bar.mini_asset_bar import (
+    MiniAssetBar,
+    fit_label,
+    mini_bar_layout,
+    price_bubble_style,
+)
+
+
+class TestMiniPriceBubbles(unittest.TestCase):
+    def test_discount_bubble_uses_strikethrough_and_wraps_without_smaller_text(self):
+        owner = SimpleNamespace(tile_size=180, text_size=24)
+        asset = {"isForSale": True, "userPrice": "34.85", "basePrice": "41.00"}
+        with (
+            patch(
+                "%s.BL_UI_DuoLabel" % MiniAssetBar.__module__,
+                side_effect=lambda *args: Mock(),
+            ) as label,
+            patch.object(
+                asset_bar_op.ui_bgl,
+                "get_text_size",
+                side_effect=lambda font, text, size: (len(text) * 12, size),
+            ),
+        ):
+            widgets = MiniAssetBar.price_widgets(owner, asset, 10, 20)
+        self.assertEqual(len(widgets), 2)
+        self.assertEqual(widgets[0].text_size, 24)
+        self.assertEqual(widgets[1].text_size, 24)
+        self.assertTrue(widgets[0].segment_backgrounds)
+        self.assertEqual(
+            widgets[0].segment_background_color_a, asset_bar_op.colors.PURPLE_PRICE
+        )
+        self.assertTrue(widgets[1].strikethrough_a)
+        self.assertEqual(label.call_args_list[1].args[1], 51)
+
+    def test_free_and_paid_use_regular_price_colors(self):
+        self.assertEqual(
+            price_bubble_style({"isFree": True}),
+            (" Free ", "", asset_bar_op.colors.GREEN_PRICE),
+        )
+        self.assertEqual(
+            price_bubble_style({"isForSale": True, "basePrice": "21.25"}),
+            (" $21.25 ", "", asset_bar_op.colors.PURPLE_PRICE),
+        )
+
+    def test_discount_preserves_original_price(self):
+        self.assertEqual(
+            price_bubble_style(
+                {"isForSale": True, "userPrice": "34.85", "basePrice": "41.00"}
+            ),
+            (" $34.85 ", " ($41.00) ", asset_bar_op.colors.PURPLE_PRICE),
+        )
+
+    def test_purchased_and_full_plan_styles(self):
+        self.assertEqual(
+            price_bubble_style({"isForSale": True, "canDownload": True})[0],
+            " Purchased ",
+        )
+        self.assertEqual(
+            price_bubble_style({"assetType": "addon"})[2],
+            asset_bar_op.colors.ORANGE_FULL,
+        )
+
+    def test_wrapped_prices_have_extra_space_without_changing_thumbnails(self):
+        single = mini_bar_layout(3, 180, 1200, 800, 500, 300, text_size=24)
+        wrapped = mini_bar_layout(
+            3, 180, 1200, 800, 500, 300, text_size=24, price_rows=2
+        )
+        self.assertEqual(single[2], wrapped[2])
+        self.assertEqual(wrapped[3] - single[3], 31)
 
 
 class TestMiniAssetBarLayout(unittest.TestCase):
