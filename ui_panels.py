@@ -17,8 +17,6 @@
 # ##### END GPL LICENSE BLOCK #####
 
 
-from __future__ import annotations
-
 import json
 import logging
 import os
@@ -693,7 +691,7 @@ def draw_panel_nodegroup_search(self, context):
     utils.label_multiline(layout, text=props.report)
 
 
-def draw_common_filters(layout: UILayout, ui_props: BlenderKitUIProps):
+def draw_common_filters(layout: UILayout, ui_props: "BlenderKitUIProps"):
     """Draw common filter elements shared by multiple asset type panels.
 
     Args:
