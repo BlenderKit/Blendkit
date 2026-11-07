@@ -16,6 +16,7 @@
 #
 # ##### END GPL LICENSE BLOCK #####
 
+import json
 import logging
 import math
 import os
@@ -57,6 +58,7 @@ from ..bl_ui_widgets.bl_ui_widget import (
     region_redraw,
     set_font_size,
 )
+from .mini_asset_bar import MiniAssetBar
 
 
 bk_logger = logging.getLogger(__name__)
@@ -297,6 +299,9 @@ def modal_inside(self, context, event):
             bpy.ops.view3d.run_assetbar_fix_context(keep_running=True, do_search=False)
         return {"FINISHED"}
 
+    if self.handle_mini_asset_bar_event(event):
+        return {"RUNNING_MODAL"}
+
     is_quad_view = self._is_quad_view(context)
     if getattr(self, "_quad_view_state", None) != is_quad_view:
         self._quad_view_state = is_quad_view
@@ -429,6 +434,7 @@ def modal_inside(self, context, event):
     if ui_props.dragging:
         return {"PASS_THROUGH"}
 
+    self.mouse_x, self.mouse_y = self._event_coords_in_active_region(event)
     if self.handle_widget_events(event):
         return {"RUNNING_MODAL"}
 
@@ -3477,6 +3483,7 @@ class BlenderKitAssetBarOperator(BL_UI_OT_draw_operator):
 
     def setup_widgets(self, context, event):
         """Set up all widgets for the asset bar and tooltip."""
+        self.close_mini_asset_bar()
         widgets_panel = []
         widgets_panel.extend(self.widgets_panel)
         widgets_panel.extend(self.buttons)
@@ -3650,6 +3657,7 @@ class BlenderKitAssetBarOperator(BL_UI_OT_draw_operator):
         # to pass the operator to validation icons
         global asset_bar_operator
         asset_bar_operator = None
+        self.close_mini_asset_bar()
         self.restore_resize_cursor()
         self._reset_resize_state()
 
@@ -4080,9 +4088,129 @@ class BlenderKitAssetBarOperator(BL_UI_OT_draw_operator):
             return
         bpy.ops.wm.url_open(url=url)
 
+    def close_mini_asset_bar(self):
+        mini = getattr(self, "mini_asset_bar", None)
+        if mini is None:
+            return
+        removed = {id(widget) for widget in mini.widgets}
+        dim = getattr(self, "_mini_asset_bar_dim", None)
+        if dim is not None:
+            removed.add(id(dim))
+        self.widgets = [widget for widget in self.widgets if id(widget) not in removed]
+        self.mini_asset_bar = None
+        self._mini_asset_bar_dim = None
+        region_redraw()
+
+    def open_mini_asset_bar(self, assets, title, on_select, on_context=None):
+        self.close_mini_asset_bar()
+        if not assets:
+            return
+        context = self.context or bpy.context
+        self.hide_tooltip()
+        mini = MiniAssetBar(
+            context,
+            assets,
+            title,
+            self.button_size,
+            self.thumb_size,
+            self.mouse_x,
+            context.area.height - self.mouse_y,
+            set_thumb_check,
+            on_select,
+            on_context,
+        )
+        dim = BL_UI_Widget(
+            self.panel.x_screen,
+            self.panel.y_screen - self.other_button_size,
+            self.panel.width,
+            self.panel.height + self.other_button_size,
+        )
+        dim.bg_color = (0.0, 0.0, 0.0, 0.55)
+        dim.active = False
+        dim.init(context)
+        self.mini_asset_bar = mini
+        self._mini_asset_bar_dim = dim
+        self.widgets.extend([dim, *mini.widgets])
+        region_redraw()
+
+    def handle_mini_asset_bar_event(self, event):
+        mini = getattr(self, "mini_asset_bar", None)
+        if mini is None:
+            return False
+        if event.type in {"ESC", "WINDOW_DEACTIVATE"}:
+            self.close_mini_asset_bar()
+            return True
+        if event.type == "TIMER":
+            mini.refresh_thumbnails()
+        if event.type in {
+            "MOUSEMOVE",
+            "LEFTMOUSE",
+            "RIGHTMOUSE",
+            "MIDDLEMOUSE",
+            "WHEELUPMOUSE",
+            "WHEELDOWNMOUSE",
+        }:
+            self.mouse_x, self.mouse_y = self._event_coords_in_active_region(event)
+            if not mini.contains(self.mouse_x, mini.context.area.height - self.mouse_y):
+                self.close_mini_asset_bar()
+                return True
+            if mini.handle_event(event) == "REBUILD":
+                previous = {id(widget) for widget in mini.widgets}
+                self.widgets = [
+                    widget for widget in self.widgets if id(widget) not in previous
+                ]
+                mini.build_widgets()
+                self.widgets.extend(mini.widgets)
+        region_redraw()
+        return True
+
+    def select_mini_variant(self, parent, asset_index, variant, show_details=False):
+        self.close_mini_asset_bar()
+        parent["selectedVariantId"] = variant["id"]
+        ui_props = bpy.context.window_manager.blenderkitUI
+        ui_props.active_index = asset_index
+        ui_panels.set_overlay_panel_active()
+        if show_details:
+            bpy.ops.wm.blenderkit_asset_popup("EXEC_DEFAULT")
+            return
+        search.refresh_addon_variant(parent, variant["id"])
+        asset = addon_variants.resolve_variant(
+            parent, variant["id"], global_vars.SERVER
+        )
+        if asset.get("canDownload"):
+            bpy.ops.scene.blenderkit_addon_choice(
+                "INVOKE_DEFAULT", asset_data=json.dumps(asset)
+            )
+        else:
+            bpy.ops.wm.blenderkit_url_dialog(
+                "INVOKE_DEFAULT",
+                url=addon_variants.variant_gallery_url(
+                    paths.get_asset_gallery_url(parent["assetBaseId"]), asset
+                ),
+                message="Purchase or sign in to download this variant.",
+                link_text="View selected variant online",
+            )
+
     def show_variant_picker(self, widget):
-        bpy.context.window_manager.blenderkitUI.active_index = widget.asset_index
-        bpy.ops.wm.blenderkit_asset_popup("EXEC_DEFAULT")
+        assets = search.get_search_results()
+        if not assets or not 0 <= widget.asset_index < len(assets):
+            return
+        parent = assets[widget.asset_index]
+        variants = []
+        for variant in addon_variants.public_variants(parent):
+            asset = addon_variants.resolve_variant(
+                parent, variant["id"], global_vars.SERVER
+            )
+            asset["mini_label"] = addon_variants.variant_price(variant)
+            variants.append(asset)
+        self.open_mini_asset_bar(
+            variants,
+            parent.get("displayName", parent.get("name", "")),
+            partial(self.select_mini_variant, parent, widget.asset_index),
+            partial(
+                self.select_mini_variant, parent, widget.asset_index, show_details=True
+            ),
+        )
 
     def drag_drop_asset(self, widget):
         """Start drag and drop operation for the asset linked to this button."""
@@ -4105,6 +4233,9 @@ class BlenderKitAssetBarOperator(BL_UI_OT_draw_operator):
                 return
             if asset_data.get("assetType") == "author":
                 self.search_by_author(search_index)
+                return
+            if asset_data.get("structure") == "variant_parent":
+                self.show_variant_picker(SimpleNamespace(asset_index=search_index))
                 return
 
         # start drag drop
