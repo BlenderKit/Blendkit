@@ -4118,6 +4118,7 @@ class BlenderKitAssetBarOperator(BL_UI_OT_draw_operator):
             set_thumb_check,
             on_select,
             on_context,
+            text_size=self.free_button_text_size,
         )
         dim = BL_UI_Widget(
             self.panel.x_screen,

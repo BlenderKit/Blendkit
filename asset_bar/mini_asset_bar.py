@@ -6,10 +6,10 @@ from ..bl_ui_widgets.bl_ui_label import BL_UI_Label
 from ..bl_ui_widgets.bl_ui_widget import BL_UI_Widget
 
 
-def mini_bar_layout(count, tile_size, width, height, mouse_x, mouse_y):
+def mini_bar_layout(count, tile_size, width, height, mouse_x, mouse_y, text_size=12):
     margin = 8
-    header = 28
-    row_height = tile_size + 44
+    header = max(28, text_size + 16)
+    row_height = tile_size + 2 * text_size + 20
     columns = max(1, min(count, int((width - margin * 4) // tile_size)))
     rows = max(
         1,
@@ -67,12 +67,16 @@ class MiniAssetBar:
         set_thumbnail,
         on_select,
         on_context=None,
+        text_size=12,
     ):
         self.context = context
         self.assets = list(assets)
         self.title = title
         self.tile_size = tile_size
         self.thumbnail_size = thumbnail_size
+        self.text_size = text_size
+        self.header_height = max(28, text_size + 16)
+        self.label_height = 2 * text_size + 20
         self.set_thumbnail = set_thumbnail
         self.on_select = on_select
         self.on_context = on_context
@@ -84,6 +88,7 @@ class MiniAssetBar:
             context.area.height,
             mouse_x,
             mouse_y,
+            text_size,
         )
         self.widgets = []
         self.buttons = []
@@ -94,17 +99,23 @@ class MiniAssetBar:
         panel = BL_UI_Widget(left, top, width, height)
         panel.bg_color = (0.08, 0.08, 0.08, 0.98)
         panel.active = False
-        title = BL_UI_Label(left + 8, top + 6, width - 16, 16)
-        title.text_size = 13
-        title.text = fit_label(self.title, width - 16, 13)
+        title = BL_UI_Label(left + 8, top + 6, width - 16, self.text_size + 2)
+        title.text_size = self.text_size
+        title.text = fit_label(self.title, width - 16, self.text_size)
         self.widgets = [panel, title]
         self.buttons = []
         for slot, asset in enumerate(
             self.assets[self.offset : self.offset + columns * rows]
         ):
             x = left + 8 + (slot % columns) * self.tile_size
-            y = top + 28 + (slot // columns) * (self.tile_size + 44)
-            button = BL_UI_Button(x, y, self.tile_size, self.tile_size + 44)
+            y = (
+                top
+                + self.header_height
+                + (slot // columns) * (self.tile_size + self.label_height)
+            )
+            button = BL_UI_Button(
+                x, y, self.tile_size, self.tile_size + self.label_height
+            )
             button.text = ""
             button.bg_color = (0.15, 0.15, 0.15, 1.0)
             button.hover_bg_color = (0.24, 0.24, 0.24, 1.0)
@@ -117,14 +128,25 @@ class MiniAssetBar:
             button.set_mouse_enter(self.hover)
             if self.on_context:
                 button.set_mouse_down_right(self.show_context)
-            label = BL_UI_Label(x + 4, y + self.tile_size + 2, self.tile_size - 8, 14)
-            label.text_size = 12
-            label.text = fit_label(
-                asset.get("displayName", asset.get("name", "")), self.tile_size - 8, 12
+            label = BL_UI_Label(
+                x + 4, y + self.tile_size + 2, self.tile_size - 8, self.text_size + 2
             )
-            price = BL_UI_Label(x + 4, y + self.tile_size + 21, self.tile_size - 8, 14)
-            price.text_size = 12
-            price.text = fit_label(asset.get("mini_label", ""), self.tile_size - 8, 12)
+            label.text_size = self.text_size
+            label.text = fit_label(
+                asset.get("displayName", asset.get("name", "")),
+                self.tile_size - 8,
+                self.text_size,
+            )
+            price = BL_UI_Label(
+                x + 4,
+                y + self.tile_size + self.text_size + 9,
+                self.tile_size - 8,
+                self.text_size + 2,
+            )
+            price.text_size = self.text_size
+            price.text = fit_label(
+                asset.get("mini_label", ""), self.tile_size - 8, self.text_size
+            )
             self.buttons.append(button)
             self.widgets.extend((button, label, price))
         for widget in self.widgets:
@@ -134,7 +156,7 @@ class MiniAssetBar:
         self.widgets[1].text = fit_label(
             widget.asset_data.get("displayName", widget.asset_data.get("name", "")),
             self.rect[2] - 16,
-            13,
+            self.text_size,
         )
 
     def contains(self, mouse_x, mouse_y):

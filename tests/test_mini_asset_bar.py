@@ -7,6 +7,40 @@ from ..asset_bar.mini_asset_bar import MiniAssetBar, fit_label, mini_bar_layout
 
 
 class TestMiniAssetBarLayout(unittest.TestCase):
+    def test_main_bar_dimensions_and_text_size_are_forwarded(self):
+        context = Mock()
+        context.area.height = 800
+        owner = SimpleNamespace(
+            context=context,
+            close_mini_asset_bar=Mock(),
+            hide_tooltip=Mock(),
+            button_size=180,
+            thumb_size=172,
+            free_button_text_size=24,
+            mouse_x=400,
+            mouse_y=500,
+            widgets=[],
+            other_button_size=32,
+            panel=Mock(x_screen=0, y_screen=32, width=900, height=360),
+        )
+        with (
+            patch.object(asset_bar_op, "MiniAssetBar") as mini,
+            patch.object(asset_bar_op, "BL_UI_Widget"),
+            patch.object(asset_bar_op, "region_redraw"),
+        ):
+            asset_bar_op.BlenderKitAssetBarOperator.open_mini_asset_bar(
+                owner, [{"id": "variant"}], "Variants", Mock()
+            )
+        self.assertEqual(mini.call_args.args[3:5], (180, 172))
+        self.assertEqual(mini.call_args.kwargs["text_size"], 24)
+
+    def test_larger_text_increases_label_space_without_shrinking_thumbnails(self):
+        normal = mini_bar_layout(3, 180, 1200, 800, 500, 300, text_size=12)
+        enlarged = mini_bar_layout(3, 180, 1200, 800, 500, 300, text_size=24)
+        self.assertEqual(normal[2], enlarged[2])
+        self.assertEqual(enlarged[4:], (3, 1))
+        self.assertGreater(enlarged[3], normal[3])
+
     def test_shortened_variant_title_keeps_complete_variant_suffix(self):
         with patch.object(
             asset_bar_op.ui_bgl,
