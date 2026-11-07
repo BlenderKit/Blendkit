@@ -190,6 +190,40 @@ class TestAssetBarVersionBadge(unittest.TestCase):
         self.update_button(operator, asset_data, thumb_loaded=True)
         self.assertTrue(button.version_warning_icon.visible)
 
+    def test_variant_count_excludes_private_and_clears_on_slot_reuse(self):
+        button = self.create_button()
+        operator = self.create_operator(button)
+        operator.show_variant_picker = Mock()
+        operator.show_author_profile = Mock()
+        operator.enter_button = Mock()
+        operator.exit_button = Mock()
+        parent = {
+            "assetType": "addon",
+            "variants": [
+                {"id": "free"},
+                {"id": "pro"},
+                {"id": "private", "isPrivate": True},
+            ],
+        }
+        self.update_button(operator, parent)
+        self.assertTrue(button.author_button.visible)
+        self.assertEqual(button.author_button.text, "2")
+        button.author_button.set_mouse_down.assert_called_with(
+            operator.show_variant_picker
+        )
+        self.update_button(operator, parent, thumb_loaded=False)
+        self.assertFalse(button.author_button.visible)
+        self.update_button(
+            operator, {"assetType": "model", "sourceAppVersion": "4.1.2"}
+        )
+        self.assertFalse(button.author_button.visible)
+        self.update_button(operator, {"assetType": "author"})
+        self.assertTrue(button.author_button.visible)
+        self.assertEqual(button.author_button.text, "")
+        button.author_button.set_mouse_down.assert_called_with(
+            operator.show_author_profile
+        )
+
     def test_badge_position_and_visibility_after_reassigning_slot(self):
         button = self.create_button()
         operator = self.create_operator(button)

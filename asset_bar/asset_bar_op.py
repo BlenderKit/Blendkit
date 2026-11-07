@@ -32,6 +32,7 @@ import gpu
 from bpy.props import BoolProperty, StringProperty
 
 from .. import (
+    addon_variants,
     colors,
     comments_utils,
     global_vars,
@@ -695,6 +696,13 @@ def get_tooltip_data(asset_data):
                 base_price_color = colors.WHITE
 
                 user_price_text = ""
+
+    summary = addon_variants.variant_summary(asset_data)
+    if summary:
+        base_price_text = summary
+        user_price_text = ""
+        base_price_bg_color = colors.GRAY
+        base_price_color = colors.WHITE
 
     tooltip_data = {
         "aname": aname,
@@ -4072,6 +4080,10 @@ class BlenderKitAssetBarOperator(BL_UI_OT_draw_operator):
             return
         bpy.ops.wm.url_open(url=url)
 
+    def show_variant_picker(self, widget):
+        bpy.context.window_manager.blenderkitUI.active_index = widget.asset_index
+        bpy.ops.wm.blenderkit_asset_popup("EXEC_DEFAULT")
+
     def drag_drop_asset(self, widget):
         """Start drag and drop operation for the asset linked to this button."""
         now = time.time()
@@ -4579,7 +4591,21 @@ class BlenderKitAssetBarOperator(BL_UI_OT_draw_operator):
                     continue
 
                 # Distinguish author cards with a blue border and author icon.
+                variant_count = len(addon_variants.public_variants(asset_data))
                 if asset_data.get("assetType") == "author":
+                    if (
+                        getattr(asset_button.author_button, "_variant_badge", False)
+                        is True
+                    ):
+                        asset_button.author_button.text = ""
+                        asset_button.author_button.bg_color = (0.2, 0.2, 0.2, 0.0)
+                        asset_button.author_button.set_image(
+                            paths.get_addon_thumbnail_path("asset_type_author.png")
+                        )
+                        asset_button.author_button.set_mouse_down(
+                            self.show_author_profile
+                        )
+                        asset_button.author_button._variant_badge = False
                     asset_button.background_border_thickness = 3.0
                     asset_button.author_button.visible = True
                     asset_button.background_corner_radius = 12.0
@@ -4594,7 +4620,22 @@ class BlenderKitAssetBarOperator(BL_UI_OT_draw_operator):
                 else:
                     asset_button.background_border = False
                     asset_button.background_border_color = None
-                    asset_button.author_button.visible = False
+                    asset_button.author_button.visible = (
+                        bool(variant_count) and thumb_loaded
+                    )
+                    if variant_count:
+                        asset_button.author_button._variant_badge = True
+                        asset_button.author_button.set_image(None)
+                        asset_button.author_button.text = str(variant_count)
+                        asset_button.author_button.text_size = max(
+                            10, int(self.icon_size * 0.65)
+                        )
+                        asset_button.author_button.bg_color = (0.08, 0.08, 0.08, 0.9)
+                        asset_button.author_button.set_mouse_down(
+                            self.show_variant_picker
+                        )
+                        asset_button.author_button.set_mouse_enter(self.enter_button)
+                        asset_button.author_button.set_mouse_exit(self.exit_button)
                     asset_button.use_rounded_background = False
                     asset_button.background_corner_radius = 0.0
                     asset_button.image_corner_radius = None

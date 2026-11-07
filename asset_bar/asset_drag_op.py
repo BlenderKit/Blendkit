@@ -2137,6 +2137,18 @@ class AssetDragOperator(bpy.types.Operator):
         # Use the asset_search_index parameter passed to the operator, not the global ui_props.active_index
         # This is critical for multi-window support where active_index is shared across windows
         self.asset_data = dict(sr[self.asset_search_index])
+        if self.asset_data.get("structure") == "variant_parent":
+            from .. import addon_variants
+
+            if not self.asset_data.get("selectedVariantId"):
+                ui_props.active_index = self.asset_search_index
+                bpy.ops.wm.blenderkit_asset_popup("EXEC_DEFAULT")
+                ui_props.dragging = False
+                cls.active_operator_id = None
+                return {"CANCELLED"}
+            self.asset_data = addon_variants.resolve_variant(
+                self.asset_data, server=global_vars.SERVER
+            )
 
         # Try to load proxor preview for model/printable assets
         if utils.proxor_enabled() and self.asset_data.get("assetType") in (
@@ -2179,6 +2191,11 @@ class AssetDragOperator(bpy.types.Operator):
             url = paths.get_unlock_asset_url(
                 self.asset_data["id"], "addon_purchase_drag"
             )
+            if self.asset_data.get("parentAssetBaseId"):
+                url = addon_variants.variant_gallery_url(
+                    paths.get_asset_gallery_url(self.asset_data["parentAssetBaseId"]),
+                    self.asset_data,
+                )
             bpy.ops.wm.blenderkit_url_dialog(
                 "INVOKE_REGION_WIN", url=url, message=message, link_text=link_text
             )

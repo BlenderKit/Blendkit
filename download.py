@@ -32,6 +32,7 @@ import bpy  # type: ignore
 import requests
 
 from . import (
+    addon_variants,
     append_link,
     client_lib,
     client_tasks,
@@ -289,7 +290,7 @@ def install_addon_from_local_file(
     bk_logger.info("Installing addon '%s' from local file: %s", addon_name, file_path)
 
     status = get_addon_installation_status(asset_data)
-    if status["installed"]:
+    if status["installed"] and not asset_data.get("replaceInstalledVariant"):
         reports.add_report(f"Addon '{addon_name}' is already installed", type="INFO")
         return
 
@@ -305,6 +306,7 @@ def install_addon_from_local_file(
         repo=repo.module,
         filepath=file_path,
         enable_on_install=enable_on_install,
+        **({"overwrite": True} if asset_data.get("replaceInstalledVariant") else {}),
     )
     if "FINISHED" not in result:
         raise Exception(f"Installation failed - operation returned: {result}")
@@ -2101,6 +2103,19 @@ class BlenderkitAddonChoiceOperator(bpy.types.Operator):
 
     asset_data: StringProperty()  # type: ignore # JSON encoded asset data
 
+    def variant_items(self, context):
+        return addon_variants.variant_enum_items(self.asset_data)
+
+    def update_variant(self, context):
+        self.confirm_incompatible = False
+        self.replace_variant = False
+
+    variant_id: EnumProperty(name="Variant", items=variant_items, update=update_variant)
+    replace_variant: BoolProperty(
+        name="Install selected variant (replace installed package)",
+        default=False,
+    )
+
     # Actions for not installed addons
     action_not_installed: EnumProperty(
         name="Action",
@@ -2173,6 +2188,11 @@ class BlenderkitAddonChoiceOperator(bpy.types.Operator):
 
         try:
             asset_data = json.loads(self.asset_data)
+            if asset_data.get("structure") == "variant_parent":
+                layout.prop(self, "variant_id")
+                asset_data = addon_variants.resolve_variant(
+                    asset_data, self.variant_id, global_vars.SERVER
+                )
         except:
             layout.label(text="Invalid asset data")
             return
@@ -2181,6 +2201,10 @@ class BlenderkitAddonChoiceOperator(bpy.types.Operator):
         status = get_addon_installation_status(asset_data)
 
         layout.label(text=f"Addon: {addon_name}")
+        if asset_data.get("parentAssetBaseId"):
+            layout.label(text=addon_variants.variant_price(asset_data))
+            if status["installed"]:
+                layout.prop(self, "replace_variant")
         layout.separator()
 
         # Compatibility warning (shown only when relevant).
@@ -2236,6 +2260,10 @@ class BlenderkitAddonChoiceOperator(bpy.types.Operator):
         self.action_not_installed = "INSTALL_AND_ENABLE"
         self.action_installed_enabled = "DISABLE"
         self.action_installed_disabled = "ENABLE"
+        parent = json.loads(self.asset_data or "{}")
+        selected = addon_variants.selected_variant(parent)
+        if selected:
+            self.variant_id = selected["id"]
         wm = context.window_manager
         return wm.invoke_props_dialog(self, width=350)
 
@@ -2243,6 +2271,20 @@ class BlenderkitAddonChoiceOperator(bpy.types.Operator):
 
         try:
             asset_data = json.loads(self.asset_data)
+            if asset_data.get("structure") == "variant_parent":
+                search.refresh_addon_variant(asset_data, self.variant_id)
+                asset_data = addon_variants.resolve_variant(
+                    asset_data, self.variant_id, global_vars.SERVER
+                )
+            elif asset_data.get("parentAssetBaseId"):
+                parent = {
+                    "assetBaseId": asset_data["parentAssetBaseId"],
+                    "variants": [asset_data],
+                }
+                search.refresh_addon_variant(parent, asset_data["id"])
+                asset_data = addon_variants.resolve_variant(
+                    parent, asset_data["id"], global_vars.SERVER
+                )
         except:
             reports.add_report("Invalid asset data", type="ERROR")
             return {"CANCELLED"}
@@ -2258,6 +2300,10 @@ class BlenderkitAddonChoiceOperator(bpy.types.Operator):
             selected_action = self.action_installed_enabled
         else:
             selected_action = self.action_installed_disabled
+
+        if asset_data.get("parentAssetBaseId") and self.replace_variant:
+            selected_action = "INSTALL_AND_ENABLE"
+            asset_data["replaceInstalledVariant"] = True
 
         # For non-install actions, we need the repository and pkg_id
         repo_index = -1
@@ -2282,6 +2328,30 @@ class BlenderkitAddonChoiceOperator(bpy.types.Operator):
                 "INSTALL_AND_TEMP_ENABLE",
                 "INSTALL_ONLY",
             ):
+                if asset_data.get("structure") == "variant_parent":
+                    self.report({"ERROR"}, "No public variants available")
+                    return {"CANCELLED"}
+                if asset_data.get("parentAssetBaseId") and not asset_data.get(
+                    "canDownload"
+                ):
+                    bpy.ops.wm.blenderkit_url_dialog(
+                        "INVOKE_DEFAULT",
+                        url=addon_variants.variant_gallery_url(
+                            paths.get_asset_gallery_url(
+                                asset_data["parentAssetBaseId"]
+                            ),
+                            asset_data,
+                        ),
+                        message="Purchase or sign in to download this variant.",
+                        link_text="View selected variant online",
+                    )
+                    return {"CANCELLED"}
+                if asset_data.get("parentAssetBaseId") and not any(
+                    file.get("fileType") == "zip_file"
+                    for file in asset_data.get("files", [])
+                ):
+                    self.report({"ERROR"}, "Selected variant has no ZIP archive")
+                    return {"CANCELLED"}
                 # Block installation when the addon's declared Blender version
                 # range does not include this Blender, unless the user has
                 # explicitly confirmed via the checkbox.
@@ -2625,6 +2695,12 @@ class BlenderkitDownloadOperator(bpy.types.Operator):
     def execute(self, context: bpy.types.Context) -> set[str]:
         preferences = bpy.context.preferences.addons[__package__].preferences
         self.asset_data = self.get_asset_data(context)
+
+        if self.asset_data.get("structure") == "variant_parent":
+            bpy.ops.scene.blenderkit_addon_choice(
+                "INVOKE_DEFAULT", asset_data=json.dumps(self.asset_data)
+            )
+            return {"FINISHED"}
 
         if not has_asset_files(self.asset_data):
             msg = f"Asset {self.asset_data['displayName']} has no files. Author should reupload the asset."
