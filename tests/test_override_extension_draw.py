@@ -175,7 +175,10 @@ class TestExtensionDrawItemOverride(unittest.TestCase):
             result = oed.extension_draw_item_override(**kwargs)
 
         self.assertTrue(result)
-        original_draw.assert_called_once_with(**kwargs)
+        original_draw.assert_called_once_with(
+            kwargs["layout"],
+            **{key: value for key, value in kwargs.items() if key != "layout"},
+        )
 
 
 if __name__ == "__main__":
