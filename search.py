@@ -811,12 +811,26 @@ def cleanup_search_results():
 
 
 def handle_search_task_error(task: client_tasks.Task) -> None:
-    """Handle incoming search task error."""
-    # First find the history step that the task belongs to
-    for history_step in get_history_steps().values():
-        if task.task_id in history_step.get("search_tasks", {}).keys():
-            history_step["is_searching"] = False
-            break
+    """Handle incoming search task error.
+
+    A failed new search leaves behind a history step without any results, which
+    would force the user to click through an empty entry when navigating the history.
+    Such a step is removed. Steps that already hold results (failed pagination or
+    refresh) are kept.
+    """
+    search_data = search_tasks.pop(task.task_id, None)
+    if search_data is not None:
+        history_id = search_data.history_id
+        get_next = search_data.get_next
+    else:
+        history_id = task.data.get("history_id", "")
+        get_next = bool(task.data.get("get_next"))
+
+    history_step = get_history_step(history_id)
+    if history_step is not None:
+        history_step["is_searching"] = False
+        if not get_next:
+            discard_history_step_without_results(history_id)
     return reports.add_report(task.message, type="ERROR", details=task.message_detailed)
 
 
@@ -2662,9 +2676,13 @@ def get_ui_state():
     return ui_state
 
 
-def update_tab_name(active_tab):
-    """Update the name of the active tab."""
-    history_step = get_active_history_step()
+def update_tab_name(active_tab, history_step=None):
+    """Update the name of the active tab.
+
+    The name is derived from `history_step`, by default the active history step.
+    """
+    if history_step is None:
+        history_step = get_active_history_step()
     ui_state = history_step.get("ui_state", {})
 
     # Update tab name based on search or category
@@ -2852,6 +2870,59 @@ def append_history_step(
 
 def get_history_step(history_step_id):
     return global_vars.DATA["history steps"].get(history_step_id)
+
+
+def discard_history_step_without_results(history_step_id: str) -> bool:
+    """Remove a history step which never received search results.
+
+    Keeps `history_index` pointing at the same step as before, or at the nearest
+    remaining one if the current step was removed, and refreshes the history buttons.
+    A step with results, even an empty list from a successful search, is never removed.
+
+    Args:
+        history_step_id: ID of the history step to remove.
+
+    Returns:
+        True if the step was removed, False otherwise.
+    """
+    history_step = get_history_step(history_step_id)
+    if history_step is None or "search_results" in history_step:
+        return False
+
+    for tab in global_vars.TABS["tabs"]:
+        step_ids = [step["id"] for step in tab["history"]]
+        if history_step_id not in step_ids:
+            continue
+        position = step_ids.index(history_step_id)
+        tab["history"].pop(position)
+        if position < tab["history_index"]:
+            tab["history_index"] -= 1
+        elif position == tab["history_index"]:
+            tab["history_index"] = max(position - 1, 0) if tab["history"] else -1
+        global_vars.DATA["history steps"].pop(history_step_id, None)
+
+        # With empty history the tab falls back to the asset type name. Passing the step
+        # explicitly avoids get_active_history_step() creating a new, empty step.
+        if tab is get_active_tab():
+            if tab["history"]:
+                update_tab_name(tab)
+            else:
+                ui_props = bpy.context.window_manager.blenderkitUI
+                fallback_step = {
+                    "ui_state": {"ui_props": {"asset_type": ui_props.asset_type}}
+                }
+                update_tab_name(tab, fallback_step)
+            asset_bar = asset_bar_op.asset_bar_operator
+            if asset_bar and hasattr(asset_bar, "history_back_button"):
+                asset_bar.history_back_button.visible = tab["history_index"] > 0
+                asset_bar.history_forward_button.visible = (
+                    tab["history_index"] < len(tab["history"]) - 1
+                )
+                asset_bar.update_tab_icons()
+        return True
+
+    global_vars.DATA["history steps"].pop(history_step_id, None)
+    return True
 
 
 def get_history_steps():

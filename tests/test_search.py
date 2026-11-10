@@ -16,8 +16,9 @@
 #
 # ##### END GPL LICENSE BLOCK #####
 
+import copy
 import unittest
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 
 import bpy
 
@@ -28,7 +29,7 @@ import bpy
 # "blenderkit" is unreliable when several blenderkit* add-ons are enabled.
 if __package__:
     __package__ = __package__.rsplit(".tests", 1)[0]
-from . import search
+from . import client_tasks, datas, global_vars, search
 
 
 def mocked_preferences() -> Mock:
@@ -352,3 +353,125 @@ class TestBuildQueryNodegroup(unittest.TestCase):
         query = search.build_query_nodegroup(self.props, self.ui_props)
         expected = {"asset_type": "nodegroup"}
         self.assertEqual(query, expected)
+
+
+class TestFailedSearchHistory(unittest.TestCase):
+    """Failed searches must not leave empty steps in the search history."""
+
+    def setUp(self):
+        self._orig_tabs = copy.deepcopy(global_vars.TABS)
+        self._orig_steps = dict(global_vars.DATA["history steps"])
+        self._orig_search_tasks = dict(search.search_tasks)
+        global_vars.TABS["active_tab"] = 0
+        global_vars.TABS["tabs"] = [
+            {"name": "Default", "history": [], "history_index": -1}
+        ]
+        global_vars.DATA["history steps"] = {}
+        search.search_tasks.clear()
+
+    def tearDown(self):
+        global_vars.TABS.clear()
+        global_vars.TABS.update(self._orig_tabs)
+        global_vars.DATA["history steps"] = self._orig_steps
+        search.search_tasks.clear()
+        search.search_tasks.update(self._orig_search_tasks)
+
+    @property
+    def tab(self) -> dict:
+        return global_vars.TABS["tabs"][0]
+
+    def add_step(self, step_id: str, results=None) -> dict:
+        """Add a history step to the tab, with results if given (a finished search)."""
+        step = {"id": step_id, "ui_state": {}, "is_searching": results is None}
+        if results is not None:
+            step["search_results"] = results
+        self.tab["history"].append(step)
+        self.tab["history_index"] = len(self.tab["history"]) - 1
+        global_vars.DATA["history steps"][step_id] = step
+        return step
+
+    def fail_search(self, step_id: str, get_next: bool = False) -> None:
+        """Deliver an error for a search task belonging to the given step."""
+        task = client_tasks.Task(
+            data={"history_id": step_id, "get_next": get_next},
+            app_id="1",
+            task_type="search",
+            status="error",
+            message="Search failed",
+        )
+        search.search_tasks[task.task_id] = datas.SearchData(
+            PREFS={},
+            tempdir="",
+            urlquery="",
+            asset_type="model",
+            scene_uuid="",
+            get_next=get_next,
+            page_size=1,
+            blender_version="",
+            history_id=step_id,
+        )
+        with patch.object(search.reports, "add_report"):
+            search.handle_search_task_error(task)
+
+    def history_ids(self) -> list:
+        return [step["id"] for step in self.tab["history"]]
+
+    def test_failed_first_search_leaves_no_history(self):
+        self.add_step("a")
+        self.tab["name"] = "table"
+        self.fail_search("a")
+        self.assertEqual(self.history_ids(), [])
+        self.assertEqual(self.tab["history_index"], -1)
+        self.assertNotIn("a", global_vars.DATA["history steps"])
+        asset_type = bpy.context.window_manager.blenderkitUI.asset_type
+        self.assertEqual(self.tab["name"], asset_type.lower())
+
+    def test_failed_search_keeps_previous_successful_step(self):
+        self.add_step("a", results=[{"name": "x"}])
+        self.add_step("b")
+        self.fail_search("b")
+        self.assertEqual(self.history_ids(), ["a"])
+        self.assertEqual(self.tab["history_index"], 0)
+        self.assertNotIn("b", global_vars.DATA["history steps"])
+
+    def test_failed_search_before_current_step_shifts_index(self):
+        self.add_step("a", results=[{"name": "x"}])
+        self.add_step("b")
+        self.add_step("c")
+        self.fail_search("b")
+        self.assertEqual(self.history_ids(), ["a", "c"])
+        self.assertEqual(self.tab["history_index"], 1)
+
+    def test_failed_search_after_current_step_keeps_index(self):
+        self.add_step("a", results=[{"name": "x"}])
+        self.add_step("b", results=[{"name": "y"}])
+        self.add_step("c")
+        self.tab["history_index"] = 0
+        self.fail_search("c")
+        self.assertEqual(self.history_ids(), ["a", "b"])
+        self.assertEqual(self.tab["history_index"], 0)
+
+    def test_failed_pagination_keeps_step_with_results(self):
+        step = self.add_step("a", results=[{"name": "x"}])
+        step["is_searching"] = True
+        self.fail_search("a", get_next=True)
+        self.assertEqual(self.history_ids(), ["a"])
+        self.assertFalse(step["is_searching"])
+
+    def test_failed_refresh_keeps_step_with_zero_results(self):
+        step = self.add_step("a", results=[])
+        step["is_searching"] = True
+        self.fail_search("a")
+        self.assertEqual(self.history_ids(), ["a"])
+        self.assertFalse(step["is_searching"])
+
+    def test_failure_of_already_removed_step_is_ignored(self):
+        self.add_step("a", results=[{"name": "x"}])
+        self.fail_search("missing")
+        self.assertEqual(self.history_ids(), ["a"])
+        self.assertEqual(self.tab["history_index"], 0)
+
+    def test_error_resets_searching_flag_of_removed_step(self):
+        step = self.add_step("a")
+        self.fail_search("a")
+        self.assertFalse(step["is_searching"])
