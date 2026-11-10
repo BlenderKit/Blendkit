@@ -11,6 +11,7 @@ import logging
 import os
 import re
 import time
+from typing import Any
 
 import bl_pkg.bl_extension_ui as exui
 import blf
@@ -529,23 +530,23 @@ def extension_draw_item_blenderkit(
 
 
 def extension_draw_item_override(
-    layout,
+    layout: bpy.types.UILayout,
     *,
-    pkg_id,  # `str`
-    item_local,  # `PkgManifest_Normalized | None`
-    item_remote,  # `PkgManifest_Normalized | None`
-    is_enabled,  # `bool`
-    is_outdated,  # `bool`
-    show,  # `bool`.
-    mark,  # `bool | None`.
+    pkg_id: str,
+    item_local: Any,  # `PkgManifest_Normalized | None`
+    item_remote: Any,  # `PkgManifest_Normalized | None`
+    is_enabled: bool,
+    is_outdated: bool,
+    show: bool,
+    mark: bool | None,
     # General vars.
-    repo_index,  # `int`
-    repo_item,  # `RepoItem`
-    operation_in_progress,  # `bool`
-    extensions_warnings,  # `dict[str, list[str]]`
-    show_developer_ui=False,  # `bool`
-    **kwargs,
-):
+    repo_index: int,
+    repo_item: Any,  # `RepoItem`
+    operation_in_progress: bool,
+    extensions_warnings: dict[str, list[str]],
+    show_developer_ui: bool = False,
+    **kwargs: Any,
+) -> bool:
     """Override the extension draw function to handle custom UI for specific repositories.
 
     Args:
@@ -562,7 +563,11 @@ def extension_draw_item_override(
         operation_in_progress: Boolean indicating if an operation is in progress.
         extensions_warnings: Dictionary of extension warnings.
         show_developer_ui: Boolean indicating if the developer UI should be shown.
-        **kwargs: Additional keyword arguments.
+        **kwargs: Additional keyword arguments added by newer Blender versions
+            (e.g. ``show_type`` in Blender 5.3), forwarded to the original function.
+
+    Returns:
+        True once the item has been drawn.
     """
     # filter by verification state, only for Blendkit repository
     if repo_item.remote_url == EXTENSIONS_API_URL:
