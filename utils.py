@@ -1093,6 +1093,26 @@ def get_thumbnail(name):
     return img
 
 
+def get_original_file_size(asset_data: dict) -> Optional[int]:
+    """Get the size of the original asset file, without resolutions, thumbnails or other files.
+
+    Args:
+        asset_data: Asset data, expects `files` with `fileType` and `fileUploadSize` in bytes.
+
+    Returns:
+        Size in bytes of the `blend` file, or of the `zip_file` for add-ons.
+        None if the file or a valid positive integer size is not available.
+    """
+    sizes = {}
+    for f in asset_data.get("files") or []:
+        if not isinstance(f, dict):
+            continue
+        size = f.get("fileUploadSize")
+        if isinstance(size, int) and not isinstance(size, bool) and size > 0:
+            sizes.setdefault(f.get("fileType"), size)
+    return sizes.get("blend") or sizes.get("zip_file")
+
+
 def files_size_to_text(size: int) -> str:
     """
     Convert a file size in bytes to a human-readable string in bytes, KiB, MiB, GiB or TiB.
