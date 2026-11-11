@@ -813,10 +813,10 @@ def cleanup_search_results():
 def handle_search_task_error(task: client_tasks.Task) -> None:
     """Handle incoming search task error.
 
-    A failed new search leaves behind a history step without any results, which
-    would force the user to click through an empty entry when navigating the history.
-    Such a step is removed. Steps that already hold results (failed pagination or
-    refresh) are kept.
+    A failed new search stays in the history as a step with empty results, so the
+    previous results are not shown for it. If the previous step is the same failed
+    search, the two are merged. Steps that already hold results (failed pagination
+    or refresh) are left as they are.
     """
     search_data = search_tasks.pop(task.task_id, None)
     if search_data is not None:
@@ -829,8 +829,10 @@ def handle_search_task_error(task: client_tasks.Task) -> None:
     history_step = get_history_step(history_id)
     if history_step is not None:
         history_step["is_searching"] = False
-        if not get_next:
-            discard_history_step_without_results(history_id)
+        if not get_next and "search_results" not in history_step:
+            history_step["search_results"] = []
+            history_step["search_failed"] = True
+            merge_duplicate_history_step(history_id)
     return reports.add_report(task.message, type="ERROR", details=task.message_detailed)
 
 
@@ -946,6 +948,9 @@ def handle_search_task(task: client_tasks.Task) -> bool:
     history_step["search_results"] = result_field
     history_step["search_results_orig"] = task.result
     history_step["is_searching"] = False
+    history_step.pop("search_failed", None)
+    if not task.data.get("get_next"):
+        merge_duplicate_history_step(orig_task.history_id)
 
     if len(result_field) < ui_props.scroll_offset or not (task.data.get("get_next")):
         # jump back
@@ -2872,21 +2877,30 @@ def get_history_step(history_step_id):
     return global_vars.DATA["history steps"].get(history_step_id)
 
 
-def discard_history_step_without_results(history_step_id: str) -> bool:
-    """Remove a history step which never received search results.
+def _history_step_result_ids(history_step: dict) -> list:
+    """Return identifiers of the assets held by a history step, in order."""
+    return [
+        result.get("assetBaseId") or result.get("id")
+        for result in history_step.get("search_results", [])
+    ]
 
-    Keeps `history_index` pointing at the same step as before, or at the nearest
-    remaining one if the current step was removed, and refreshes the history buttons.
-    A step with results, even an empty list from a successful search, is never removed.
+
+def merge_duplicate_history_step(history_step_id: str) -> bool:
+    """Remove a finished history step that repeats the step right before it.
+
+    The step is a duplicate when it has the same search settings and the same outcome as
+    the previous step of its tab: both failed, or both returned the same assets. The
+    previous step stays and becomes the current one, so repeating a search does not
+    add entries to the history.
 
     Args:
-        history_step_id: ID of the history step to remove.
+        history_step_id: ID of the history step to check.
 
     Returns:
         True if the step was removed, False otherwise.
     """
     history_step = get_history_step(history_step_id)
-    if history_step is None or "search_results" in history_step:
+    if history_step is None:
         return False
 
     for tab in global_vars.TABS["tabs"]:
@@ -2894,24 +2908,27 @@ def discard_history_step_without_results(history_step_id: str) -> bool:
         if history_step_id not in step_ids:
             continue
         position = step_ids.index(history_step_id)
-        tab["history"].pop(position)
-        if position < tab["history_index"]:
-            tab["history_index"] -= 1
-        elif position == tab["history_index"]:
-            tab["history_index"] = max(position - 1, 0) if tab["history"] else -1
-        global_vars.DATA["history steps"].pop(history_step_id, None)
+        if position == 0:
+            return False
+        previous = tab["history"][position - 1]
+        if previous.get("ui_state") != history_step.get("ui_state"):
+            return False
+        if bool(previous.get("search_failed")) != bool(
+            history_step.get("search_failed")
+        ):
+            return False
+        if "search_results" not in previous or "search_results" not in history_step:
+            return False
+        if _history_step_result_ids(previous) != _history_step_result_ids(history_step):
+            return False
 
-        # With empty history the tab falls back to the asset type name. Passing the step
-        # explicitly avoids get_active_history_step() creating a new, empty step.
+        tab["history"].pop(position)
+        global_vars.DATA["history steps"].pop(history_step_id, None)
+        if position <= tab["history_index"]:
+            tab["history_index"] -= 1
+
         if tab is get_active_tab():
-            if tab["history"]:
-                update_tab_name(tab)
-            else:
-                ui_props = bpy.context.window_manager.blenderkitUI
-                fallback_step = {
-                    "ui_state": {"ui_props": {"asset_type": ui_props.asset_type}}
-                }
-                update_tab_name(tab, fallback_step)
+            update_tab_name(tab, tab["history"][tab["history_index"]])
             asset_bar = asset_bar_op.asset_bar_operator
             if asset_bar and hasattr(asset_bar, "history_back_button"):
                 asset_bar.history_back_button.visible = tab["history_index"] > 0
@@ -2920,10 +2937,7 @@ def discard_history_step_without_results(history_step_id: str) -> bool:
                 )
                 asset_bar.update_tab_icons()
         return True
-
-    global_vars.DATA["history steps"].pop(history_step_id, None)
-    return True
-
+    return False
 
 def get_history_steps():
     return global_vars.DATA["history steps"]

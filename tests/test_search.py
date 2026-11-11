@@ -356,7 +356,7 @@ class TestBuildQueryNodegroup(unittest.TestCase):
 
 
 class TestFailedSearchHistory(unittest.TestCase):
-    """Failed searches must not leave empty steps in the search history."""
+    """Repeated or failed searches must not clutter the search history."""
 
     def setUp(self):
         self._orig_tabs = copy.deepcopy(global_vars.TABS)
@@ -416,62 +416,117 @@ class TestFailedSearchHistory(unittest.TestCase):
     def history_ids(self) -> list:
         return [step["id"] for step in self.tab["history"]]
 
-    def test_failed_first_search_leaves_no_history(self):
-        self.add_step("a")
-        self.tab["name"] = "table"
-        self.fail_search("a")
-        self.assertEqual(self.history_ids(), [])
-        self.assertEqual(self.tab["history_index"], -1)
-        self.assertNotIn("a", global_vars.DATA["history steps"])
-        asset_type = bpy.context.window_manager.blenderkitUI.asset_type
-        self.assertEqual(self.tab["name"], asset_type.lower())
+    def finish_search(self, step_id: str, asset_ids: list, state=None) -> None:
+        """Store results on a step the way a finished search does, then merge."""
+        step = global_vars.DATA["history steps"][step_id]
+        step["ui_state"] = state or {"query": "tree"}
+        step["search_results"] = [{"assetBaseId": asset_id} for asset_id in asset_ids]
+        step["is_searching"] = False
+        search.merge_duplicate_history_step(step_id)
 
-    def test_failed_search_keeps_previous_successful_step(self):
-        self.add_step("a", results=[{"name": "x"}])
+    def test_failed_search_stays_in_history_with_empty_results(self):
+        step = self.add_step("a")
+        self.fail_search("a")
+        self.assertEqual(self.history_ids(), ["a"])
+        self.assertEqual(step["search_results"], [])
+        self.assertTrue(step["search_failed"])
+        self.assertFalse(step["is_searching"])
+
+    def test_failed_search_does_not_show_previous_results(self):
+        self.add_step("a", results=[{"assetBaseId": "x"}])
         self.add_step("b")
         self.fail_search("b")
+        self.assertEqual(self.history_ids(), ["a", "b"])
+        self.assertEqual(self.tab["history_index"], 1)
+        self.assertEqual(search.get_search_results(), [])
+
+    def test_repeated_failed_search_is_merged(self):
+        self.add_step("a")
+        self.fail_search("a")
+        self.add_step("b")
+        self.fail_search("b")
+        self.add_step("c")
+        self.fail_search("c")
         self.assertEqual(self.history_ids(), ["a"])
         self.assertEqual(self.tab["history_index"], 0)
-        self.assertNotIn("b", global_vars.DATA["history steps"])
+        self.assertEqual(list(global_vars.DATA["history steps"]), ["a"])
 
-    def test_failed_search_before_current_step_shifts_index(self):
-        self.add_step("a", results=[{"name": "x"}])
-        self.add_step("b")
-        self.add_step("c")
+    def test_failed_search_with_other_query_is_kept(self):
+        self.add_step("a")
+        self.fail_search("a")
+        b = self.add_step("b")
+        b["ui_state"] = {"query": "dog"}
         self.fail_search("b")
-        self.assertEqual(self.history_ids(), ["a", "c"])
-        self.assertEqual(self.tab["history_index"], 1)
-
-    def test_failed_search_after_current_step_keeps_index(self):
-        self.add_step("a", results=[{"name": "x"}])
-        self.add_step("b", results=[{"name": "y"}])
-        self.add_step("c")
-        self.tab["history_index"] = 0
-        self.fail_search("c")
         self.assertEqual(self.history_ids(), ["a", "b"])
-        self.assertEqual(self.tab["history_index"], 0)
+
+    def test_failed_search_after_successful_one_is_kept(self):
+        self.add_step("a", results=[])
+        self.add_step("b")
+        self.fail_search("b")
+        self.assertEqual(self.history_ids(), ["a", "b"])
 
     def test_failed_pagination_keeps_step_with_results(self):
-        step = self.add_step("a", results=[{"name": "x"}])
+        step = self.add_step("a", results=[{"assetBaseId": "x"}])
         step["is_searching"] = True
         self.fail_search("a", get_next=True)
         self.assertEqual(self.history_ids(), ["a"])
+        self.assertEqual(step["search_results"], [{"assetBaseId": "x"}])
+        self.assertNotIn("search_failed", step)
         self.assertFalse(step["is_searching"])
 
-    def test_failed_refresh_keeps_step_with_zero_results(self):
-        step = self.add_step("a", results=[])
+    def test_failed_refresh_keeps_existing_results(self):
+        step = self.add_step("a", results=[{"assetBaseId": "x"}])
         step["is_searching"] = True
         self.fail_search("a")
-        self.assertEqual(self.history_ids(), ["a"])
-        self.assertFalse(step["is_searching"])
+        self.assertEqual(step["search_results"], [{"assetBaseId": "x"}])
+        self.assertNotIn("search_failed", step)
 
-    def test_failure_of_already_removed_step_is_ignored(self):
-        self.add_step("a", results=[{"name": "x"}])
+    def test_failure_of_unknown_step_is_ignored(self):
+        self.add_step("a", results=[{"assetBaseId": "x"}])
         self.fail_search("missing")
         self.assertEqual(self.history_ids(), ["a"])
         self.assertEqual(self.tab["history_index"], 0)
 
-    def test_error_resets_searching_flag_of_removed_step(self):
-        step = self.add_step("a")
-        self.fail_search("a")
-        self.assertFalse(step["is_searching"])
+    def test_identical_consecutive_results_are_merged(self):
+        self.add_step("a")
+        self.finish_search("a", ["x", "y"])
+        self.add_step("b")
+        self.finish_search("b", ["x", "y"])
+        self.assertEqual(self.history_ids(), ["a"])
+        self.assertEqual(self.tab["history_index"], 0)
+        self.assertNotIn("b", global_vars.DATA["history steps"])
+
+    def test_different_results_are_kept(self):
+        self.add_step("a")
+        self.finish_search("a", ["x", "y"])
+        self.add_step("b")
+        self.finish_search("b", ["x", "z"])
+        self.assertEqual(self.history_ids(), ["a", "b"])
+        self.assertEqual(self.tab["history_index"], 1)
+
+    def test_same_results_for_different_query_are_kept(self):
+        self.add_step("a")
+        self.finish_search("a", ["x"], state={"query": "tree"})
+        self.add_step("b")
+        self.finish_search("b", ["x"], state={"query": "plant"})
+        self.assertEqual(self.history_ids(), ["a", "b"])
+
+    def test_first_step_is_never_merged(self):
+        self.add_step("a")
+        self.finish_search("a", ["x"])
+        self.assertEqual(self.history_ids(), ["a"])
+
+    def test_merge_keeps_index_when_step_is_not_current(self):
+        self.add_step("a")
+        self.finish_search("a", ["x"])
+        self.add_step("b")
+        self.finish_search("b", ["x"])
+        self.add_step("c")
+        self.finish_search("c", ["y"])
+        self.assertEqual(self.history_ids(), ["a", "c"])
+        self.assertEqual(self.tab["history_index"], 1)
+
+    def test_merge_of_unknown_step_does_nothing(self):
+        self.add_step("a", results=[])
+        self.assertFalse(search.merge_duplicate_history_step("missing"))
+        self.assertEqual(self.history_ids(), ["a"])
