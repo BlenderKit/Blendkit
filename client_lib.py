@@ -29,8 +29,8 @@ import sys
 import tempfile
 import threading
 from http.client import responses as http_responses
-from pathlib import Path
 from os import path
+from pathlib import Path
 from typing import Optional, Union
 
 import bpy
@@ -994,7 +994,7 @@ def get_client_directory() -> str:
     r"""Get the path to the Blendkit-Client directory where all data for client are stored.
     It mirrors blenderkit/bk_client:utils.go-clientDirectoryPath().
 
-    On Windows: `%LOCALAPPDATA%\blendkit_client`, e.g.: C:\Users\<Username>\AppData\Local\blendkit_client.  
+    On Windows: `%LOCALAPPDATA%\blendkit_client`, e.g.: C:\Users\<Username>\AppData\Local\blendkit_client.
     On Linux and MacOS: `$XDG_DATA_HOME`, if not set then: `$HOME/.local/share/blendkit_client`,
     following XDG Base Directory Specification (https://specifications.freedesktop.org/basedir/latest/#variables).
     """
