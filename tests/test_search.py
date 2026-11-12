@@ -496,6 +496,16 @@ class TestFailedSearchHistory(unittest.TestCase):
         self.assertEqual(self.tab["history_index"], 0)
         self.assertNotIn("b", global_vars.DATA["history steps"])
 
+    def test_successful_repeat_replaces_failed_step(self):
+        self.add_step("a")
+        self.fail_search("a")
+        global_vars.DATA["history steps"]["a"]["ui_state"] = {"query": "tree"}
+        self.add_step("b")
+        self.finish_search("b", ["x", "y"])
+        self.assertEqual(self.history_ids(), ["b"])
+        self.assertEqual(self.tab["history_index"], 0)
+        self.assertNotIn("a", global_vars.DATA["history steps"])
+
     def test_different_results_are_kept(self):
         self.add_step("a")
         self.finish_search("a", ["x", "y"])

@@ -2885,6 +2885,20 @@ def _history_step_result_ids(history_step: dict) -> list:
     ]
 
 
+def _refresh_history_ui(tab):
+    """Update the tab name and history buttons after a history step was removed."""
+    if tab is not get_active_tab():
+        return
+    update_tab_name(tab, tab["history"][tab["history_index"]])
+    asset_bar = asset_bar_op.asset_bar_operator
+    if asset_bar and hasattr(asset_bar, "history_back_button"):
+        asset_bar.history_back_button.visible = tab["history_index"] > 0
+        asset_bar.history_forward_button.visible = (
+            tab["history_index"] < len(tab["history"]) - 1
+        )
+        asset_bar.update_tab_icons()
+
+
 def merge_duplicate_history_step(history_step_id: str) -> bool:
     """Remove a finished history step that repeats the step right before it.
 
@@ -2913,6 +2927,14 @@ def merge_duplicate_history_step(history_step_id: str) -> bool:
         previous = tab["history"][position - 1]
         if previous.get("ui_state") != history_step.get("ui_state"):
             return False
+        if previous.get("search_failed") and not history_step.get("search_failed"):
+            # A successful repeat replaces the earlier failed (empty) step.
+            tab["history"].pop(position - 1)
+            global_vars.DATA["history steps"].pop(previous["id"], None)
+            if position - 1 <= tab["history_index"]:
+                tab["history_index"] -= 1
+            _refresh_history_ui(tab)
+            return True
         if bool(previous.get("search_failed")) != bool(
             history_step.get("search_failed")
         ):
@@ -2927,16 +2949,9 @@ def merge_duplicate_history_step(history_step_id: str) -> bool:
         if position <= tab["history_index"]:
             tab["history_index"] -= 1
 
-        if tab is get_active_tab():
-            update_tab_name(tab, tab["history"][tab["history_index"]])
-            asset_bar = asset_bar_op.asset_bar_operator
-            if asset_bar and hasattr(asset_bar, "history_back_button"):
-                asset_bar.history_back_button.visible = tab["history_index"] > 0
-                asset_bar.history_forward_button.visible = (
-                    tab["history_index"] < len(tab["history"]) - 1
-                )
-                asset_bar.update_tab_icons()
+        _refresh_history_ui(tab)
         return True
+
     return False
 
 def get_history_steps():
