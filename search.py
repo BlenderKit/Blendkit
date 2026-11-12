@@ -2954,6 +2954,7 @@ def merge_duplicate_history_step(history_step_id: str) -> bool:
 
     return False
 
+
 def get_history_steps():
     return global_vars.DATA["history steps"]
 
