@@ -911,8 +911,6 @@ def start_blenderkit_client():
                     get_port(),
                     "--server",
                     global_vars.SERVER,
-                    "--global_dir",
-                    global_dir,
                     "--proxy_which",
                     global_vars.PREFS.get("proxy_which", ""),
                     "--proxy_address",
