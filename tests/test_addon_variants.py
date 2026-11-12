@@ -1,6 +1,9 @@
 import unittest
+from types import SimpleNamespace
+from unittest.mock import Mock, patch
 
 from .. import addon_variants
+from ..asset_bar import asset_drag_op
 
 
 class TestAddonVariants(unittest.TestCase):
@@ -152,4 +155,45 @@ class TestAddonVariants(unittest.TestCase):
                 variant,
             ),
             "https://devel.blendkit.com/asset-gallery-detail/parent-base/?utm_source=blender&variant=paid-base",
+        )
+
+    def test_dragging_unpurchased_variant_opens_purchase_link_and_releases_lock(self):
+        variant = {
+            "id": "paid-version",
+            "assetBaseId": "paid-base",
+            "assetType": "addon",
+            "structure": "variant",
+            "parentAssetBaseId": "parent-base",
+            "canDownload": False,
+        }
+        operator = type(
+            "DragStub", (), {"active_operator_id": None, "asset_search_index": 0}
+        )()
+        context = Mock()
+        context.window_manager.blenderkitUI.dragging = False
+        context.preferences.system.pixel_size = 1
+        context.preferences.view.ui_scale = 1
+        context.window.x = context.window.y = 0
+        with (
+            patch.object(asset_drag_op.bpy, "context", context),
+            patch.object(asset_drag_op.bpy, "ops") as ops,
+            patch.object(
+                asset_drag_op.search, "get_search_results", return_value=[variant]
+            ),
+            patch.object(asset_drag_op.utils, "proxor_enabled", return_value=False),
+            patch.object(
+                asset_drag_op.paths,
+                "get_asset_gallery_url",
+                return_value="https://example.com/parent-base/",
+            ),
+        ):
+            result = asset_drag_op.AssetDragOperator.invoke(
+                operator, context, SimpleNamespace(mouse_x=100, mouse_y=100)
+            )
+        self.assertEqual(result, {"CANCELLED"})
+        self.assertFalse(context.window_manager.blenderkitUI.dragging)
+        self.assertIsNone(type(operator).active_operator_id)
+        self.assertEqual(
+            ops.wm.blenderkit_url_dialog.call_args.kwargs["url"],
+            "https://example.com/parent-base/?variant=paid-base",
         )

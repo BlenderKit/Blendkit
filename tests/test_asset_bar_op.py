@@ -223,6 +223,39 @@ class TestAssetBarVersionBadge(unittest.TestCase):
         button.author_button.set_mouse_down.assert_called_with(
             operator.show_author_profile
         )
+        button.author_button.set_mouse_enter.assert_called_with(None)
+        button.author_button.set_mouse_exit.assert_called_with(None)
+
+    def test_variant_badge_hover_does_not_trigger_asset_hover_handlers(self):
+        for asset_data in (
+            None,
+            {"assetType": "author"},
+            {"assetType": "model", "sourceAppVersion": "4.1.2"},
+            {"placeholder": True},
+        ):
+            with self.subTest(asset_data=asset_data):
+                button = self.create_button()
+                with patch.object(asset_bar_op.gpu.shader, "from_builtin"):
+                    button.author_button = asset_bar_op.BL_UI_Button(0, 0, 24, 24)
+                operator = self.create_operator(button)
+                operator.show_variant_picker = Mock()
+                operator.show_author_profile = Mock()
+                operator.enter_button = Mock()
+                operator.exit_button = Mock()
+                self.update_button(
+                    operator, {"assetType": "addon", "variants": [{"id": "free"}]}
+                )
+                if asset_data is not None:
+                    self.update_button(operator, asset_data)
+
+                button.author_button.call_mouse_enter()
+                button.author_button.call_mouse_exit()
+
+                operator.enter_button.assert_not_called()
+                operator.exit_button.assert_not_called()
+                if asset_data is not None:
+                    self.assertEqual(button.author_button.text, "")
+                    self.assertFalse(button.author_button._variant_badge)
 
     def test_badge_position_and_visibility_after_reassigning_slot(self):
         button = self.create_button()

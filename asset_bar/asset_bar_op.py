@@ -4705,6 +4705,22 @@ class BlenderKitAssetBarOperator(BL_UI_OT_draw_operator):
                 # waiting for the next scroll/update_buttons pass.
                 asset_button._thumb_loaded = thumb_loaded
 
+                variant_count = len(addon_variants.public_variants(asset_data))
+                if (
+                    not variant_count
+                    and getattr(asset_button.author_button, "_variant_badge", False)
+                    is True
+                ):
+                    asset_button.author_button.text = ""
+                    asset_button.author_button.bg_color = (0.2, 0.2, 0.2, 0.0)
+                    asset_button.author_button.set_image(
+                        paths.get_addon_thumbnail_path("asset_type_author.png")
+                    )
+                    asset_button.author_button.set_mouse_down(self.show_author_profile)
+                    asset_button.author_button.set_mouse_enter(None)
+                    asset_button.author_button.set_mouse_exit(None)
+                    asset_button.author_button._variant_badge = False
+
                 # Placeholder entries only need thumbnail rendering.
                 if asset_data.get("placeholder"):
                     asset_button.bookmark_button.visible = False
@@ -4723,21 +4739,7 @@ class BlenderKitAssetBarOperator(BL_UI_OT_draw_operator):
                     continue
 
                 # Distinguish author cards with a blue border and author icon.
-                variant_count = len(addon_variants.public_variants(asset_data))
                 if asset_data.get("assetType") == "author":
-                    if (
-                        getattr(asset_button.author_button, "_variant_badge", False)
-                        is True
-                    ):
-                        asset_button.author_button.text = ""
-                        asset_button.author_button.bg_color = (0.2, 0.2, 0.2, 0.0)
-                        asset_button.author_button.set_image(
-                            paths.get_addon_thumbnail_path("asset_type_author.png")
-                        )
-                        asset_button.author_button.set_mouse_down(
-                            self.show_author_profile
-                        )
-                        asset_button.author_button._variant_badge = False
                     asset_button.background_border_thickness = 3.0
                     asset_button.author_button.visible = True
                     asset_button.background_corner_radius = 12.0
@@ -4766,8 +4768,9 @@ class BlenderKitAssetBarOperator(BL_UI_OT_draw_operator):
                         asset_button.author_button.set_mouse_down(
                             self.show_variant_picker
                         )
-                        asset_button.author_button.set_mouse_enter(self.enter_button)
-                        asset_button.author_button.set_mouse_exit(self.exit_button)
+                        # The parent asset button tracks hover on its own.
+                        asset_button.author_button.set_mouse_enter(None)
+                        asset_button.author_button.set_mouse_exit(None)
                     asset_button.use_rounded_background = False
                     asset_button.background_corner_radius = 0.0
                     asset_button.image_corner_radius = None

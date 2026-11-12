@@ -30,6 +30,7 @@ from bpy_extras import view3d_utils
 from mathutils import Vector
 
 from .. import (
+    addon_variants,
     bg_blender,
     client_lib,
     colors,
@@ -2138,8 +2139,6 @@ class AssetDragOperator(bpy.types.Operator):
         # This is critical for multi-window support where active_index is shared across windows
         self.asset_data = dict(sr[self.asset_search_index])
         if self.asset_data.get("structure") == "variant_parent":
-            from .. import addon_variants
-
             if not self.asset_data.get("selectedVariantId"):
                 ui_props.active_index = self.asset_search_index
                 bpy.ops.wm.blenderkit_asset_popup("EXEC_DEFAULT")
