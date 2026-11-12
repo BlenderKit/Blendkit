@@ -811,12 +811,28 @@ def cleanup_search_results():
 
 
 def handle_search_task_error(task: client_tasks.Task) -> None:
-    """Handle incoming search task error."""
-    # First find the history step that the task belongs to
-    for history_step in get_history_steps().values():
-        if task.task_id in history_step.get("search_tasks", {}).keys():
-            history_step["is_searching"] = False
-            break
+    """Handle incoming search task error.
+
+    A failed new search stays in the history as a step with empty results, so the
+    previous results are not shown for it. If the previous step is the same failed
+    search, the two are merged. Steps that already hold results (failed pagination
+    or refresh) are left as they are.
+    """
+    search_data = search_tasks.pop(task.task_id, None)
+    if search_data is not None:
+        history_id = search_data.history_id
+        get_next = search_data.get_next
+    else:
+        history_id = task.data.get("history_id", "")
+        get_next = bool(task.data.get("get_next"))
+
+    history_step = get_history_step(history_id)
+    if history_step is not None:
+        history_step["is_searching"] = False
+        if not get_next and "search_results" not in history_step:
+            history_step["search_results"] = []
+            history_step["search_failed"] = True
+            merge_duplicate_history_step(history_id)
     return reports.add_report(task.message, type="ERROR", details=task.message_detailed)
 
 
@@ -932,6 +948,9 @@ def handle_search_task(task: client_tasks.Task) -> bool:
     history_step["search_results"] = result_field
     history_step["search_results_orig"] = task.result
     history_step["is_searching"] = False
+    history_step.pop("search_failed", None)
+    if not task.data.get("get_next"):
+        merge_duplicate_history_step(orig_task.history_id)
 
     if len(result_field) < ui_props.scroll_offset or not (task.data.get("get_next")):
         # jump back
@@ -2662,9 +2681,13 @@ def get_ui_state():
     return ui_state
 
 
-def update_tab_name(active_tab):
-    """Update the name of the active tab."""
-    history_step = get_active_history_step()
+def update_tab_name(active_tab, history_step=None):
+    """Update the name of the active tab.
+
+    The name is derived from `history_step`, by default the active history step.
+    """
+    if history_step is None:
+        history_step = get_active_history_step()
     ui_state = history_step.get("ui_state", {})
 
     # Update tab name based on search or category
@@ -2852,6 +2875,84 @@ def append_history_step(
 
 def get_history_step(history_step_id):
     return global_vars.DATA["history steps"].get(history_step_id)
+
+
+def _history_step_result_ids(history_step: dict) -> list:
+    """Return identifiers of the assets held by a history step, in order."""
+    return [
+        result.get("assetBaseId") or result.get("id")
+        for result in history_step.get("search_results", [])
+    ]
+
+
+def _refresh_history_ui(tab):
+    """Update the tab name and history buttons after a history step was removed."""
+    if tab is not get_active_tab():
+        return
+    update_tab_name(tab, tab["history"][tab["history_index"]])
+    asset_bar = asset_bar_op.asset_bar_operator
+    if asset_bar and hasattr(asset_bar, "history_back_button"):
+        asset_bar.history_back_button.visible = tab["history_index"] > 0
+        asset_bar.history_forward_button.visible = (
+            tab["history_index"] < len(tab["history"]) - 1
+        )
+        asset_bar.update_tab_icons()
+
+
+def merge_duplicate_history_step(history_step_id: str) -> bool:
+    """Remove a finished history step that repeats the step right before it.
+
+    The step is a duplicate when it has the same search settings and the same outcome as
+    the previous step of its tab: both failed, or both returned the same assets. The
+    previous step stays and becomes the current one, so repeating a search does not
+    add entries to the history.
+
+    Args:
+        history_step_id: ID of the history step to check.
+
+    Returns:
+        True if the step was removed, False otherwise.
+    """
+    history_step = get_history_step(history_step_id)
+    if history_step is None:
+        return False
+
+    for tab in global_vars.TABS["tabs"]:
+        step_ids = [step["id"] for step in tab["history"]]
+        if history_step_id not in step_ids:
+            continue
+        position = step_ids.index(history_step_id)
+        if position == 0:
+            return False
+        previous = tab["history"][position - 1]
+        if previous.get("ui_state") != history_step.get("ui_state"):
+            return False
+        if previous.get("search_failed") and not history_step.get("search_failed"):
+            # A successful repeat replaces the earlier failed (empty) step.
+            tab["history"].pop(position - 1)
+            global_vars.DATA["history steps"].pop(previous["id"], None)
+            if position - 1 <= tab["history_index"]:
+                tab["history_index"] -= 1
+            _refresh_history_ui(tab)
+            return True
+        if bool(previous.get("search_failed")) != bool(
+            history_step.get("search_failed")
+        ):
+            return False
+        if "search_results" not in previous or "search_results" not in history_step:
+            return False
+        if _history_step_result_ids(previous) != _history_step_result_ids(history_step):
+            return False
+
+        tab["history"].pop(position)
+        global_vars.DATA["history steps"].pop(history_step_id, None)
+        if position <= tab["history_index"]:
+            tab["history_index"] -= 1
+
+        _refresh_history_ui(tab)
+        return True
+
+    return False
 
 
 def get_history_steps():
