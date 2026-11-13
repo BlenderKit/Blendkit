@@ -394,7 +394,11 @@ def _inject_user_price_data(assets: list[dict]) -> None:
         bk_logger.debug("User price lookup skipped: empty assets list.")
         return
 
-    version_uuids: list[str] = [ass["id"] for ass in assets]
+    priced_assets = []
+    for asset in assets:
+        priced_assets.append(asset)
+        priced_assets.extend(asset.get("variants", []) or [])
+    version_uuids: list[str] = [ass["id"] for ass in priced_assets if ass.get("id")]
     if not version_uuids:
         bk_logger.debug("User price lookup skipped: empty version UUIDs list.")
         return
@@ -426,12 +430,61 @@ def _inject_user_price_data(assets: list[dict]) -> None:
     if not price_by_uuid:
         return
 
-    for asset in assets:
+    for asset in priced_assets:
         base_uuid = asset["id"]
         price_info = price_by_uuid.get(base_uuid)
         if not price_info:
             continue
         asset["userPrice"] = price_info["discountedPrice"]
+
+
+def restore_addon_variant_metadata(assets):
+    candidates = [
+        asset
+        for asset in assets
+        if asset.get("assetType") == "addon"
+        and "structure" not in asset
+        and asset.get("id")
+    ]
+    if not candidates:
+        return
+    try:
+        preferences = bpy.context.preferences.addons[__package__].preferences
+        results = get_search_simple(
+            {"asset_id": ",".join(asset["id"] for asset in candidates)},
+            page_size=len(candidates),
+            max_results=len(candidates),
+            api_key=preferences.api_key,
+        )
+        by_id = {asset["id"]: asset for asset in results}
+        for asset in candidates:
+            original = by_id.get(asset["id"], {})
+            for key in ("structure", "variants"):
+                if key in original:
+                    asset[key] = original[key]
+    except Exception as exc:
+        bk_logger.warning("Failed to restore add-on variant metadata: %s", exc)
+
+
+def refresh_addon_variant(parent, variant_id):
+    from . import addon_variants
+
+    variant = addon_variants.selected_variant(parent, variant_id)
+    if variant is None:
+        return
+    preferences = bpy.context.preferences.addons[__package__].preferences
+    try:
+        results = get_search_simple(
+            {"asset_id": variant["id"]},
+            page_size=1,
+            max_results=1,
+            api_key=preferences.api_key,
+        )
+        if results and results[0].get("id") == variant["id"]:
+            variant.update(results[0])
+            parent.pop("tooltip_data", None)
+    except Exception as exc:
+        bk_logger.warning("Failed to refresh variant access: %s", exc)
 
 
 def update_ad(ad):
@@ -864,6 +917,7 @@ def handle_search_task(task: client_tasks.Task) -> bool:
         result_field = [r for r in previous if not r.get("placeholder")]  # type: ignore
 
     ui_props = bpy.context.window_manager.blenderkitUI  # type: ignore[attr-defined]
+    restore_addon_variant_metadata(task.result["results"])
     for result in task.result["results"]:
         asset_data = parse_result(result)
         if not asset_data:
@@ -896,6 +950,9 @@ def handle_search_task(task: client_tasks.Task) -> bool:
 
     # Apply addon-specific status checking and filtering if needed
     if ui_props.asset_type == "ADDON":
+        from . import addon_variants
+
+        result_field = addon_variants.consolidate_addon_variants(result_field)
         # Always process addon search results to store installation status
         result_field = filter_addon_search_results(
             result_field, filter_installed_only=False

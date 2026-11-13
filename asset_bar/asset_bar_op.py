@@ -16,6 +16,7 @@
 #
 # ##### END GPL LICENSE BLOCK #####
 
+import json
 import logging
 import math
 import os
@@ -32,6 +33,7 @@ import gpu
 from bpy.props import BoolProperty, StringProperty
 
 from .. import (
+    addon_variants,
     colors,
     comments_utils,
     global_vars,
@@ -48,7 +50,7 @@ from ..bl_ui_widgets.bl_ui_button import BL_UI_Button
 from ..bl_ui_widgets.bl_ui_drag_panel import BL_UI_Drag_Panel
 from ..bl_ui_widgets.bl_ui_draw_op import BL_UI_OT_draw_operator
 from ..bl_ui_widgets.bl_ui_image import BL_UI_Image
-from ..bl_ui_widgets.bl_ui_label import BL_UI_DuoLabel, BL_UI_Label
+from ..bl_ui_widgets.bl_ui_label import BL_UI_DuoLabel, BL_UI_Label, BL_UI_Tooltip
 from ..bl_ui_widgets.bl_ui_resize_handle import BL_UI_Resize_Handle
 from ..bl_ui_widgets.bl_ui_widget import (
     BL_UI_Widget,
@@ -56,6 +58,7 @@ from ..bl_ui_widgets.bl_ui_widget import (
     region_redraw,
     set_font_size,
 )
+from .mini_asset_bar import MiniAssetBar, fit_label
 
 
 bk_logger = logging.getLogger(__name__)
@@ -106,24 +109,31 @@ def _wrap_text_to_width(text, width_px, text_size):
 
     lines = []
     current = ""
-    for word in text.split(" "):
-        candidate = word if current == "" else f"{current} {word}"
-        if fits(candidate) or current == "":
-            # break a single word that is too long on its own
-            while current == "" and not fits(word) and len(word) > 1:
+    for word in text.split():
+        if current and not fits(f"{current} {word}"):
+            lines.append(current)
+            current = ""
+        if not current:
+            while not fits(word) and len(word) > 1:
                 cut = len(word)
                 while cut > 1 and not fits(word[:cut]):
                     cut -= 1
                 lines.append(word[:cut])
                 word = word[cut:]
-                candidate = word
-            current = candidate
-        else:
-            lines.append(current)
             current = word
+        else:
+            current = f"{current} {word}"
     if current:
         lines.append(current)
     return lines
+
+
+def tooltip_name_lines(text, width, text_size):
+    lines = _wrap_text_to_width(text, width, text_size)
+    if len(lines) > 2:
+        remaining = " ".join(text.split())[len(lines[0]) :].lstrip()
+        lines = [lines[0], fit_label(remaining, width, text_size)]
+    return lines or [""]
 
 
 ASSETBAR_MAX_VISIBLE_ASSETS = 200
@@ -260,7 +270,11 @@ def modal_inside(self, context, event):
         context = self.context
 
     # HANDLE PHOTO THUMBNAIL SWITCH
-    if hasattr(self, "needs_tooltip_update") and self.needs_tooltip_update:
+    if (
+        hasattr(self, "needs_tooltip_update")
+        and self.needs_tooltip_update
+        and getattr(self, "mini_asset_bar", None) is None
+    ):
         self.needs_tooltip_update = False
         sr = search.get_search_results()
         if sr and self.active_index < len(sr):
@@ -295,6 +309,9 @@ def modal_inside(self, context, event):
         if a is not None:
             bpy.ops.view3d.run_assetbar_fix_context(keep_running=True, do_search=False)
         return {"FINISHED"}
+
+    if self.handle_mini_asset_bar_event(event):
+        return {"RUNNING_MODAL"}
 
     is_quad_view = self._is_quad_view(context)
     if getattr(self, "_quad_view_state", None) != is_quad_view:
@@ -428,6 +445,7 @@ def modal_inside(self, context, event):
     if ui_props.dragging:
         return {"PASS_THROUGH"}
 
+    self.mouse_x, self.mouse_y = self._event_coords_in_active_region(event)
     if self.handle_widget_events(event):
         return {"RUNNING_MODAL"}
 
@@ -634,7 +652,12 @@ def get_tooltip_data(asset_data):
         is_for_sale = asset_data.get("isForSale")
 
         # for debug show both prices always
-        if utils.profile_is_validator():
+        if is_free and asset_data.get("structure") == "variant":
+            base_price_text = " Free "
+            base_price_bg_color = colors.GREEN_PRICE
+            base_price_color = colors.WHITE
+            user_price_text = ""
+        elif utils.profile_is_validator():
             if (
                 user_price_text
                 and base_price_text
@@ -696,6 +719,13 @@ def get_tooltip_data(asset_data):
 
                 user_price_text = ""
 
+    summary = addon_variants.variant_summary(asset_data)
+    if summary:
+        base_price_text = summary
+        user_price_text = ""
+        base_price_bg_color = colors.GRAY
+        base_price_color = colors.WHITE
+
     tooltip_data = {
         "aname": aname,
         "author_text": author_text,
@@ -709,6 +739,40 @@ def get_tooltip_data(asset_data):
         "base_price_bg_color": base_price_bg_color,
     }
     asset_data["tooltip_data"] = tooltip_data
+
+
+def fit_tooltip_prices(text_a, text_b, width, text_size):
+    """Shrink prices to their measured width before ellipsizing at minimum size."""
+    texts = [text_a or "", text_b or ""]
+    widths = [
+        ui_bgl.get_text_size(1, text, text_size)[0] if text else 0 for text in texts
+    ]
+    spacing = 4 if all(texts) else 0
+    available = max(0, width - spacing)
+    total = sum(widths)
+    if total <= available:
+        return texts[0], texts[1], text_size
+    min_size = min(8, text_size)
+    size = max(min_size, int(text_size * available / total))
+    while True:
+        widths = [
+            ui_bgl.get_text_size(1, text, size)[0] if text else 0 for text in texts
+        ]
+        total = sum(widths)
+        if total <= available or size <= min_size:
+            break
+        size -= 1
+    if total > available:
+        limits = [
+            int(available * widths[0] / total) if total else 0,
+            0,
+        ]
+        limits[1] = available - limits[0]
+        texts = [
+            fit_label(text, limit, size) if text else ""
+            for text, limit in zip(texts, limits)
+        ]
+    return texts[0], texts[1], size
 
 
 def set_thumb_check(
@@ -1039,6 +1103,9 @@ class BlenderKitAssetBarOperator(BL_UI_OT_draw_operator):
     def begin_resize_drag(self):
         self._resize_dragging = True
         self.hide_tooltip()
+        badge_tooltip = getattr(self, "badge_tooltip", None)
+        if badge_tooltip is not None:
+            badge_tooltip.hide()
 
     def end_resize_drag(self, *, hovering: bool):
         self._resize_dragging = False
@@ -1592,6 +1659,7 @@ class BlenderKitAssetBarOperator(BL_UI_OT_draw_operator):
         version_warning.text_color = self.warning_color
         self.tooltip_widgets.append(version_warning)
         self.version_warning = version_warning
+        self.badge_tooltip = BL_UI_Tooltip()
 
     def hide_tooltip(self):
         """Hide the tooltip panel and its widgets."""
@@ -1601,6 +1669,7 @@ class BlenderKitAssetBarOperator(BL_UI_OT_draw_operator):
         # visible (e.g. at startup before the panel was ever shown) while
         # the panel itself is hidden.
         was_visible = getattr(self.tooltip_panel, "visible", False)
+        self._tooltip_asset_data = None
         self.tooltip_panel.visible = False
         for w in self.tooltip_widgets:
             w.visible = False
@@ -1677,11 +1746,14 @@ class BlenderKitAssetBarOperator(BL_UI_OT_draw_operator):
         )
 
         # Check if the active asset is an author for tooltip sizing
-        self._is_author_tooltip = False
+        active_asset = getattr(self, "_tooltip_asset_data", None)
         active_idx = getattr(self, "active_index", -1)
         sr = search.get_search_results()
-        if sr and 0 <= active_idx < len(sr):
-            self._is_author_tooltip = sr[active_idx].get("assetType") == "author"
+        if active_asset is None and sr and 0 <= active_idx < len(sr):
+            active_asset = sr[active_idx]
+        self._is_author_tooltip = (
+            active_asset is not None and active_asset.get("assetType") == "author"
+        )
 
         if ui_props.asset_type == "HDR":
             self.tooltip_width = self.tooltip_size * 2
@@ -1694,10 +1766,8 @@ class BlenderKitAssetBarOperator(BL_UI_OT_draw_operator):
             # Author tooltip: sized to actual content (name + about lines)
             # Count how many about_me lines we'll actually show
             about_line_count = 0
-            active_idx = getattr(self, "active_index", -1)
-            if sr and 0 <= active_idx < len(sr):
-                ad = sr[active_idx]
-                td = ad.get("tooltip_data")
+            if active_asset is not None:
+                td = active_asset.get("tooltip_data")
                 if td:
                     about_me = td.get("about_me", "")
                     if about_me:
@@ -1723,9 +1793,21 @@ class BlenderKitAssetBarOperator(BL_UI_OT_draw_operator):
                 + max(1, about_line_count) * int(self.author_text_size * 1.4)
             )
         else:
+            self._tooltip_name_lines = tooltip_name_lines(
+                getattr(self, "_tooltip_name_text", ""),
+                max(1, self.tooltip_width - 2 * self.tooltip_margin),
+                self.asset_name_text_size,
+            )
+            name_row_height = max(
+                self.asset_name_text_size, int(self.asset_name_text_size * 1.15)
+            )
+            name_height = (
+                self.asset_name_text_size
+                + (len(self._tooltip_name_lines) - 1) * name_row_height
+            )
             self.tooltip_info_height = max(
                 int(self.tooltip_image_height * self.bottom_panel_fraction),
-                self.asset_name_text_size * 3,
+                name_height + self.asset_name_text_size * 2 + self.tooltip_margin * 4,
             )
         self.labels_start = self.tooltip_image_height
         self.comments_text_size = max(
@@ -1735,10 +1817,16 @@ class BlenderKitAssetBarOperator(BL_UI_OT_draw_operator):
         )
 
         self.tooltip_height = self.tooltip_image_height + self.tooltip_info_height
-        self.gravatar_size = max(
-            int(self.tooltip_info_height - 2 * self.tooltip_margin),
-            self.asset_name_text_size,
-        )
+        if self._is_author_tooltip:
+            self.gravatar_size = max(
+                int(self.tooltip_info_height - 2 * self.tooltip_margin),
+                self.asset_name_text_size,
+            )
+        else:
+            self.gravatar_size = max(
+                self.asset_name_text_size,
+                self.tooltip_info_height - name_height - 3 * self.tooltip_margin,
+            )
 
         self._tooltip_available_height = None
 
@@ -1797,6 +1885,16 @@ class BlenderKitAssetBarOperator(BL_UI_OT_draw_operator):
         )
         self.asset_name.text_size = self.asset_name_text_size
         self.asset_name.height = self.asset_name_text_size
+        self.asset_name.width = max(0, self.tooltip_width - 2 * self.tooltip_margin)
+        self.asset_name.multiline = not self._is_author_tooltip
+        self.asset_name.row_height = max(
+            self.asset_name_text_size, int(self.asset_name_text_size * 1.15)
+        )
+        name_height = self.asset_name_text_size
+        if not self._is_author_tooltip:
+            name_lines = getattr(self, "_tooltip_name_lines", [""])
+            self.asset_name.text = "\n".join(name_lines)
+            name_height += (len(name_lines) - 1) * self.asset_name.row_height
 
         self.tooltip_dark_panel.set_location(
             0,
@@ -1823,11 +1921,28 @@ class BlenderKitAssetBarOperator(BL_UI_OT_draw_operator):
         # right after the asset name
         self.multi_price_label.set_location(
             self.tooltip_margin,
-            self.labels_start + (self.tooltip_margin * 2) + self.asset_name.height,
+            self.labels_start + (self.tooltip_margin * 2) + name_height,
         )
-        self.multi_price_label.width = self.tooltip_width - 2 * self.tooltip_margin
+        padding = self.multi_price_label.background_padding
+        horizontal_padding = (
+            padding[0] if isinstance(padding, (tuple, list)) else padding
+        )
+        self.multi_price_label.width = max(
+            0,
+            self.tooltip_width
+            - self.gravatar_size
+            - 3 * self.tooltip_margin
+            - horizontal_padding,
+        )
         self.multi_price_label.height = self.asset_name_text_size
-        self.multi_price_label.text_size = self.asset_name_text_size
+        text_a, text_b, text_size = fit_tooltip_prices(
+            *getattr(self, "_tooltip_price_texts", ("", "")),
+            self.multi_price_label.width,
+            self.asset_name_text_size,
+        )
+        self.multi_price_label.text_a = text_a
+        self.multi_price_label.text_b = text_b
+        self.multi_price_label.text_size = text_size
 
         # Author about-me label: positioned directly below asset name
         if hasattr(self, "author_about_me"):
@@ -1851,9 +1966,21 @@ class BlenderKitAssetBarOperator(BL_UI_OT_draw_operator):
                 self.tooltip_height + self.tooltip_margin,
             )
             self.comments.text_size = self.comments_text_size
+        if hasattr(self, "version_warning"):
+            self.version_warning.set_location(
+                self.tooltip_margin,
+                self.tooltip_height
+                + self.tooltip_margin
+                + (self.author_text_size if hasattr(self, "comments") else 0),
+            )
+            self.version_warning.text_size = self.author_text_size
+            self.version_warning.height = self.author_text_size
 
     def update_tooltip_image(self, asset_id):
         """Update tooltip image when it finishes downloading and the downloaded image matches the active one."""
+        mini = getattr(self, "mini_asset_bar", None)
+        if mini is not None and mini.hovered_button is not None:
+            return
         search_results = search.get_search_results()
         if search_results is None:
             return
@@ -3443,7 +3570,7 @@ class BlenderKitAssetBarOperator(BL_UI_OT_draw_operator):
         """Initialize the asset bar operator."""
         self.tooltip_base_size_pixels = TOOLTIP_SIZE_PX
         self.tooltip_scale = 1.0
-        self.bottom_panel_fraction = 0.18
+        self.bottom_panel_fraction = 0.23
         self.needs_tooltip_update = False
         self._reset_resize_state()
         self.update_ui_size(context)
@@ -3469,6 +3596,7 @@ class BlenderKitAssetBarOperator(BL_UI_OT_draw_operator):
 
     def setup_widgets(self, context, event):
         """Set up all widgets for the asset bar and tooltip."""
+        self.close_mini_asset_bar()
         widgets_panel = []
         widgets_panel.extend(self.widgets_panel)
         widgets_panel.extend(self.buttons)
@@ -3494,6 +3622,7 @@ class BlenderKitAssetBarOperator(BL_UI_OT_draw_operator):
         widgets += widgets_panel
         widgets.append(self.tooltip_panel)
         widgets += self.tooltip_widgets
+        widgets.append(self.badge_tooltip)
 
         self.init_widgets(context, widgets)
 
@@ -3642,6 +3771,7 @@ class BlenderKitAssetBarOperator(BL_UI_OT_draw_operator):
         # to pass the operator to validation icons
         global asset_bar_operator
         asset_bar_operator = None
+        self.close_mini_asset_bar()
         self.restore_resize_cursor()
         self._reset_resize_state()
 
@@ -3676,342 +3806,337 @@ class BlenderKitAssetBarOperator(BL_UI_OT_draw_operator):
             if search_index >= len(sr):
                 return  # issue #1481 - index can be sometimes over the length of search results
             asset_data = sr[search_index]
+            if not asset_data.get("placeholder"):
+                ui_props = bpy.context.window_manager.blenderkitUI
+                ui_props.active_index = search_index
+            self.show_asset_tooltip(widget, asset_data)
 
-            # Skip tooltip for placeholder entries (results not yet loaded)
-            if asset_data.get("placeholder"):
-                self.draw_tooltip = False
-                self.hide_tooltip()
-                return
+    def show_asset_tooltip(self, widget, asset_data):
+        if asset_data.get("placeholder"):
+            self.draw_tooltip = False
+            self.hide_tooltip()
+            return
 
-            self.draw_tooltip = True
-            # self.tooltip = asset_data['tooltip']
-            ui_props = bpy.context.window_manager.blenderkitUI
-            ui_props.active_index = search_index  # + self.scroll_offset
+        self._tooltip_asset_data = asset_data
+        self.draw_tooltip = True
 
-            # Update tooltip size based on asset type
-            thumbnail_found = False
-            self.tooltip_image_help.visible = False
-            if asset_data["assetType"].lower() in {
-                "printable",
-                "model",
-                "scene",
-            } and self.show_thumbnail_variant in {"PHOTO", "WIREFRAME"}:
-                t_type = self.show_thumbnail_variant.lower()
-                if t_type == "photo":
-                    photo_img = ui.get_full_photo_thumbnail(asset_data)
-                    if photo_img:
-                        self.tooltip_image.set_image(photo_img.filepath)
-                        self.tooltip_image.set_image_colorspace("")
-                        thumbnail_found = True
-                    else:
-                        self.tooltip_image.set_image(
-                            paths.get_addon_thumbnail_path("thumbnail_notready.jpg")
-                        )
-                        self.tooltip_image_help.text = "Photo thumbnail not ready yet."
-                        self.tooltip_image_help.visible = True
-
-                elif t_type == "wireframe":
-                    wire_img = ui.get_full_wire_thumbnail(asset_data)
-                    if wire_img:
-                        self.tooltip_image.set_image(wire_img.filepath)
-                        self.tooltip_image.set_image_colorspace("")
-                        thumbnail_found = True
-                    else:
-                        self.tooltip_image.set_image(
-                            paths.get_addon_thumbnail_path("thumbnail_notready.jpg")
-                        )
-                        self.tooltip_image_help.text = (
-                            "Wireframe thumbnail not ready yet."
-                        )
-                        self.tooltip_image_help.visible = True
-
-            if not thumbnail_found:
-                set_thumb_check(self.tooltip_image, asset_data, thumb_type="thumbnail")
-
-            get_tooltip_data(asset_data)
-            is_author = asset_data.get("assetType") == "author"
-
-            if is_author:
-                # --- Author-specific tooltip content ---
-                an = asset_data.get("displayName", "")
-                max_name_length = 30
-                if len(an) > max_name_length + 3:
-                    an = an[:30] + "..."
-                self.asset_name.text = an
-
-                # Show asset count next to name using authors_name (right-aligned)
-                asset_count = asset_data["tooltip_data"].get("asset_count", 0)
-                if asset_count > 0:
-                    self.authors_name.text = f"{asset_count} assets"
-                    self.authors_name.text_color = (0.7, 0.7, 0.7, 0.8)
-                    self.authors_name.visible = True
+        # Update tooltip size based on asset type
+        thumbnail_found = False
+        self.tooltip_image_help.visible = False
+        if asset_data["assetType"].lower() in {
+            "printable",
+            "model",
+            "scene",
+        } and self.show_thumbnail_variant in {"PHOTO", "WIREFRAME"}:
+            t_type = self.show_thumbnail_variant.lower()
+            if t_type == "photo":
+                photo_img = ui.get_full_photo_thumbnail(asset_data)
+                if photo_img:
+                    self.tooltip_image.set_image(photo_img.filepath)
+                    self.tooltip_image.set_image_colorspace("")
+                    thumbnail_found = True
                 else:
-                    self.authors_name.visible = False
+                    self.tooltip_image.set_image(
+                        paths.get_addon_thumbnail_path("thumbnail_notready.jpg")
+                    )
+                    self.tooltip_image_help.text = "Photo thumbnail not ready yet."
+                    self.tooltip_image_help.visible = True
 
-                # Show aboutMe in the dedicated multiline label with word wrapping
-                about_me = asset_data["tooltip_data"].get("about_me", "")
-                max_about_lines = 8
-                # Estimate chars per line from tooltip width and font size
-                chars_per_line = max(
-                    20, int(self.tooltip_width / (self.author_text_size * 0.65))
-                )
-                lines = []
-                if about_me:
-                    # Word-wrap aboutMe text
-                    all_wrapped = []
-                    for paragraph in about_me.split("\n"):
-                        words = paragraph.split()
-                        current_line = ""
-                        for word in words:
-                            if (
-                                current_line
-                                and len(current_line) + 1 + len(word) > chars_per_line
-                            ):
-                                all_wrapped.append(current_line)
-                                current_line = word
-                            else:
-                                current_line = (
-                                    f"{current_line} {word}" if current_line else word
-                                )
-                        if current_line:
-                            all_wrapped.append(current_line)
-                    # Limit to max_about_lines, add ellipsis if truncated
-                    if len(all_wrapped) > max_about_lines:
-                        all_wrapped = all_wrapped[:max_about_lines]
-                        last = all_wrapped[-1]
-                        if len(last) + 3 > chars_per_line:
-                            last = last[: chars_per_line - 3]
-                        all_wrapped[-1] = last + "..."
-                    lines.extend(all_wrapped)
-                about_text = "\n".join(lines)
-                self.author_about_me.text = about_text
-                self.author_about_me.visible = True
-
-                # Set tooltip image to gravatar
-                author_id = int(
-                    asset_data.get("id", asset_data.get("author", {}).get("id", 0))
-                )
-                author = global_vars.BKIT_AUTHORS.get(author_id)
-                if author is not None and author.gravatarImg:
-                    self.tooltip_image.set_image(author.gravatarImg)
+            elif t_type == "wireframe":
+                wire_img = ui.get_full_wire_thumbnail(asset_data)
+                if wire_img:
+                    self.tooltip_image.set_image(wire_img.filepath)
+                    self.tooltip_image.set_image_colorspace("")
+                    thumbnail_found = True
                 else:
-                    img_path = paths.get_addon_thumbnail_path("thumbnail_notready.jpg")
-                    self.tooltip_image.set_image(img_path)
-                self.tooltip_image.set_image_colorspace("")
+                    self.tooltip_image.set_image(
+                        paths.get_addon_thumbnail_path("thumbnail_notready.jpg")
+                    )
+                    self.tooltip_image_help.text = "Wireframe thumbnail not ready yet."
+                    self.tooltip_image_help.visible = True
 
-                # Show help text
-                self.tooltip_image_help.text = "Click to search assets by this author"
-                self.tooltip_image_help.visible = True
+        if not thumbnail_found:
+            set_thumb_check(self.tooltip_image, asset_data, thumb_type="thumbnail")
 
-                # Hide widgets that don't apply to authors
-                self.gravatar_image.visible = False
-                self.quality_label.visible = False
-                self.quality_star.visible = False
-                self.multi_price_label.visible = False
-                self.version_warning.text = ""
-            else:
-                # --- Regular asset tooltip content ---
-                self.author_about_me.visible = False
+        get_tooltip_data(asset_data)
+        is_author = asset_data.get("assetType") == "author"
 
-                an = asset_data["displayName"]
-                max_name_length = 30
-                if len(an) > max_name_length + 3:
-                    an = an[:30] + "..."
+        if is_author:
+            # --- Author-specific tooltip content ---
+            an = asset_data.get("displayName", "")
+            max_name_length = 30
+            if len(an) > max_name_length + 3:
+                an = an[:30] + "..."
+            self.asset_name.text = an
 
-                search_props = utils.get_search_props()
-
-                # if in top nodegroup category, show which type the nodegroup is
-                if (
-                    asset_data["assetType"] == "nodegroup"
-                    and search_props.search_category == "nodegroup"
-                ):
-                    an = f"{an} - {asset_data['dictParameters']['nodeType']} nodes"
-
-                self.asset_name.text = an
-                self.authors_name.text = asset_data["tooltip_data"]["author_text"]
+            # Show asset count next to name using authors_name (right-aligned)
+            asset_count = asset_data["tooltip_data"].get("asset_count", 0)
+            if asset_count > 0:
+                self.authors_name.text = f"{asset_count} assets"
+                self.authors_name.text_color = (0.7, 0.7, 0.7, 0.8)
                 self.authors_name.visible = True
-                self.gravatar_image.visible = True
+            else:
+                self.authors_name.visible = False
 
-                # Ratings are shown for all asset types, including add-ons.
-                is_addon = asset_data.get("assetType") == "addon"
-                quality_text = asset_data["tooltip_data"]["quality"]
-                if is_addon:
-                    # Add-ons show only the quality rating out of 10 - no
-                    # complexity/score, which confuses regular users.
-                    if quality_text != "-":
-                        quality_text = f"{quality_text}/10"
-                elif utils.profile_is_validator():
-                    quality_text += f" / {int(asset_data['score'])}"
-                self.quality_label.text = quality_text
-                self.quality_label.visible = True
-                self.quality_star.visible = True
+            # Show aboutMe in the dedicated multiline label with word wrapping
+            about_me = asset_data["tooltip_data"].get("about_me", "")
+            max_about_lines = 8
+            # Estimate chars per line from tooltip width and font size
+            chars_per_line = max(
+                20, int(self.tooltip_width / (self.author_text_size * 0.65))
+            )
+            lines = []
+            if about_me:
+                # Word-wrap aboutMe text
+                all_wrapped = []
+                for paragraph in about_me.split("\n"):
+                    words = paragraph.split()
+                    current_line = ""
+                    for word in words:
+                        if (
+                            current_line
+                            and len(current_line) + 1 + len(word) > chars_per_line
+                        ):
+                            all_wrapped.append(current_line)
+                            current_line = word
+                        else:
+                            current_line = (
+                                f"{current_line} {word}" if current_line else word
+                            )
+                    if current_line:
+                        all_wrapped.append(current_line)
+                # Limit to max_about_lines, add ellipsis if truncated
+                if len(all_wrapped) > max_about_lines:
+                    all_wrapped = all_wrapped[:max_about_lines]
+                    last = all_wrapped[-1]
+                    if len(last) + 3 > chars_per_line:
+                        last = last[: chars_per_line - 3]
+                    all_wrapped[-1] = last + "..."
+                lines.extend(all_wrapped)
+            about_text = "\n".join(lines)
+            self.author_about_me.text = about_text
+            self.author_about_me.visible = True
 
-                # Update price labels for addons
-                user_price_text = asset_data["tooltip_data"].get("user_price_text", "")
-                base_price_text = asset_data["tooltip_data"].get("base_price_text", "")
+            # Set tooltip image to gravatar
+            author_id = int(
+                asset_data.get("id", asset_data.get("author", {}).get("id", 0))
+            )
+            author = global_vars.BKIT_AUTHORS.get(author_id)
+            if author is not None and author.gravatarImg:
+                self.tooltip_image.set_image(author.gravatarImg)
+            else:
+                img_path = paths.get_addon_thumbnail_path("thumbnail_notready.jpg")
+                self.tooltip_image.set_image(img_path)
+            self.tooltip_image.set_image_colorspace("")
 
-                user_price_text_color = asset_data["tooltip_data"].get(
-                    "user_price_color", ""
-                )
-                base_price_text_color = asset_data["tooltip_data"].get(
-                    "base_price_color", ""
-                )
+            # Show help text
+            self.tooltip_image_help.text = "Click to search assets by this author"
+            self.tooltip_image_help.visible = True
 
-                user_price_background_color = asset_data["tooltip_data"].get(
-                    "user_price_bg_color", ""
-                )
-                base_price_background_color = asset_data["tooltip_data"].get(
-                    "base_price_bg_color", ""
-                )
+            # Hide widgets that don't apply to authors
+            self.gravatar_image.visible = False
+            self.quality_label.visible = False
+            self.quality_star.visible = False
+            self.multi_price_label.visible = False
+            self.version_warning.text = ""
+        else:
+            # --- Regular asset tooltip content ---
+            self.author_about_me.visible = False
 
-                self.multi_price_label.text_a = user_price_text
-                self.multi_price_label.text_a_color = user_price_text_color
-                self.multi_price_label.segment_background_color_a = (
-                    user_price_background_color
-                )
+            an = asset_data["displayName"]
 
-                self.multi_price_label.text_b = base_price_text
-                self.multi_price_label.text_b_color = base_price_text_color
-                self.multi_price_label.segment_background_color_b = (
-                    base_price_background_color
-                )
+            search_props = utils.get_search_props()
 
-                self.multi_price_label.multiline = True
+            # if in top nodegroup category, show which type the nodegroup is
+            if (
+                asset_data["assetType"] == "nodegroup"
+                and search_props.search_category == "nodegroup"
+            ):
+                an = f"{an} - {asset_data['dictParameters']['nodeType']} nodes"
 
-                if user_price_text and base_price_text:
-                    self.multi_price_label.strikethrough_b = True
-                    self.multi_price_label.visible = True
-                    self.multi_price_label.segment_backgrounds = True
-                elif user_price_text or base_price_text:
-                    self.multi_price_label.visible = True
-                    self.multi_price_label.strikethrough_b = False
-                    self.multi_price_label.segment_backgrounds = True
-                else:
-                    self.multi_price_label.visible = False
-                    self.multi_price_label.strikethrough_b = False
-                    self.multi_price_label.segment_backgrounds = False
+            self._tooltip_name_text = an
+            self.asset_name.text = an
+            self.authors_name.text = asset_data["tooltip_data"]["author_text"]
+            self.authors_name.visible = True
+            self.gravatar_image.visible = True
 
-                # preview comments for validators
-                self.update_comments_for_validators(asset_data)
+            # Ratings are shown for all asset types, including add-ons.
+            is_addon = asset_data.get("assetType") == "addon"
+            quality_text = asset_data["tooltip_data"]["quality"]
+            if is_addon:
+                # Add-ons show only the quality rating out of 10 - no
+                # complexity/score, which confuses regular users.
+                if quality_text != "-":
+                    quality_text = f"{quality_text}/10"
+            elif utils.profile_is_validator():
+                quality_text += f" / {int(asset_data['score'])}"
+            self.quality_label.text = quality_text
+            self.quality_label.visible = True
+            self.quality_star.visible = True
 
-                has_warning, difference = utils.asset_from_newer_blender_version(
+            # Update price labels for addons
+            user_price_text = asset_data["tooltip_data"].get("user_price_text", "")
+            base_price_text = asset_data["tooltip_data"].get("base_price_text", "")
+
+            user_price_text_color = asset_data["tooltip_data"].get(
+                "user_price_color", ""
+            )
+            base_price_text_color = asset_data["tooltip_data"].get(
+                "base_price_color", ""
+            )
+
+            user_price_background_color = asset_data["tooltip_data"].get(
+                "user_price_bg_color", ""
+            )
+            base_price_background_color = asset_data["tooltip_data"].get(
+                "base_price_bg_color", ""
+            )
+
+            self._tooltip_price_texts = (user_price_text, base_price_text)
+            self.multi_price_label.text_a = user_price_text
+            self.multi_price_label.text_a_color = user_price_text_color
+            self.multi_price_label.segment_background_color_a = (
+                user_price_background_color
+            )
+
+            self.multi_price_label.text_b = base_price_text
+            self.multi_price_label.text_b_color = base_price_text_color
+            self.multi_price_label.segment_background_color_b = (
+                base_price_background_color
+            )
+
+            self.multi_price_label.multiline = True
+
+            if user_price_text and base_price_text:
+                self.multi_price_label.strikethrough_b = True
+                self.multi_price_label.visible = True
+                self.multi_price_label.segment_backgrounds = True
+            elif user_price_text or base_price_text:
+                self.multi_price_label.visible = True
+                self.multi_price_label.strikethrough_b = False
+                self.multi_price_label.segment_backgrounds = True
+            else:
+                self.multi_price_label.visible = False
+                self.multi_price_label.strikethrough_b = False
+                self.multi_price_label.segment_backgrounds = False
+
+            # preview comments for validators
+            self.update_comments_for_validators(asset_data)
+
+            has_warning, difference = utils.asset_from_newer_blender_version(asset_data)
+            self.version_warning.text = ""
+            if has_warning:
+                if difference == "major_newer":
+                    self.version_warning.text = f"Made in Blender {asset_data['sourceAppVersion']}! Use at your own risk."
+                    self.version_warning.text_color = self.warning_color
+                elif difference == "minor":
+                    self.version_warning.text = f"Made in Blender {asset_data['sourceAppVersion']}. Caution advised."
+                    self.version_warning.text_color = self.caution_color
+
+            # Addon-specific compatibility warning. This takes precedence
+            # over the generic sourceAppVersion notice because it's based
+            # on the addon's own declared supported range.
+            if is_addon:
+                compat_ok, min_v, max_v = utils.get_addon_blender_compatibility(
                     asset_data
                 )
-                self.version_warning.text = ""
-                if has_warning:
-                    if difference == "major_newer":
-                        self.version_warning.text = f"Made in Blender {asset_data['sourceAppVersion']}! Use at your own risk."
-                        self.version_warning.text_color = self.warning_color
-                    elif difference == "minor":
-                        self.version_warning.text = f"Made in Blender {asset_data['sourceAppVersion']}. Caution advised."
-                        self.version_warning.text_color = self.caution_color
-
-                # Addon-specific compatibility warning. This takes precedence
-                # over the generic sourceAppVersion notice because it's based
-                # on the addon's own declared supported range.
-                if is_addon:
-                    compat_ok, min_v, max_v = utils.get_addon_blender_compatibility(
-                        asset_data
+                os_ok, os_platforms = utils.get_addon_os_compatibility(asset_data)
+                if not compat_ok:
+                    if min_v and max_v:
+                        rng = f"{min_v}\u2013{max_v}"
+                    elif min_v:
+                        rng = f"{min_v}+"
+                    else:
+                        rng = f"\u2264{max_v}"
+                    cur = utils.get_blender_version()
+                    self.version_warning.text = (
+                        f"Incompatible: addon requires Blender {rng} (you have {cur})"
                     )
-                    os_ok, os_platforms = utils.get_addon_os_compatibility(asset_data)
-                    if not compat_ok:
-                        if min_v and max_v:
-                            rng = f"{min_v}\u2013{max_v}"
-                        elif min_v:
-                            rng = f"{min_v}+"
-                        else:
-                            rng = f"\u2264{max_v}"
-                        cur = utils.get_blender_version()
-                        self.version_warning.text = f"Incompatible: addon requires Blender {rng} (you have {cur})"
-                        self.version_warning.text_color = self.warning_color
-                    elif not os_ok:
-                        self.version_warning.text = f"Incompatible: addon supports {', '.join(os_platforms)} (you have {utils.get_current_addon_platform()})"
-                        self.version_warning.text_color = self.warning_color
+                    self.version_warning.text_color = self.warning_color
+                elif not os_ok:
+                    self.version_warning.text = f"Incompatible: addon supports {', '.join(os_platforms)} (you have {utils.get_current_addon_platform()})"
+                    self.version_warning.text_color = self.warning_color
 
-                author_id = int(asset_data["author"]["id"])
-                author = global_vars.BKIT_AUTHORS.get(author_id)
-                if author is None:
-                    bk_logger.info(
-                        "\n\n\nget_tooltip_data() AUTHOR NOT FOUND", author_id
-                    )
+            author_id = int(asset_data["author"]["id"])
+            author = global_vars.BKIT_AUTHORS.get(author_id)
+            if author is None:
+                bk_logger.info("\n\n\nget_tooltip_data() AUTHOR NOT FOUND", author_id)
 
-                if author is not None and author.gravatarImg:
-                    self.gravatar_image.set_image(author.gravatarImg)
-                else:
-                    img_path = paths.get_addon_thumbnail_path("thumbnail_notready.jpg")
-                    self.gravatar_image.set_image(img_path)
-                self.gravatar_image.set_image_colorspace("")
-
-            area, region = self._current_area_region()
-
-            properties_width = 0
-            if area is not None:
-                for r in getattr(area, "regions", []):
-                    if r.type == "UI":
-                        properties_width = r.width
-                        break
-
-            # reset tooltip sizing so each spawn starts from base values
-            self._reset_tooltip_dimensions()
-
-            fallback_region = getattr(bpy.context, "region", None)
-            active_region = region or fallback_region
-            region_width = getattr(active_region, "width", None)
-            if region_width is None:
-                region_width = self.tooltip_panel.width + properties_width
-            region_height = getattr(active_region, "height", None)
-            if region_height is None:
-                region_height = self.tooltip_panel.height + widget.height
-
-            tooltip_x = min(
-                int(widget.x_screen),
-                int(region_width - self.tooltip_panel.width - properties_width),
-            )
-            tooltip_x = max(0, tooltip_x)
-
-            # Calculate space above and below the button to decide tooltip placement
-            full_tooltip_height = self.tooltip_panel.height
-            space_above = widget.y_screen
-            space_below = region_height - (widget.y_screen + widget.height)
-            place_above = (
-                space_below < full_tooltip_height
-                and space_below < full_tooltip_height * 0.7
-                and space_below < space_above
-            )
-
-            if place_above:
-                available_height = space_above
+            if author is not None and author.gravatarImg:
+                self.gravatar_image.set_image(author.gravatarImg)
             else:
-                available_height = space_below
+                img_path = paths.get_addon_thumbnail_path("thumbnail_notready.jpg")
+                self.gravatar_image.set_image(img_path)
+            self.gravatar_image.set_image_colorspace("")
 
-            self._tooltip_available_height = max(64, int(available_height))
+        area, region = self._current_area_region()
 
-            # need to set image here because of context issues.
-            img_path = paths.get_addon_thumbnail_path("star_grey.png")
-            self.quality_star.set_image(img_path)
+        properties_width = 0
+        if area is not None:
+            for r in getattr(area, "regions", []):
+                if r.type == "UI":
+                    properties_width = r.width
+                    break
 
-            tooltip_context = self._build_context_snapshot(
-                bpy.context, area, active_region
-            )
-            self.update_tooltip_size(tooltip_context)
-            self.update_tooltip_layout(tooltip_context)
-            tooltip_width = self.tooltip_width
-            max_x = max(0, int(region_width - tooltip_width - properties_width))
-            tooltip_x = min(max(0, int(widget.x_screen)), max_x)
+        # reset tooltip sizing so each spawn starts from base values
+        self._reset_tooltip_dimensions()
 
-            if place_above:
-                tooltip_y = int(widget.y_screen - self.tooltip_height)
-            else:
-                tooltip_y = int(widget.y_screen + widget.height)
+        fallback_region = getattr(bpy.context, "region", None)
+        active_region = region or fallback_region
+        region_width = getattr(active_region, "width", None)
+        if region_width is None:
+            region_width = self.tooltip_panel.width + properties_width
+        region_height = getattr(active_region, "height", None)
+        if region_height is None:
+            region_height = self.tooltip_panel.height + widget.height
 
-            max_y = max(0, int(region_height - self.tooltip_height))
-            tooltip_y = min(max(0, tooltip_y), max_y)
+        tooltip_x = min(
+            int(widget.x_screen),
+            int(region_width - self.tooltip_panel.width - properties_width),
+        )
+        tooltip_x = max(0, tooltip_x)
 
-            self.tooltip_panel.set_location(tooltip_x, tooltip_y)
-            self.tooltip_panel.layout_widgets()
-            # show bookmark button - always on mouse enter (but not for authors)
-            if widget.bookmark_button and not is_author:
-                widget.bookmark_button.visible = True
+        # Calculate space above and below the button to decide tooltip placement
+        full_tooltip_height = self.tooltip_panel.height
+        space_above = widget.y_screen
+        space_below = region_height - (widget.y_screen + widget.height)
+        place_above = (
+            space_below < full_tooltip_height
+            and space_below < full_tooltip_height * 0.7
+            and space_below < space_above
+        )
+
+        if place_above:
+            available_height = space_above
+        else:
+            available_height = space_below
+
+        self._tooltip_available_height = max(64, int(available_height))
+
+        # need to set image here because of context issues.
+        img_path = paths.get_addon_thumbnail_path("star_grey.png")
+        self.quality_star.set_image(img_path)
+
+        tooltip_context = self._build_context_snapshot(bpy.context, area, active_region)
+        self.update_tooltip_size(tooltip_context)
+        self.update_tooltip_layout(tooltip_context)
+        tooltip_width = self.tooltip_width
+        max_x = max(0, int(region_width - tooltip_width - properties_width))
+        tooltip_x = min(max(0, int(widget.x_screen)), max_x)
+
+        if place_above:
+            tooltip_y = int(widget.y_screen - self.tooltip_height)
+        else:
+            tooltip_y = int(widget.y_screen + widget.height)
+
+        max_y = max(0, int(region_height - self.tooltip_height))
+        tooltip_y = min(max(0, tooltip_y), max_y)
+
+        self.tooltip_panel.set_location(tooltip_x, tooltip_y)
+        self.tooltip_panel.layout_widgets()
+        # show bookmark button - always on mouse enter (but not for authors)
+        if getattr(widget, "bookmark_button", None) and not is_author:
+            widget.bookmark_button.visible = True
 
     def exit_button(self, widget):
         """Handle mouse exit from an asset button."""
@@ -4072,6 +4197,183 @@ class BlenderKitAssetBarOperator(BL_UI_OT_draw_operator):
             return
         bpy.ops.wm.url_open(url=url)
 
+    def show_badge_tooltip(self, widget):
+        if self._resize_dragging:
+            return
+        area, region = self._current_area_region()
+        if area is None or region is None:
+            return
+        self.badge_tooltip.show_for(
+            widget,
+            widget.tooltip_text,
+            region.width,
+            area.height,
+            max(10, int(14 * ui_bgl.get_ui_scale())),
+        )
+
+    def hide_badge_tooltip(self, widget):
+        self.badge_tooltip.hide_for(widget)
+
+    def close_mini_asset_bar(self):
+        mini = getattr(self, "mini_asset_bar", None)
+        if mini is None:
+            return
+        removed = {id(widget) for widget in mini.widgets}
+        dim = getattr(self, "_mini_asset_bar_dim", None)
+        if dim is not None:
+            removed.add(id(dim))
+        self.widgets = [widget for widget in self.widgets if id(widget) not in removed]
+        self.mini_asset_bar = None
+        self._mini_asset_bar_dim = None
+        self.draw_tooltip = False
+        self.hide_tooltip()
+        region_redraw()
+
+    def raise_tooltip(self):
+        tooltip_widgets = [self.tooltip_panel, *self.tooltip_widgets]
+        badge_tooltip = getattr(self, "badge_tooltip", None)
+        if badge_tooltip is not None:
+            tooltip_widgets.append(badge_tooltip)
+        tooltip_ids = {id(widget) for widget in tooltip_widgets}
+        self.widgets = [
+            widget for widget in self.widgets if id(widget) not in tooltip_ids
+        ]
+        self.widgets.extend(tooltip_widgets)
+
+    def hover_mini_asset(self, widget):
+        self.show_tooltip()
+        self.show_asset_tooltip(widget, widget.asset_data)
+
+    def exit_mini_asset(self, widget):
+        self.draw_tooltip = False
+        self.hide_tooltip()
+
+    def open_mini_asset_bar(self, assets, title, on_select, on_context=None):
+        self.close_mini_asset_bar()
+        if not assets:
+            return
+        context = self.context or bpy.context
+        self.hide_tooltip()
+        self.badge_tooltip.hide()
+        mini = MiniAssetBar(
+            context,
+            assets,
+            title,
+            self.button_size,
+            self.thumb_size,
+            self.mouse_x,
+            context.area.height - self.mouse_y,
+            set_thumb_check,
+            on_select,
+            on_context,
+            text_size=self.free_button_text_size,
+            on_hover=self.hover_mini_asset,
+            on_hover_exit=self.exit_mini_asset,
+            corner_radius=ROUNDING_RADIUS,
+        )
+        dim = BL_UI_Widget(
+            self.panel.x_screen,
+            self.panel.y_screen - self.other_button_size,
+            self.panel.width,
+            self.panel.height + self.other_button_size,
+        )
+        dim.bg_color = (0.0, 0.0, 0.0, 0.55)
+        dim.active = False
+        dim.init(context)
+        self.mini_asset_bar = mini
+        self._mini_asset_bar_dim = dim
+        self.widgets.extend([dim, *mini.widgets])
+        self.raise_tooltip()
+        region_redraw()
+
+    def handle_mini_asset_bar_event(self, event):
+        mini = getattr(self, "mini_asset_bar", None)
+        if mini is None:
+            return False
+        if event.type in {"ESC", "WINDOW_DEACTIVATE"}:
+            self.close_mini_asset_bar()
+            return True
+        if event.type == "TIMER":
+            mini.refresh_thumbnails()
+            if mini.hovered_button is not None:
+                set_thumb_check(
+                    self.tooltip_image,
+                    mini.hovered_button.asset_data,
+                    thumb_type="thumbnail",
+                )
+        if event.type in {
+            "MOUSEMOVE",
+            "LEFTMOUSE",
+            "RIGHTMOUSE",
+            "MIDDLEMOUSE",
+            "WHEELUPMOUSE",
+            "WHEELDOWNMOUSE",
+        }:
+            self.mouse_x, self.mouse_y = self._event_coords_in_active_region(event)
+            if not mini.contains(self.mouse_x, mini.context.area.height - self.mouse_y):
+                self.close_mini_asset_bar()
+                return True
+            if mini.handle_event(event) == "REBUILD":
+                previous = {id(widget) for widget in mini.widgets}
+                self.widgets = [
+                    widget for widget in self.widgets if id(widget) not in previous
+                ]
+                self.draw_tooltip = False
+                self.hide_tooltip()
+                mini.build_widgets()
+                self.widgets.extend(mini.widgets)
+                self.raise_tooltip()
+        region_redraw()
+        return True
+
+    def select_mini_variant(self, parent, asset_index, variant, show_details=False):
+        self.close_mini_asset_bar()
+        parent["selectedVariantId"] = variant["id"]
+        ui_props = bpy.context.window_manager.blenderkitUI
+        ui_props.active_index = asset_index
+        ui_panels.set_overlay_panel_active()
+        if show_details:
+            bpy.ops.wm.blenderkit_asset_popup("EXEC_DEFAULT")
+            return
+        search.refresh_addon_variant(parent, variant["id"])
+        asset = addon_variants.resolve_variant(
+            parent, variant["id"], global_vars.SERVER
+        )
+        if asset.get("canDownload"):
+            bpy.ops.scene.blenderkit_addon_choice(
+                "INVOKE_DEFAULT", asset_data=json.dumps(asset)
+            )
+        else:
+            bpy.ops.wm.blenderkit_url_dialog(
+                "INVOKE_DEFAULT",
+                url=addon_variants.variant_gallery_url(
+                    paths.get_asset_gallery_url(parent["assetBaseId"]), asset
+                ),
+                message="Purchase or sign in to download this variant.",
+                link_text="View selected variant online",
+            )
+
+    def show_variant_picker(self, widget):
+        assets = search.get_search_results()
+        if not assets or not 0 <= widget.asset_index < len(assets):
+            return
+        parent = assets[widget.asset_index]
+        variants = []
+        for variant in addon_variants.public_variants(parent):
+            asset = addon_variants.resolve_variant(
+                parent, variant["id"], global_vars.SERVER
+            )
+            asset["mini_label"] = addon_variants.variant_price(variant)
+            variants.append(asset)
+        self.open_mini_asset_bar(
+            variants,
+            parent.get("displayName", parent.get("name", "")),
+            partial(self.select_mini_variant, parent, widget.asset_index),
+            partial(
+                self.select_mini_variant, parent, widget.asset_index, show_details=True
+            ),
+        )
+
     def drag_drop_asset(self, widget):
         """Start drag and drop operation for the asset linked to this button."""
         now = time.time()
@@ -4093,6 +4395,9 @@ class BlenderKitAssetBarOperator(BL_UI_OT_draw_operator):
                 return
             if asset_data.get("assetType") == "author":
                 self.search_by_author(search_index)
+                return
+            if asset_data.get("structure") == "variant_parent":
+                self.show_variant_picker(SimpleNamespace(asset_index=search_index))
                 return
 
         # start drag drop
@@ -4364,6 +4669,9 @@ class BlenderKitAssetBarOperator(BL_UI_OT_draw_operator):
     def asset_menu(self, widget):
         """Open the asset menu for the asset linked to this button."""
         self.hide_tooltip()
+        badge_tooltip = getattr(self, "badge_tooltip", None)
+        if badge_tooltip is not None:
+            badge_tooltip.hide()
         target_index = getattr(widget, "button_index", None)
         if target_index is None:
             target_index = getattr(widget, "asset_index", None)
@@ -4561,6 +4869,34 @@ class BlenderKitAssetBarOperator(BL_UI_OT_draw_operator):
                 # waiting for the next scroll/update_buttons pass.
                 asset_button._thumb_loaded = thumb_loaded
 
+                variant_count = len(addon_variants.public_variants(asset_data))
+                badge = asset_button.author_button
+                tooltip_key = (
+                    asset_button.asset_index,
+                    asset_data.get("id"),
+                    variant_count,
+                    thumb_loaded,
+                )
+                if getattr(badge, "_variant_tooltip_key", None) != tooltip_key:
+                    badge_tooltip = getattr(self, "badge_tooltip", None)
+                    if badge_tooltip is not None:
+                        badge_tooltip.hide_for(badge)
+                badge._variant_tooltip_key = tooltip_key
+                if (
+                    not variant_count
+                    and getattr(asset_button.author_button, "_variant_badge", False)
+                    is True
+                ):
+                    asset_button.author_button.text = ""
+                    asset_button.author_button.bg_color = (0.2, 0.2, 0.2, 0.0)
+                    asset_button.author_button.set_image(
+                        paths.get_addon_thumbnail_path("asset_type_author.png")
+                    )
+                    asset_button.author_button.set_mouse_down(self.show_author_profile)
+                    asset_button.author_button.set_mouse_enter(None)
+                    asset_button.author_button.set_mouse_exit(None)
+                    asset_button.author_button._variant_badge = False
+
                 # Placeholder entries only need thumbnail rendering.
                 if asset_data.get("placeholder"):
                     asset_button.bookmark_button.visible = False
@@ -4594,7 +4930,30 @@ class BlenderKitAssetBarOperator(BL_UI_OT_draw_operator):
                 else:
                     asset_button.background_border = False
                     asset_button.background_border_color = None
-                    asset_button.author_button.visible = False
+                    asset_button.author_button.visible = (
+                        bool(variant_count) and thumb_loaded
+                    )
+                    if variant_count:
+                        asset_button.author_button._variant_badge = True
+                        asset_button.author_button.set_image(None)
+                        asset_button.author_button.text = str(variant_count)
+                        asset_button.author_button.text_size = max(
+                            10, int(self.icon_size * 0.65)
+                        )
+                        asset_button.author_button.bg_color = (0.08, 0.08, 0.08, 0.9)
+                        asset_button.author_button.set_mouse_down(
+                            self.show_variant_picker
+                        )
+                        asset_button.author_button.tooltip_text = (
+                            f"{variant_count} variant{'s' if variant_count != 1 else ''}"
+                            " - click to choose"
+                        )
+                        asset_button.author_button.set_mouse_enter(
+                            self.show_badge_tooltip
+                        )
+                        asset_button.author_button.set_mouse_exit(
+                            self.hide_badge_tooltip
+                        )
                     asset_button.use_rounded_background = False
                     asset_button.background_corner_radius = 0.0
                     asset_button.image_corner_radius = None
@@ -4649,6 +5008,9 @@ class BlenderKitAssetBarOperator(BL_UI_OT_draw_operator):
                 visible_results.append(asset_data)
             else:
                 # Buffer button with out-of-range index – hide it
+                badge_tooltip = getattr(self, "badge_tooltip", None)
+                if badge_tooltip is not None:
+                    badge_tooltip.hide_for(asset_button.author_button)
                 asset_button.visible = False
                 asset_button.validation_icon.visible = False
                 asset_button.version_warning_icon.visible = False
@@ -4663,6 +5025,9 @@ class BlenderKitAssetBarOperator(BL_UI_OT_draw_operator):
     def scroll_update(self, always=False, *, update_visible_buttons=True):
         """Update scroll position and visibility of scroll buttons."""
         self.hide_tooltip()
+        badge_tooltip = getattr(self, "badge_tooltip", None)
+        if badge_tooltip is not None:
+            badge_tooltip.hide()
         # Outside the smooth-scroll loop any stale phase would leave buttons
         # visually offset from their integer position - reset it so external
         # callers (clicks, search refresh, edge clamps) start clean.
@@ -4858,6 +5223,9 @@ class BlenderKitAssetBarOperator(BL_UI_OT_draw_operator):
         refresh the draw offset and the scroll indicator, then tag a redraw.
         """
         self._update_grid_draw_offset()
+        badge_tooltip = getattr(self, "badge_tooltip", None)
+        if badge_tooltip is not None and badge_tooltip.visible:
+            badge_tooltip.hide()
         # Refresh the indicator each animation frame so its thumb glides
         # smoothly with the sub-slot phase. (`scroll_update` handles the
         # non-animated paths.)

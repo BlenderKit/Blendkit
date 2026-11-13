@@ -1,3 +1,4 @@
+import json
 import platform
 import sys
 import tempfile
@@ -17,6 +18,182 @@ import bpy
 if __package__:
     __package__ = __package__.rsplit(".tests", 1)[0]
 from . import autothumb, global_vars, ui_panels
+
+
+class TestAddonVariantPopup(unittest.TestCase):
+    def test_popup_registers_variant_data_property(self):
+        cls = ui_panels.AssetPopupCard
+        if not cls.is_registered:
+            bpy.utils.register_class(cls)
+            self.addCleanup(bpy.utils.unregister_class, cls)
+        properties = bpy.ops.wm.blenderkit_asset_popup.get_rna_type().properties
+        self.assertIn("variant_asset_data", properties)
+        self.assertIn("variant_id", properties)
+
+    def test_selection_resolves_variant_without_changing_parent_identity(self):
+        parent = {
+            "id": "parent",
+            "assetBaseId": "parent-base",
+            "variants": [
+                {"id": "free", "assetBaseId": "free-base", "isFree": True},
+                {"id": "pro", "assetBaseId": "pro-base", "basePrice": "10"},
+            ],
+        }
+        operator = SimpleNamespace(
+            asset_data=parent, variant_id="pro", variant_asset_data=json.dumps(parent)
+        )
+        with patch.object(ui_panels.search, "refresh_addon_variant") as refresh:
+            ui_panels.AssetPopupCard.update_variant(operator, None)
+        self.assertEqual(refresh.call_args.args[0]["selectedVariantId"], "pro")
+        self.assertEqual(refresh.call_args.args[1], "pro")
+        selected = ui_panels.AssetPopupCard.selected_addon_data(operator)
+        self.assertEqual(selected["id"], "pro")
+        self.assertEqual(parent["id"], "parent")
+        self.assertEqual(parent["selectedVariantId"], "pro")
+
+    def test_registered_popup_enum_selects_and_switches_variants(self):
+        parent = {
+            "id": "parent",
+            "assetBaseId": "parent-base",
+            "variants": [
+                {"id": "free", "assetBaseId": "free-base", "isFree": True},
+                {"id": "pro", "assetBaseId": "pro-base", "isForSale": True},
+            ],
+        }
+        selections = []
+
+        def execute(operator, context):
+            operator.asset_data = parent
+            operator.variant_asset_data = json.dumps(parent)
+            for variant_id in ("free", "pro", "free"):
+                operator.variant_id = variant_id
+                resolved = ui_panels.AssetPopupCard.selected_addon_data(operator)
+                selections.append(resolved["id"])
+            return {"FINISHED"}
+
+        probe = type(
+            "VariantPopupProbe",
+            (bpy.types.Operator,),
+            {
+                "bl_idname": "wm.blenderkit_variant_popup_probe",
+                "bl_label": "Variant Popup Probe",
+                "__annotations__": {
+                    "variant_asset_data": bpy.props.StringProperty(),
+                    "variant_id": bpy.props.EnumProperty(
+                        items=ui_panels.AssetPopupCard.variant_items,
+                        update=ui_panels.AssetPopupCard.update_variant,
+                    ),
+                },
+                "execute": execute,
+            },
+        )
+        bpy.utils.register_class(probe)
+        self.addCleanup(bpy.utils.unregister_class, probe)
+        with patch.object(ui_panels.search, "refresh_addon_variant"):
+            result = bpy.ops.wm.blenderkit_variant_popup_probe()
+        self.assertEqual(result, {"FINISHED"})
+        self.assertEqual(selections, ["free", "pro", "free"])
+        self.assertEqual(parent["id"], "parent")
+
+    def test_details_follow_selected_variant_and_keep_parent_context(self):
+        parent = {
+            "id": "parent",
+            "assetBaseId": "parent-base",
+            "structure": "variant_parent",
+            "description": "Parent description",
+            "variants": [
+                {"id": "free", "description": "Free description"},
+                {"id": "pro", "description": "Pro description"},
+                {"id": "empty", "description": ""},
+                {"id": "private", "isPrivate": True},
+            ],
+        }
+        operator = SimpleNamespace(
+            asset_data=parent,
+            variant_id="free",
+            variant_asset_data=json.dumps(parent),
+            draw_menu=Mock(),
+            draw_author_area=Mock(),
+        )
+        operator.selected_addon_data = lambda: (
+            ui_panels.AssetPopupCard.selected_addon_data(operator)
+        )
+        descriptions = []
+        properties = []
+        operator.draw_description = lambda layout, width: descriptions.append(
+            (operator.asset_data["id"], operator.asset_data["description"])
+        )
+        operator.draw_properties = lambda layout, width: properties.append(
+            operator.asset_data["id"]
+        )
+        layout = Mock()
+        for variant_id in ("free", "pro", "empty"):
+            operator.variant_id = variant_id
+            ui_panels.AssetPopupCard.draw_menu_desc_author(operator, None, layout)
+            self.assertIs(operator.asset_data, parent)
+
+        column = layout.column.return_value.row.return_value.split.return_value.column.return_value
+        self.assertEqual(column.prop.call_count, 3)
+        self.assertEqual(
+            descriptions,
+            [
+                ("free", "Free description"),
+                ("pro", "Pro description"),
+                ("empty", "Parent description"),
+            ],
+        )
+        self.assertEqual(properties, ["free", "pro", "empty"])
+        self.assertEqual(parent["description"], "Parent description")
+        self.assertEqual(
+            [
+                item[0]
+                for item in ui_panels.addon_variants.variant_enum_items(
+                    json.dumps(parent)
+                )
+            ],
+            ["free", "pro", "empty"],
+        )
+
+    def test_details_without_public_variants_do_not_show_selector(self):
+        for asset in (
+            {"structure": "standalone", "description": "Standalone"},
+            {
+                "structure": "variant_parent",
+                "description": "Parent",
+                "variants": [{"id": "private", "isPrivate": True}],
+            },
+        ):
+            with self.subTest(asset=asset):
+                operator = SimpleNamespace(
+                    asset_data=asset,
+                    draw_description=Mock(),
+                    draw_properties=Mock(),
+                    draw_menu=Mock(),
+                    draw_author_area=Mock(),
+                )
+                layout = Mock()
+                ui_panels.AssetPopupCard.draw_menu_desc_author(operator, None, layout)
+                column = layout.column.return_value.row.return_value.split.return_value.column.return_value
+                column.prop.assert_not_called()
+                operator.draw_description.assert_called_once()
+
+    def test_variant_description_link_points_to_parent_gallery(self):
+        operator = SimpleNamespace(
+            asset_data={
+                "assetBaseId": "variant-base",
+                "parentAssetBaseId": "parent-base",
+                "description": "Long description",
+            }
+        )
+        layout = Mock()
+        with (
+            patch.object(ui_panels.utils, "label_multiline", return_value=True),
+            patch.object(
+                ui_panels.paths, "get_asset_gallery_url", return_value="parent-url"
+            ) as gallery_url,
+        ):
+            ui_panels.AssetPopupCard.draw_description(operator, layout)
+        gallery_url.assert_called_once_with("parent-base")
 
 
 class TestThumbnailFilePicker(unittest.TestCase):

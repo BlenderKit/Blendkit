@@ -17,7 +17,7 @@
 # ##### END GPL LICENSE BLOCK #####
 
 import unittest
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 
 import bpy
 
@@ -63,6 +63,88 @@ def mocked_ui_props() -> Mock:
 
 
 # TODO: Add test for build_common_query()
+
+
+class TestAddonVariantSearch(unittest.TestCase):
+    def test_old_client_metadata_restored_without_replacing_asset(self):
+        parent = {"id": "parent", "assetType": "addon", "canDownload": False}
+        model = {"id": "model", "assetType": "model"}
+        context = Mock()
+        context.preferences.addons = {
+            search.__package__: Mock(preferences=Mock(api_key="test-key"))
+        }
+        original = {
+            "id": "parent",
+            "structure": "variant_parent",
+            "variants": [{"id": "free", "isDefault": True}],
+        }
+        with (
+            patch.object(search.bpy, "context", context),
+            patch.object(search, "get_search_simple", return_value=[original]) as query,
+        ):
+            search.restore_addon_variant_metadata([parent, model])
+        query.assert_called_once_with(
+            {"asset_id": "parent"}, page_size=1, max_results=1, api_key="test-key"
+        )
+        self.assertEqual(parent["structure"], "variant_parent")
+        self.assertEqual(parent["variants"][0]["id"], "free")
+        self.assertFalse(parent["canDownload"])
+        self.assertNotIn("structure", model)
+
+    def test_current_client_metadata_does_not_trigger_extra_request(self):
+        with patch.object(search, "get_search_simple") as query:
+            search.restore_addon_variant_metadata(
+                [
+                    {
+                        "id": "parent",
+                        "assetType": "addon",
+                        "structure": "variant_parent",
+                        "variants": [],
+                    }
+                ]
+            )
+        query.assert_not_called()
+
+    def test_nested_variant_prices_use_version_uuid(self):
+        parent = {"id": "parent", "variants": [{"id": "free"}, {"id": "paid"}]}
+        with patch.object(
+            search.search_price,
+            "query_user_price",
+            return_value=[{"versionUuid": "paid", "discountedPrice": "5.00"}],
+        ) as query:
+            search._inject_user_price_data([parent])
+        query.assert_called_once_with(
+            version_uuids=["parent", "free", "paid"], page_size=3
+        )
+        self.assertEqual(parent["variants"][1]["userPrice"], "5.00")
+        self.assertNotIn("userPrice", parent)
+
+    def test_refresh_updates_only_selected_variant(self):
+        parent = {
+            "id": "parent",
+            "assetBaseId": "parent-base",
+            "variants": [{"id": "paid"}],
+            "tooltip_data": {},
+        }
+        context = Mock()
+        context.preferences.addons = {
+            search.__package__: Mock(preferences=Mock(api_key="test-key"))
+        }
+        with (
+            patch.object(search.bpy, "context", context),
+            patch.object(
+                search,
+                "get_search_simple",
+                return_value=[{"id": "paid", "canDownload": True}],
+            ) as query,
+        ):
+            search.refresh_addon_variant(parent, "paid")
+        query.assert_called_once_with(
+            {"asset_id": "paid"}, page_size=1, max_results=1, api_key="test-key"
+        )
+        self.assertTrue(parent["variants"][0]["canDownload"])
+        self.assertEqual(parent["id"], "parent")
+        self.assertNotIn("tooltip_data", parent)
 
 
 class TestDecideOrdering(unittest.TestCase):

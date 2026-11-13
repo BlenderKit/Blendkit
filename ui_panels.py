@@ -17,8 +17,7 @@
 # ##### END GPL LICENSE BLOCK #####
 
 
-from __future__ import annotations
-
+import json
 import logging
 import os
 import platform
@@ -42,6 +41,7 @@ from bpy.types import Context, Menu, Panel, UILayout
 
 from . import (
     addon_updater_ops,
+    addon_variants,
     autothumb,
     categories,
     client_lib,
@@ -691,7 +691,7 @@ def draw_panel_nodegroup_search(self, context):
     utils.label_multiline(layout, text=props.report)
 
 
-def draw_common_filters(layout: UILayout, ui_props: BlenderKitUIProps):
+def draw_common_filters(layout: UILayout, ui_props: "BlenderKitUIProps"):
     """Draw common filter elements shared by multiple asset type panels.
 
     Args:
@@ -3119,6 +3119,34 @@ class AssetPopupCard(bpy.types.Operator, ratings_utils.RatingProperties):
 
     width = 800
 
+    variant_asset_data: StringProperty(options={"SKIP_SAVE"})
+
+    def variant_items(self, context):
+        return addon_variants.variant_enum_items(self.variant_asset_data)
+
+    def update_variant(self, context):
+        parent = json.loads(self.variant_asset_data or "{}")
+        if parent.get("variants"):
+            parent["selectedVariantId"] = self.variant_id
+            search.refresh_addon_variant(parent, self.variant_id)
+            self.variant_asset_data = json.dumps(parent)
+
+    variant_id: EnumProperty(
+        name="Variant",
+        items=variant_items,
+        update=update_variant,
+        options={"SKIP_SAVE"},
+    )
+
+    def selected_addon_data(self):
+        parent = json.loads(self.variant_asset_data or "{}")
+        if parent.get("variants"):
+            self.asset_data["variants"] = parent["variants"]
+            self.asset_data["selectedVariantId"] = self.variant_id
+        return addon_variants.resolve_variant(
+            self.asset_data, self.variant_id, global_vars.SERVER
+        )
+
     thumbnail_mode: EnumProperty(  # type: ignore[valid-type]
         name="Thumbnail Variant",
         description="Choose which preview image to display",
@@ -3261,7 +3289,10 @@ class AssetPopupCard(bpy.types.Operator, ratings_utils.RatingProperties):
                 op = row.operator(
                     "wm.blenderkit_url", text="See Full Description", icon="URL"
                 )
-                op.url = paths.get_asset_gallery_url(self.asset_data["assetBaseId"])
+                op.url = paths.get_asset_gallery_url(
+                    self.asset_data.get("parentAssetBaseId")
+                    or self.asset_data["assetBaseId"]
+                )
                 op.tooltip = "Read full description on website"
             box.separator()
 
@@ -3479,6 +3510,18 @@ class AssetPopupCard(bpy.types.Operator, ratings_utils.RatingProperties):
 
             # Display Blender version requirements for addons
             dict_params = self.asset_data.get("dictParameters", {})
+            if self.asset_data.get("structure") == "variant":
+                self.draw_asset_parameter(
+                    box, key="archiveVersion", pretext="Archive version"
+                )
+                platforms = dict_params.get("platforms", [])
+                if platforms:
+                    utils.label_multiline(
+                        box,
+                        "Platforms: " + ", ".join(platforms),
+                        width=width,
+                        max_lines=4,
+                    )
             min_version = dict_params.get("blenderVersionMin")
             max_version = dict_params.get("blenderVersionMax")
             min_version_tuple = None
@@ -3883,7 +3926,11 @@ class AssetPopupCard(bpy.types.Operator, ratings_utils.RatingProperties):
 
             if self.asset_data.get(
                 "assetType"
-            ) == "addon" and not download.is_addon_installed(self.asset_data):
+            ) == "addon" and not download.is_addon_installed(
+                self.selected_addon_data()
+                if self.asset_data.get("structure") == "variant_parent"
+                else self.asset_data
+            ):
                 pass  # add-ons can only be rated once installed
             elif utils.user_is_owner(asset_data=self.asset_data):
                 pass  # do not ask creators to rate themselves
@@ -3904,7 +3951,32 @@ class AssetPopupCard(bpy.types.Operator, ratings_utils.RatingProperties):
 
         row.scale_y = 3
         ui_props = bpy.context.window_manager.blenderkitUI
-        if self.asset_data.get("canDownload", True):
+        if self.asset_data.get("structure") == "variant_parent":
+            selected = addon_variants.selected_variant(self.asset_data, self.variant_id)
+            if selected is None:
+                row.label(text="No public variants available", icon="INFO")
+            else:
+                variant_data = self.selected_addon_data()
+                if variant_data.get("canDownload"):
+                    op = row.operator(
+                        "scene.blenderkit_addon_choice",
+                        text="Install / Manage Variant",
+                        icon="IMPORT",
+                    )
+                    op.asset_data = json.dumps(variant_data)
+                else:
+                    text = (
+                        "Sign In to Download"
+                        if selected.get("isFree")
+                        else f"Buy / View - {addon_variants.variant_price(selected)}"
+                    )
+                    op = row.operator("wm.blenderkit_url", text=text, icon="URL")
+                    op.url = addon_variants.variant_gallery_url(
+                        paths.get_asset_gallery_url(self.asset_data["assetBaseId"]),
+                        selected,
+                    )
+                    op.tooltip = "Purchase or view the selected variant online"
+        elif self.asset_data.get("canDownload", True):
             row.prop(
                 ui_props,
                 "drag_init_button",
@@ -3931,9 +4003,27 @@ class AssetPopupCard(bpy.types.Operator, ratings_utils.RatingProperties):
         split_left = row.split(factor=split_factor)
         col = split_left.column()
         width_left = int(width * split_factor)
-        self.draw_description(col, width=width_left)
 
-        self.draw_properties(col, width=width_left)
+        if self.asset_data.get("structure") == "variant_parent":
+            col.label(text="Variant", icon="DUPLICATE")
+            if addon_variants.public_variants(self.asset_data):
+                col.prop(self, "variant_id", text="")
+                selected = self.selected_addon_data()
+                parent = self.asset_data
+                try:
+                    self.asset_data = selected
+                    if not selected.get("description"):
+                        self.asset_data["description"] = parent["description"]
+                    self.draw_description(col, width=width_left)
+                    self.draw_properties(col, width=width_left)
+                finally:
+                    self.asset_data = parent
+            else:
+                col.label(text="No public variants available", icon="INFO")
+                self.draw_description(col, width=width_left)
+        else:
+            self.draw_description(col, width=width_left)
+            self.draw_properties(col, width=width_left)
 
         # right - menu
         split_right = split_left.split()
@@ -4149,7 +4239,11 @@ class AssetPopupCard(bpy.types.Operator, ratings_utils.RatingProperties):
             pass  # authors are excluded from rating
         elif self.asset_data.get("assetType") == "addon":
             # Add-ons can only be rated once they are installed.
-            if download.is_addon_installed(self.asset_data):
+            if download.is_addon_installed(
+                self.selected_addon_data()
+                if self.asset_data.get("structure") == "variant_parent"
+                else self.asset_data
+            ):
                 ratings_box = left_column.box()
                 self.prefill_ratings()
                 ratings.draw_ratings_menu(self, context, ratings_box)
@@ -4193,6 +4287,10 @@ class AssetPopupCard(bpy.types.Operator, ratings_utils.RatingProperties):
         sr = history_step.get("search_results", [])
         asset_data = sr[ui_props.active_index]
         self.asset_data = asset_data
+        selected = addon_variants.selected_variant(asset_data)
+        if selected:
+            self.variant_asset_data = json.dumps(asset_data)
+            self.variant_id = selected["id"]
 
         self.img = ui.get_large_thumbnail_image(asset_data)
         utils.img_to_preview(self.img, copy_original=True)
