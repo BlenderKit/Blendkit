@@ -93,6 +93,9 @@ class MiniAssetBar:
         on_select,
         on_context=None,
         text_size=12,
+        on_hover=None,
+        on_hover_exit=None,
+        corner_radius=20,
     ):
         self.context = context
         self.assets = list(assets)
@@ -100,6 +103,7 @@ class MiniAssetBar:
         self.tile_size = tile_size
         self.thumbnail_size = thumbnail_size
         self.text_size = text_size
+        self.corner_radius = corner_radius
         self.header_height = max(28, text_size + 16)
         self.price_rows = 1
         for asset in self.assets:
@@ -114,6 +118,9 @@ class MiniAssetBar:
             (1 + self.price_rows) * text_size + 20 + (self.price_rows - 1) * 7
         )
         self.set_thumbnail = set_thumbnail
+        self.on_hover = on_hover
+        self.on_hover_exit = on_hover_exit
+        self.hovered_button = None
         self.on_select = on_select
         self.on_context = on_context
         self.offset = 0
@@ -135,10 +142,18 @@ class MiniAssetBar:
         left, top, width, height, columns, rows = self.rect
         panel = BL_UI_Widget(left, top, width, height)
         panel.bg_color = (0.08, 0.08, 0.08, 0.98)
+        panel.use_rounded_background = True
+        panel.background_corner_radius = self.corner_radius
         panel.active = False
-        title = BL_UI_Label(left + 8, top + 6, width - 16, self.text_size + 2)
+        title_inset = max(8, self.corner_radius)
+        title = BL_UI_Label(
+            left + title_inset,
+            top + 6,
+            max(0, width - 2 * title_inset),
+            self.text_size + 2,
+        )
         title.text_size = self.text_size
-        title.text = fit_label(self.title, width - 16, self.text_size)
+        title.text = fit_label(self.title, title.width, self.text_size)
         self.widgets = [panel, title]
         self.buttons = []
         for slot, asset in enumerate(
@@ -156,6 +171,9 @@ class MiniAssetBar:
             button.text = ""
             button.bg_color = (0.15, 0.15, 0.15, 1.0)
             button.hover_bg_color = (0.24, 0.24, 0.24, 1.0)
+            button.use_rounded_background = True
+            button.background_corner_radius = 12.0
+            button.image_corner_radius = 12.0
             button.asset_data = asset
             padding = (self.tile_size - self.thumbnail_size) / 2
             button.set_image_size((self.thumbnail_size, self.thumbnail_size))
@@ -163,6 +181,7 @@ class MiniAssetBar:
             self.set_thumbnail(button, asset)
             button.set_mouse_down(self.select)
             button.set_mouse_enter(self.hover)
+            button.set_mouse_exit(self.exit_hover)
             if self.on_context:
                 button.set_mouse_down_right(self.show_context)
             label = BL_UI_Label(
@@ -181,6 +200,7 @@ class MiniAssetBar:
                     asset, x + 4, y + self.tile_size + self.text_size + 9
                 )
             )
+        self.hovered_button = None
         for widget in self.widgets:
             widget.init(self.context)
 
@@ -224,9 +244,18 @@ class MiniAssetBar:
     def hover(self, widget):
         self.widgets[1].text = fit_label(
             widget.asset_data.get("displayName", widget.asset_data.get("name", "")),
-            self.rect[2] - 16,
+            self.widgets[1].width,
             self.text_size,
         )
+        self.hovered_button = widget
+        if self.on_hover:
+            self.on_hover(widget)
+
+    def exit_hover(self, widget):
+        if self.hovered_button is widget:
+            self.hovered_button = None
+            if self.on_hover_exit:
+                self.on_hover_exit(widget)
 
     def contains(self, mouse_x, mouse_y):
         left, top, width, height, columns, rows = self.rect

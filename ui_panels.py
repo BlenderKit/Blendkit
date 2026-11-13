@@ -3289,7 +3289,10 @@ class AssetPopupCard(bpy.types.Operator, ratings_utils.RatingProperties):
                 op = row.operator(
                     "wm.blenderkit_url", text="See Full Description", icon="URL"
                 )
-                op.url = paths.get_asset_gallery_url(self.asset_data["assetBaseId"])
+                op.url = paths.get_asset_gallery_url(
+                    self.asset_data.get("parentAssetBaseId")
+                    or self.asset_data["assetBaseId"]
+                )
                 op.tooltip = "Read full description on website"
             box.separator()
 
@@ -4004,25 +4007,26 @@ class AssetPopupCard(bpy.types.Operator, ratings_utils.RatingProperties):
         split_left = row.split(factor=split_factor)
         col = split_left.column()
         width_left = int(width * split_factor)
-        self.draw_description(col, width=width_left)
 
         if self.asset_data.get("structure") == "variant_parent":
             col.label(text="Variant", icon="DUPLICATE")
             if addon_variants.public_variants(self.asset_data):
                 col.prop(self, "variant_id", text="")
                 selected = self.selected_addon_data()
-                utils.label_multiline(
-                    col, selected.get("description", ""), width=width_left, max_lines=4
-                )
                 parent = self.asset_data
                 try:
                     self.asset_data = selected
+                    if not selected.get("description"):
+                        self.asset_data["description"] = parent["description"]
+                    self.draw_description(col, width=width_left)
                     self.draw_properties(col, width=width_left)
                 finally:
                     self.asset_data = parent
             else:
                 col.label(text="No public variants available", icon="INFO")
+                self.draw_description(col, width=width_left)
         else:
+            self.draw_description(col, width=width_left)
             self.draw_properties(col, width=width_left)
 
         # right - menu

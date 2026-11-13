@@ -45,6 +45,261 @@ class _FakeWidget:
         self.update = Mock()
 
 
+class TestBadgeTooltip(unittest.TestCase):
+    def test_tooltip_fits_viewport_and_only_hides_for_its_target(self):
+        context = Mock()
+        context.region = Mock()
+        first = SimpleNamespace(x_screen=195, y_screen=90, height=10)
+        other = SimpleNamespace(x_screen=0, y_screen=0, height=10)
+        with (
+            patch.object(asset_bar_op.bpy, "context", context),
+            patch.object(asset_bar_op.gpu.shader, "from_builtin"),
+            patch.object(asset_bar_op.BL_UI_Widget, "_ensure_panel_batch"),
+            patch.object(
+                asset_bar_op.ui_bgl,
+                "get_text_size",
+                side_effect=lambda font, text, size: (len(text) * 8, size),
+            ),
+        ):
+            tooltip = asset_bar_op.BL_UI_Tooltip()
+            tooltip.init(context)
+            tooltip.show_for(first, "2 variants - click to choose", 200, 100, 14)
+            self.assertTrue(tooltip.visible)
+            self.assertFalse(tooltip.active)
+            self.assertTrue(tooltip.background)
+            self.assertTrue(tooltip.text.endswith("..."))
+            self.assertGreaterEqual(tooltip.x, tooltip.background_padding[0])
+            self.assertLessEqual(
+                tooltip.x + tooltip.width + tooltip.background_padding[0], 200
+            )
+            self.assertGreaterEqual(tooltip.y, tooltip.background_padding[1])
+            self.assertLessEqual(
+                tooltip.y + tooltip.height + tooltip.background_padding[1], 100
+            )
+            tooltip.hide_for(other)
+            self.assertTrue(tooltip.visible)
+            tooltip.hide_for(first)
+            self.assertFalse(tooltip.visible)
+            self.assertIsNone(tooltip.target)
+
+    def test_badge_hover_uses_reusable_tooltip(self):
+        tooltip = Mock()
+        area = SimpleNamespace(height=800)
+        region = SimpleNamespace(width=1000)
+        operator = SimpleNamespace(
+            _resize_dragging=False,
+            _current_area_region=Mock(return_value=(area, region)),
+            badge_tooltip=tooltip,
+        )
+        badge = SimpleNamespace(tooltip_text="2 variants - click to choose")
+        with patch.object(asset_bar_op.ui_bgl, "get_ui_scale", return_value=1):
+            asset_bar_op.BlenderKitAssetBarOperator.show_badge_tooltip(operator, badge)
+        tooltip.show_for.assert_called_once_with(
+            badge, "2 variants - click to choose", 1000, 800, 14
+        )
+        asset_bar_op.BlenderKitAssetBarOperator.hide_badge_tooltip(operator, badge)
+        tooltip.hide_for.assert_called_once_with(badge)
+
+    def test_smooth_scrolling_hides_badge_tooltip(self):
+        tooltip = Mock(visible=True)
+        operator = SimpleNamespace(
+            badge_tooltip=tooltip,
+            _update_grid_draw_offset=Mock(),
+            _update_scroll_indicator=Mock(),
+            _safe_tag_redraw=Mock(),
+        )
+        asset_bar_op.BlenderKitAssetBarOperator._smooth_scroll_redraw(operator)
+        tooltip.hide.assert_called_once()
+
+
+class TestTooltipPriceLayout(unittest.TestCase):
+    def test_asset_name_wraps_above_author_price_and_rating(self):
+        widget = lambda: Mock()
+        owner = SimpleNamespace(
+            tooltip_base_size_pixels=512,
+            bottom_panel_fraction=0.23,
+            _tooltip_available_height=800,
+            active_index=0,
+            _tooltip_asset_data={"assetType": "addon"},
+            _tooltip_name_text="A longer asset name with enough words to fill the first line and wrap cleanly",
+            _tooltip_price_texts=("", "From $5.94"),
+            tooltip_panel=widget(),
+            tooltip_image=widget(),
+            tooltip_image_help=widget(),
+            gravatar_image=widget(),
+            authors_name=widget(),
+            asset_name=widget(),
+            tooltip_dark_panel=widget(),
+            quality_label=widget(),
+            quality_star=widget(),
+            multi_price_label=widget(),
+            version_warning=widget(),
+            comments=widget(),
+        )
+        owner.multi_price_label.background_padding = (4, 4)
+        context = SimpleNamespace(region=SimpleNamespace(height=800))
+        bpy_context = SimpleNamespace(
+            window_manager=SimpleNamespace(
+                blenderkitUI=SimpleNamespace(asset_type="ADDON")
+            )
+        )
+        with (
+            patch.object(asset_bar_op.bpy, "context", bpy_context),
+            patch.object(asset_bar_op.ui_bgl, "get_ui_scale", return_value=1),
+            patch.object(
+                asset_bar_op.search,
+                "get_search_results",
+                return_value=[{"assetType": "author"}],
+            ),
+        ):
+            asset_bar_op.BlenderKitAssetBarOperator.update_tooltip_size(owner, context)
+            asset_bar_op.BlenderKitAssetBarOperator.update_tooltip_layout(
+                owner, context
+            )
+
+        self.assertEqual(len(owner._tooltip_name_lines), 2)
+        self.assertEqual(" ".join(owner._tooltip_name_lines), owner._tooltip_name_text)
+        self.assertTrue(owner.asset_name.multiline)
+        self.assertFalse(owner._is_author_tooltip)
+        self.assertEqual(
+            owner.asset_name.width, owner.tooltip_width - 2 * owner.tooltip_margin
+        )
+        for line in owner._tooltip_name_lines:
+            self.assertLessEqual(
+                asset_bar_op.ui_bgl.get_text_size(1, line, owner.asset_name_text_size)[
+                    0
+                ],
+                owner.asset_name.width,
+            )
+        name_top = owner.asset_name.set_location.call_args.args[1]
+        name_bottom = name_top + owner.asset_name.height + owner.asset_name.row_height
+        avatar_top = owner.gravatar_image.set_location.call_args.args[1]
+        price_top = owner.multi_price_label.set_location.call_args.args[1]
+        rating_top = owner.quality_star.set_location.call_args.args[1]
+        author_top = owner.authors_name.set_location.call_args.args[1]
+        self.assertGreaterEqual(avatar_top, name_bottom)
+        self.assertGreaterEqual(price_top, name_bottom)
+        self.assertGreaterEqual(rating_top, price_top + owner.asset_name_text_size)
+        self.assertGreaterEqual(author_top, name_bottom)
+        self.assertGreater(
+            owner.tooltip_info_height, int(owner.tooltip_image_height * 0.18)
+        )
+        self.assertLessEqual(owner.tooltip_height, 800)
+        owner.version_warning.set_location.assert_called_with(
+            owner.tooltip_margin,
+            owner.tooltip_height + owner.tooltip_margin + owner.author_text_size,
+        )
+
+    def test_long_name_uses_available_width_without_character_truncation(self):
+        name = "A descriptive name longer than thirty characters"
+        lines = asset_bar_op.tooltip_name_lines(name, 512, 16)
+        self.assertEqual(lines, [name])
+
+    def test_long_unbroken_name_is_bounded_and_ellipsized(self):
+        name = "First " + "LongVariantName" * 20 + "Ending"
+        lines = asset_bar_op.tooltip_name_lines(name, 200, 16)
+        self.assertEqual(len(lines), 2)
+        self.assertTrue(lines[0].startswith("First"))
+        self.assertIn("...", lines[1])
+        self.assertTrue(lines[1].endswith("Ending"))
+        for line in lines:
+            self.assertLessEqual(asset_bar_op.ui_bgl.get_text_size(1, line, 16)[0], 200)
+
+    def test_long_name_preserves_final_word_after_middle_ellipsis(self):
+        name = "Beginning " + "many descriptive words " * 12 + "[Ultimate]"
+        lines = asset_bar_op.tooltip_name_lines(name, 200, 16)
+        self.assertEqual(len(lines), 2)
+        self.assertTrue(lines[0].startswith("Beginning"))
+        self.assertIn("...", lines[1])
+        self.assertTrue(lines[1].endswith("[Ultimate]"))
+        for line in lines:
+            self.assertLessEqual(asset_bar_op.ui_bgl.get_text_size(1, line, 16)[0], 200)
+
+    def test_screenshot_summary_fits_without_losing_text(self):
+        summary = "3 variants | Free available | From $5.94"
+        left, right, size = asset_bar_op.fit_tooltip_prices("", summary, 340, 16)
+        self.assertEqual(right, summary)
+        self.assertLessEqual(
+            asset_bar_op.ui_bgl.get_text_size(1, left + right, size)[0], 340
+        )
+
+    def test_price_segments_fit_before_author_image(self):
+        measure = lambda font, text, size: (len(text) * size, size)
+        with patch.object(asset_bar_op.ui_bgl, "get_text_size", side_effect=measure):
+            for a, b, width in (
+                ("", "3 variants | Free available | From $5.94", 250),
+                (" $34.85 ", " ($41.00) ", 90),
+                ("Very long " * 20, "Original price " * 20, 40),
+                ("", "", 0),
+            ):
+                with self.subTest(a=a, b=b, width=width):
+                    left, right, size = asset_bar_op.fit_tooltip_prices(a, b, width, 16)
+                    used = (len(left) + len(right)) * size
+                    if left and right:
+                        used += 4
+                    self.assertLessEqual(used, width)
+
+    def test_layout_reserves_author_image_and_restores_price_on_resize(self):
+        widget = lambda: Mock()
+        owner = SimpleNamespace(
+            tooltip_width=400,
+            tooltip_height=480,
+            tooltip_image_height=400,
+            tooltip_info_height=80,
+            tooltip_margin=8,
+            gravatar_size=64,
+            asset_name_text_size=20,
+            author_text_size=16,
+            _is_author_tooltip=False,
+            _tooltip_price_texts=("", "3 variants | Free available | From $5.94"),
+            tooltip_panel=widget(),
+            tooltip_image=widget(),
+            tooltip_image_help=widget(),
+            gravatar_image=widget(),
+            authors_name=widget(),
+            asset_name=widget(),
+            tooltip_dark_panel=widget(),
+            quality_label=widget(),
+            quality_star=widget(),
+            multi_price_label=widget(),
+        )
+        owner.multi_price_label.background_padding = (4, 4)
+        measure = lambda font, text, size: (len(text) * size, size)
+        with patch.object(asset_bar_op.ui_bgl, "get_text_size", side_effect=measure):
+            asset_bar_op.BlenderKitAssetBarOperator.update_tooltip_layout(owner, None)
+            self.assertEqual(owner.multi_price_label.width, 308)
+            self.assertLess(
+                owner.multi_price_label.width + owner.tooltip_margin,
+                owner.tooltip_width - owner.gravatar_size - owner.tooltip_margin,
+            )
+            owner.tooltip_width = 1400
+            asset_bar_op.BlenderKitAssetBarOperator.update_tooltip_layout(owner, None)
+        self.assertEqual(owner.multi_price_label.text_b, owner._tooltip_price_texts[1])
+        self.assertEqual(owner.multi_price_label.text_size, 20)
+
+    def test_free_variant_has_price_label(self):
+        asset = {
+            "assetType": "addon",
+            "structure": "variant",
+            "displayName": "Free",
+            "author": {"id": "1"},
+            "isFree": True,
+            "isForSale": False,
+        }
+        with (
+            patch.dict(asset_bar_op.global_vars.BKIT_AUTHORS, {}, clear=True),
+            patch.object(
+                asset_bar_op.utils, "profile_is_validator", return_value=False
+            ),
+        ):
+            asset_bar_op.get_tooltip_data(asset)
+        self.assertEqual(asset["tooltip_data"]["base_price_text"], " Free ")
+        self.assertEqual(
+            asset["tooltip_data"]["base_price_bg_color"],
+            asset_bar_op.colors.GREEN_PRICE,
+        )
+
+
 class TestAssetBarVersionBadge(unittest.TestCase):
     def create_button(self):
         return SimpleNamespace(
@@ -73,6 +328,9 @@ class TestAssetBarVersionBadge(unittest.TestCase):
             update_bookmark_icon=Mock(),
             update_progress_bar=Mock(),
             _update_manufacturer_data=Mock(),
+            show_badge_tooltip=Mock(),
+            hide_badge_tooltip=Mock(),
+            badge_tooltip=Mock(),
         )
 
     def test_badge_initialized_with_image_size_and_grid_clipping(self):
@@ -208,6 +466,15 @@ class TestAssetBarVersionBadge(unittest.TestCase):
         self.update_button(operator, parent)
         self.assertTrue(button.author_button.visible)
         self.assertEqual(button.author_button.text, "2")
+        self.assertEqual(
+            button.author_button.tooltip_text, "2 variants - click to choose"
+        )
+        button.author_button.set_mouse_enter.assert_called_with(
+            operator.show_badge_tooltip
+        )
+        button.author_button.set_mouse_exit.assert_called_with(
+            operator.hide_badge_tooltip
+        )
         button.author_button.set_mouse_down.assert_called_with(
             operator.show_variant_picker
         )
@@ -225,6 +492,23 @@ class TestAssetBarVersionBadge(unittest.TestCase):
         )
         button.author_button.set_mouse_enter.assert_called_with(None)
         button.author_button.set_mouse_exit.assert_called_with(None)
+
+    def test_variant_badge_tooltip_is_invalidated_on_slot_reuse(self):
+        button = self.create_button()
+        operator = self.create_operator(button)
+        operator.show_variant_picker = Mock()
+        operator.show_author_profile = Mock()
+        first = {"id": "first", "assetType": "addon", "variants": [{"id": "free"}]}
+        second = {"id": "second", "assetType": "addon", "variants": [{"id": "pro"}]}
+        self.update_button(operator, first)
+        self.assertEqual(
+            button.author_button.tooltip_text, "1 variant - click to choose"
+        )
+        operator.badge_tooltip.reset_mock()
+        self.update_button(operator, first)
+        operator.badge_tooltip.hide_for.assert_not_called()
+        self.update_button(operator, second)
+        operator.badge_tooltip.hide_for.assert_called_with(button.author_button)
 
     def test_variant_badge_hover_does_not_trigger_asset_hover_handlers(self):
         for asset_data in (
@@ -253,6 +537,16 @@ class TestAssetBarVersionBadge(unittest.TestCase):
 
                 operator.enter_button.assert_not_called()
                 operator.exit_button.assert_not_called()
+                if asset_data is None:
+                    operator.show_badge_tooltip.assert_called_once_with(
+                        button.author_button
+                    )
+                    operator.hide_badge_tooltip.assert_called_once_with(
+                        button.author_button
+                    )
+                else:
+                    operator.show_badge_tooltip.assert_not_called()
+                    operator.hide_badge_tooltip.assert_not_called()
                 if asset_data is not None:
                     self.assertEqual(button.author_button.text, "")
                     self.assertFalse(button.author_button._variant_badge)

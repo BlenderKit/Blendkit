@@ -82,6 +82,10 @@ class TestMiniAssetBarLayout(unittest.TestCase):
             context=context,
             close_mini_asset_bar=Mock(),
             hide_tooltip=Mock(),
+            badge_tooltip=Mock(),
+            hover_mini_asset=Mock(),
+            exit_mini_asset=Mock(),
+            raise_tooltip=Mock(),
             button_size=180,
             thumb_size=172,
             free_button_text_size=24,
@@ -101,6 +105,102 @@ class TestMiniAssetBarLayout(unittest.TestCase):
             )
         self.assertEqual(mini.call_args.args[3:5], (180, 172))
         self.assertEqual(mini.call_args.kwargs["text_size"], 24)
+        self.assertIs(mini.call_args.kwargs["on_hover"], owner.hover_mini_asset)
+        self.assertIs(mini.call_args.kwargs["on_hover_exit"], owner.exit_mini_asset)
+        self.assertEqual(
+            mini.call_args.kwargs["corner_radius"], asset_bar_op.ROUNDING_RADIUS
+        )
+        owner.badge_tooltip.hide.assert_called_once()
+        owner.raise_tooltip.assert_called_once()
+
+    def test_panel_and_thumbnail_corners_remain_rounded_after_rebuild(self):
+        context = Mock()
+        context.region.width = 1000
+        context.area.height = 800
+        with (
+            patch.object(asset_bar_op.bpy, "context", context),
+            patch.object(asset_bar_op.gpu.shader, "from_builtin"),
+            patch.object(asset_bar_op.BL_UI_Widget, "_ensure_panel_batch"),
+            patch.object(
+                asset_bar_op.ui_bgl,
+                "get_text_size",
+                side_effect=lambda font, text, size: (len(text) * 6, size),
+            ),
+        ):
+            mini = MiniAssetBar(
+                context,
+                [{"displayName": "Variant", "isFree": True}],
+                "Variants",
+                180,
+                172,
+                400,
+                300,
+                Mock(),
+                Mock(),
+                corner_radius=asset_bar_op.ROUNDING_RADIUS,
+            )
+            for _ in range(2):
+                panel, button = mini.widgets[0], mini.buttons[0]
+                self.assertTrue(panel.use_rounded_background)
+                self.assertEqual(
+                    panel.background_corner_radius, asset_bar_op.ROUNDING_RADIUS
+                )
+                self.assertTrue(button.use_rounded_background)
+                self.assertEqual(button.image_corner_radius, 12.0)
+                self.assertEqual(button.background_corner_radius, 12.0)
+                mini.build_widgets()
+
+    def test_header_inset_and_hovered_title_fit_rounded_panel(self):
+        context = Mock()
+        context.region.width = 1000
+        context.area.height = 800
+        name = "A very long variant name that needs truncation"
+        with (
+            patch.object(asset_bar_op.bpy, "context", context),
+            patch.object(asset_bar_op.gpu.shader, "from_builtin"),
+            patch.object(asset_bar_op.BL_UI_Widget, "_ensure_panel_batch"),
+            patch.object(
+                asset_bar_op.ui_bgl,
+                "get_text_size",
+                side_effect=lambda font, text, size: (len(text) * 6, size),
+            ),
+        ):
+            mini = MiniAssetBar(
+                context,
+                [{"displayName": name}],
+                name,
+                180,
+                172,
+                400,
+                300,
+                Mock(),
+                Mock(),
+                corner_radius=asset_bar_op.ROUNDING_RADIUS,
+            )
+            title = mini.widgets[1]
+            self.assertEqual(title.x - mini.rect[0], mini.corner_radius)
+            self.assertEqual(title.width, mini.rect[2] - 2 * mini.corner_radius)
+            self.assertLessEqual(len(title.text) * 6, title.width)
+            mini.hover(mini.buttons[0])
+            self.assertLessEqual(len(title.text) * 6, title.width)
+
+    def test_preview_loader_uses_full_thumbnail_not_tile_thumbnail(self):
+        image = Mock()
+        image.get_image_path.return_value = None
+        asset = {
+            "assetType": "addon",
+            "thumbnail": "large.jpg",
+            "thumbnail_small": "small.jpg",
+        }
+        with (
+            patch.object(asset_bar_op.paths, "get_temp_dir", return_value="/cache"),
+            patch.dict(
+                asset_bar_op.global_vars.DATA,
+                {"images available": {"/cache/large.jpg": True}},
+            ),
+        ):
+            asset_bar_op.set_thumb_check(image, asset, thumb_type="thumbnail")
+        image.set_image.assert_called_once_with("/cache/large.jpg")
 
     def test_larger_text_increases_label_space_without_shrinking_thumbnails(self):
         normal = mini_bar_layout(3, 180, 1200, 800, 500, 300, text_size=12)
@@ -148,6 +248,38 @@ class TestMiniAssetBarLayout(unittest.TestCase):
 
 
 class TestMiniAssetBarEvents(unittest.TestCase):
+    def test_hover_switch_and_exit_route_to_shared_tooltip(self):
+        mini = SimpleNamespace(
+            widgets=[Mock(), Mock(width=360)],
+            rect=(0, 0, 400, 200, 1, 1),
+            text_size=12,
+            on_hover=Mock(),
+            on_hover_exit=Mock(),
+            hovered_button=None,
+        )
+        first = SimpleNamespace(
+            asset_data={"id": "first", "displayName": "First"},
+            x_screen=900,
+            y_screen=500,
+            height=120,
+        )
+        second = SimpleNamespace(
+            asset_data={"id": "second", "displayName": "Second"},
+            x_screen=0,
+            y_screen=100,
+            height=120,
+        )
+        with patch.object(asset_bar_op.ui_bgl, "get_text_size", return_value=(20, 12)):
+            MiniAssetBar.hover(mini, first)
+            mini.on_hover.assert_called_with(first)
+            MiniAssetBar.hover(mini, second)
+            mini.on_hover.assert_called_with(second)
+        MiniAssetBar.exit_hover(mini, first)
+        mini.on_hover_exit.assert_not_called()
+        MiniAssetBar.exit_hover(mini, second)
+        mini.on_hover_exit.assert_called_once_with(second)
+        self.assertIsNone(mini.hovered_button)
+
     def test_wheel_scroll_stays_within_collection(self):
         mini = SimpleNamespace(
             rect=(0, 0, 316, 332, 3, 2), offset=0, assets=list(range(20)), buttons=[]
@@ -172,6 +304,154 @@ class TestMiniAssetBarEvents(unittest.TestCase):
             )
         owner.mini_asset_bar.refresh_thumbnails.assert_called_once()
         owner.close_mini_asset_bar.assert_not_called()
+
+    def test_timer_updates_hovered_variant_image(self):
+        owner = self.owner()
+        owner.tooltip_image = Mock()
+        asset = {"id": "variant"}
+        owner.mini_asset_bar.hovered_button = SimpleNamespace(asset_data=asset)
+        with (
+            patch.object(asset_bar_op, "region_redraw"),
+            patch.object(asset_bar_op, "set_thumb_check") as set_thumb,
+        ):
+            asset_bar_op.BlenderKitAssetBarOperator.handle_mini_asset_bar_event(
+                owner, SimpleNamespace(type="TIMER")
+            )
+        set_thumb.assert_called_once_with(
+            owner.tooltip_image, asset, thumb_type="thumbnail"
+        )
+
+    def test_parent_thumbnail_download_does_not_replace_mini_tooltip(self):
+        owner = SimpleNamespace(
+            mini_asset_bar=SimpleNamespace(hovered_button=object()),
+            tooltip_image=Mock(),
+        )
+        with patch.object(asset_bar_op, "set_thumb_check") as set_thumb:
+            asset_bar_op.BlenderKitAssetBarOperator.update_tooltip_image(
+                owner, "parent"
+            )
+        set_thumb.assert_not_called()
+
+    def test_shared_tooltip_is_drawn_above_mini_widgets(self):
+        bar, panel, image, mini = object(), object(), object(), object()
+        owner = SimpleNamespace(
+            widgets=[bar, panel, image, mini],
+            tooltip_panel=panel,
+            tooltip_widgets=[image],
+        )
+        asset_bar_op.BlenderKitAssetBarOperator.raise_tooltip(owner)
+        self.assertEqual(owner.widgets, [bar, mini, panel, image])
+
+    def test_scrolling_rebuild_hides_stale_tooltip_and_raises_it(self):
+        old, new, tooltip = object(), object(), object()
+        owner = self.owner()
+        owner.widgets = [old, tooltip]
+        owner.hide_tooltip = Mock()
+        owner.raise_tooltip = Mock()
+        owner.mini_asset_bar.widgets = [old]
+        owner.mini_asset_bar.handle_event.return_value = "REBUILD"
+        owner.mini_asset_bar.build_widgets.side_effect = lambda: setattr(
+            owner.mini_asset_bar, "widgets", [new]
+        )
+        with patch.object(asset_bar_op, "region_redraw"):
+            asset_bar_op.BlenderKitAssetBarOperator.handle_mini_asset_bar_event(
+                owner, SimpleNamespace(type="WHEELDOWNMOUSE")
+            )
+        self.assertEqual(owner.widgets, [tooltip, new])
+        self.assertFalse(owner.draw_tooltip)
+        owner.hide_tooltip.assert_called_once()
+        owner.raise_tooltip.assert_called_once()
+
+    def test_mini_hover_uses_full_tooltip_without_changing_parent_selection(self):
+        operator_class = asset_bar_op.BlenderKitAssetBarOperator
+        ui = SimpleNamespace(active_index=12)
+        context = SimpleNamespace(window_manager=SimpleNamespace(blenderkitUI=ui))
+        area = SimpleNamespace(regions=[])
+        region = SimpleNamespace(width=1000, height=800)
+        operator = SimpleNamespace(
+            active_index=12,
+            show_tooltip=Mock(),
+            hide_tooltip=Mock(),
+            tooltip_image=Mock(),
+            tooltip_image_help=Mock(),
+            asset_name=Mock(),
+            authors_name=Mock(),
+            gravatar_image=Mock(),
+            quality_label=Mock(),
+            quality_star=Mock(),
+            multi_price_label=Mock(),
+            author_about_me=Mock(),
+            version_warning=Mock(),
+            tooltip_panel=Mock(width=400, height=480),
+            update_comments_for_validators=Mock(),
+            _current_area_region=Mock(return_value=(area, region)),
+            _reset_tooltip_dimensions=Mock(),
+            _build_context_snapshot=Mock(return_value=SimpleNamespace(region=region)),
+            update_tooltip_size=Mock(),
+            update_tooltip_layout=Mock(),
+            tooltip_width=400,
+            tooltip_height=480,
+            warning_color=(1, 0, 0, 1),
+            caution_color=(1, 1, 0, 1),
+        )
+        operator.show_asset_tooltip = lambda widget, data: (
+            operator_class.show_asset_tooltip(operator, widget, data)
+        )
+        asset = {
+            "id": "pro",
+            "assetBaseId": "pro-base",
+            "assetType": "addon",
+            "structure": "variant",
+            "displayName": "Pro edition",
+            "author": {"id": "1"},
+            "ratingsCount": {"quality": 3},
+            "ratingsAverage": {"quality": 8},
+            "isForSale": True,
+            "canDownload": False,
+            "isFree": False,
+            "basePrice": "10",
+        }
+        widget = SimpleNamespace(
+            asset_data=asset, x_screen=100, y_screen=100, height=100
+        )
+        author = SimpleNamespace(firstName="Jane", lastName="Doe", gravatarImg="avatar")
+        with (
+            patch.object(asset_bar_op.bpy, "context", context),
+            patch.dict(asset_bar_op.global_vars.BKIT_AUTHORS, {1: author}, clear=True),
+            patch.object(asset_bar_op, "set_thumb_check") as thumbnail,
+            patch.object(asset_bar_op.utils, "get_search_props", return_value=Mock()),
+            patch.object(
+                asset_bar_op.utils, "profile_is_validator", return_value=False
+            ),
+            patch.object(
+                asset_bar_op.utils,
+                "asset_from_newer_blender_version",
+                return_value=(False, None),
+            ),
+            patch.object(
+                asset_bar_op.utils,
+                "get_addon_blender_compatibility",
+                return_value=(True, None, None),
+            ),
+            patch.object(
+                asset_bar_op.utils,
+                "get_addon_os_compatibility",
+                return_value=(True, []),
+            ),
+        ):
+            operator_class.hover_mini_asset(operator, widget)
+        operator.show_tooltip.assert_called_once()
+        thumbnail.assert_called_once_with(
+            operator.tooltip_image, asset, thumb_type="thumbnail"
+        )
+        self.assertEqual(operator.asset_name.text, "Pro edition")
+        self.assertEqual(operator.authors_name.text, "by Jane Doe")
+        self.assertEqual(operator.quality_label.text, "8/10")
+        self.assertEqual(operator.multi_price_label.text_b, " $10 ")
+        self.assertTrue(operator.multi_price_label.visible)
+        self.assertEqual(operator.gravatar_image.set_image.call_args.args, ("avatar",))
+        self.assertEqual(operator.active_index, 12)
+        self.assertEqual(ui.active_index, 12)
 
     def test_parent_click_always_opens_mini_bar_not_install_dialog(self):
         owner = SimpleNamespace(scroll_offset=0, show_variant_picker=Mock())
@@ -203,15 +483,18 @@ class TestMiniAssetBarEvents(unittest.TestCase):
             widgets=[main, dim, overlay],
             mini_asset_bar=SimpleNamespace(widgets=[overlay]),
             _mini_asset_bar_dim=dim,
+            hide_tooltip=Mock(),
         )
         with patch.object(asset_bar_op, "region_redraw"):
             asset_bar_op.BlenderKitAssetBarOperator.close_mini_asset_bar(owner)
         self.assertEqual(owner.widgets, [main])
         self.assertIsNone(owner.mini_asset_bar)
         self.assertIsNone(owner._mini_asset_bar_dim)
+        owner.hide_tooltip.assert_called_once()
 
     def owner(self, inside=True):
         mini = Mock()
+        mini.hovered_button = None
         mini.context.area.height = 800
         mini.contains.return_value = inside
         mini.handle_event.return_value = "HANDLED"
