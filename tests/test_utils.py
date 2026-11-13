@@ -461,3 +461,87 @@ class TestGetOutlinerElementUnderMouse(unittest.TestCase):
             )
             # The version guard must short-circuit before any operator call.
             mock_bpy.ops.outliner.select_box.assert_not_called()
+
+
+class TestUIImagesAreNotExternalDependencies(unittest.TestCase):
+    """Issue #2364: hidden UI images must not make the user's .blend depend on
+    add-on files, otherwise "Copy Bundle to Asset Library" refuses to run."""
+
+    def tearDown(self):
+        tex = bpy.data.textures.get(".bk_test_hidden_image")
+        if tex is not None:
+            bpy.data.textures.remove(tex)
+        for name in (".blendkit_logo.png", ".bk_test_hidden_image"):
+            img = bpy.data.images.get(name)
+            if img is not None:
+                bpy.data.images.remove(img)
+
+    def assert_not_external(self, img):
+        self.assertIsNotNone(img.packed_file)
+        external = bpy.utils.blend_paths(absolute=True, packed=False)
+        self.assertNotIn(bpy.path.abspath(img.filepath), external)
+
+    def test_get_thumbnail(self):
+        self.assert_not_external(utils.get_thumbnail("blendkit_logo.png"))
+
+    def test_cached_hidden_image_is_packed_immediately(self):
+        path = utils.paths.get_addon_thumbnail_path("blendkit_logo.png")
+        img = bpy.data.images.load(path, check_existing=False)
+        img.name = ".bk_test_hidden_image"
+        self.assertIs(utils.get_hidden_image(path, img.name), img)
+        self.assert_not_external(img)
+
+    def test_cached_profile_texture_is_packed_immediately(self):
+        from . import autothumb
+
+        path = utils.paths.get_addon_thumbnail_path("blendkit_logo.png")
+        img = bpy.data.images.load(path, check_existing=False)
+        img.name = ".bk_test_hidden_image"
+        tex = utils.get_hidden_texture(img.name)
+        self.assertIs(autothumb.get_texture_ui(path, img.name), tex)
+        self.assert_not_external(img)
+
+    def test_force_reload_remains_self_contained(self):
+        path = utils.paths.get_addon_thumbnail_path("blendkit_logo.png")
+        img = utils.get_hidden_image(path, "bk_test_hidden_image")
+        self.assertIs(utils.get_hidden_image(path, img.name, force_reload=True), img)
+        self.assert_not_external(img)
+
+    def test_get_hidden_image_after_path_change(self):
+        first = utils.paths.get_addon_thumbnail_path("thumbnail_notready.jpg")
+        second = utils.paths.get_addon_thumbnail_path("blendkit_logo.png")
+        utils.get_hidden_image(first, "bk_test_hidden_image")
+        img = utils.get_hidden_image(second, "bk_test_hidden_image")
+        self.assertEqual(img.filepath, second)
+        self.assert_not_external(img)
+
+
+class TestUITextureCleanup(unittest.TestCase):
+    def test_failed_legacy_conversion_removes_its_image(self):
+        from . import ui_bgl
+
+        with mock.patch.object(ui_bgl, "bpy") as mock_bpy:
+            img = mock_bpy.data.images.load.return_value
+            img.gl_load.side_effect = RuntimeError("GPU unavailable")
+            with self.assertRaisesRegex(RuntimeError, "GPU unavailable"):
+                ui_bgl._legacy_path_to_gpu_texture("thumbnail.png")
+            mock_bpy.data.images.remove.assert_called_once_with(img)
+
+    def test_failed_conversion_releases_scratch_image_immediately(self):
+        from . import ui_bgl
+
+        img = mock.Mock(source="FILE", size=(1, 1), channels=4)
+        img.gl_load.side_effect = RuntimeError("GPU unavailable")
+        path = utils.paths.get_addon_thumbnail_path("blendkit_logo.png")
+        with (
+            mock.patch.object(ui_bgl, "cached_gpu_textures", {}),
+            mock.patch.object(ui_bgl, "_get_scratch_image", return_value=img),
+            mock.patch.object(ui_bgl, "_gl_texture_limit_px", return_value=None),
+            mock.patch.object(
+                ui_bgl, "_legacy_path_to_gpu_texture", side_effect=RuntimeError
+            ),
+            self.assertLogs(ui_bgl.bk_logger, level="WARNING"),
+        ):
+            self.assertIsNone(ui_bgl.path_to_gpu_texture(path))
+        self.assertEqual(img.source, "GENERATED")
+        self.assertEqual(img.filepath_raw, "")

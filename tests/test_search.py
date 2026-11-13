@@ -16,8 +16,9 @@
 #
 # ##### END GPL LICENSE BLOCK #####
 
+import types
 import unittest
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 
 import bpy
 
@@ -29,6 +30,35 @@ import bpy
 if __package__:
     __package__ = __package__.rsplit(".tests", 1)[0]
 from . import search
+
+
+class TestPreviewImageDependencies(unittest.TestCase):
+    def tearDown(self):
+        img = bpy.data.images.get(".blendkit_logo.png")
+        if img is not None:
+            bpy.data.images.remove(img)
+
+    def test_cached_preview_is_packed_before_returning(self):
+        path = search.paths.get_addon_thumbnail_path("blendkit_logo.png")
+        img = bpy.data.images.load(path, check_existing=False)
+        img.name = ".blendkit_logo.png"
+        context = types.SimpleNamespace(
+            window_manager=types.SimpleNamespace(
+                blenderkitUI=types.SimpleNamespace(asset_type="MODEL")
+            )
+        )
+        asset = {"thumbnail_small": "blendkit_logo.png"}
+        with (
+            patch.object(
+                search, "bpy", types.SimpleNamespace(context=context, data=bpy.data)
+            ),
+            patch.object(
+                search.paths, "get_temp_dir", return_value=search.os.path.dirname(path)
+            ),
+        ):
+            self.assertTrue(search.load_preview(asset))
+        self.assertIsNotNone(img.packed_file)
+        self.assertNotIn(path, bpy.utils.blend_paths(absolute=True, packed=False))
 
 
 def mocked_preferences() -> Mock:
