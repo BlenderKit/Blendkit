@@ -899,9 +899,6 @@ def start_blenderkit_client():
     ensure_client_binary_installed()
     client_binary_path, client_version = get_client_binary_path()
 
-    preferences = bpy.context.preferences.addons[__package__].preferences
-    global_dir = bpy.path.abspath(preferences.global_dir)
-
     try:
         with log_file as log:
             global_vars.client_process = subprocess.Popen(
