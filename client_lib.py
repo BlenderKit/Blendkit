@@ -30,6 +30,7 @@ import tempfile
 import threading
 from http.client import responses as http_responses
 from os import path
+from pathlib import Path
 from typing import Optional, Union
 
 import bpy
@@ -898,9 +899,6 @@ def start_blenderkit_client():
     ensure_client_binary_installed()
     client_binary_path, client_version = get_client_binary_path()
 
-    preferences = bpy.context.preferences.addons[__package__].preferences
-    global_dir = bpy.path.abspath(preferences.global_dir)
-
     try:
         with log_file as log:
             global_vars.client_process = subprocess.Popen(
@@ -910,8 +908,6 @@ def start_blenderkit_client():
                     get_port(),
                     "--server",
                     global_vars.SERVER,
-                    "--global_dir",
-                    global_dir,
                     "--proxy_which",
                     global_vars.PREFS.get("proxy_which", ""),
                     "--proxy_address",
@@ -990,10 +986,42 @@ def _is_pre_windows_10() -> bool:
 
 
 def get_client_directory() -> str:
-    """Get the path to the Blendkit-Client directory located in global_dir."""
-    global_dir = bpy.context.preferences.addons[__package__].preferences.global_dir  # type: ignore
-    directory = path.join(global_dir, "client")
-    return directory
+    r"""Get the path to the Blendkit-Client directory where all data for client are stored.
+    It mirrors blenderkit/bk_client:utils.go-clientDirectoryPath().
+
+    On Windows: `%LOCALAPPDATA%\blendkit_client`, e.g.: C:\Users\<Username>\AppData\Local\blendkit_client.
+    On Linux and MacOS: `$XDG_DATA_HOME`, if not set then: `$HOME/.local/share/blendkit_client`,
+    following XDG Base Directory Specification (https://specifications.freedesktop.org/basedir/latest/#variables).
+    """
+    dirname = "blendkit_client"
+    os_name = platform.system().lower()
+    if os_name == "windows":
+        local_dir = os.getenv("LOCALAPPDATA")
+        if not local_dir:
+            local_dir = os.path.expandvars(r"%USERPROFILE%\AppData\Local")
+        return path.join(os.getenv("LOCALAPPDATA"), dirname)
+
+    # Linux, Macos and unexpected OSs
+    xdg_data_home = os.getenv("XDG_DATA_HOME")
+    if not xdg_data_home:
+        xdg_data_home = path.join(Path.home(), ".local", "share")
+    return path.join(xdg_data_home, dirname)
+
+
+def check_clientdir_permissions() -> tuple[bool, str]:
+    """Check if the user has the required permissions for the bk_client directory.
+    Verifies the directory can be created, written to, and files can be deleted.
+
+    Returns:
+        tuple: (ok: bool, message: str) - True if permissions are OK, False otherwise.
+    """
+    client_dir = get_client_directory()
+    ok, message = utils.check_dir_permissions(client_dir, "Blendkit_client directory")
+    if ok:
+        bk_logger.info("Blendkit_client directory permissions are OK: %s", client_dir)
+    else:
+        bk_logger.error(message)
+    return ok, message
 
 
 def is_using_inplace_client() -> bool:

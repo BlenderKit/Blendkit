@@ -156,7 +156,7 @@ def blenderkit_client_build(abs_build_dir: str) -> str:
     """
     client_dir = os.path.join(abs_build_dir, "client")
     cp = subprocess.run(
-        ["python", "dev.py", "build", "--out", client_dir], cwd="bk_client"
+        [sys.executable, "dev.py", "build", "--out", client_dir], cwd="bk_client"
     )
     cp.check_returncode()
 
