@@ -3296,6 +3296,7 @@ class AssetPopupCard(bpy.types.Operator, ratings_utils.RatingProperties):
         if upload.can_edit_asset(asset_data=self.asset_data):
             icon = pcoll[self.asset_data["verificationStatus"]]
             verification_status_tooltips = {
+                "draft": "Your asset is a draft and has not been submitted for validation",
                 "uploading": "Your asset got stuck during upload. Probably, your file was too large "
                 "or your connection too slow or interrupting. If you have repeated issues, "
                 "please contact us and let us know, it might be a bug",
@@ -3382,15 +3383,11 @@ class AssetPopupCard(bpy.types.Operator, ratings_utils.RatingProperties):
         if utils.get_param(self.asset_data, "dimensionX"):
             text = utils.fmt_dimensions(mparams)
             self.draw_property(box, "Size", text)
-        if self.asset_data.get("filesSize"):
-            fs = self.asset_data["filesSize"] * 1024
-            # multiply because the number is reduced when search is done to avoid C integer limit with large files
-            fsmb = fs // (1024 * 1024)
-            fskb = fs % 1024
-            if fsmb == 0:
-                self.draw_property(box, "Original size", f"{fskb} KB")
-            else:
-                self.draw_property(box, "Original size", f"{fsmb} MB")
+        original_size = utils.get_original_file_size(self.asset_data)
+        if original_size:
+            self.draw_property(
+                box, "Original size", utils.files_size_to_text(original_size)
+            )
 
         # Free/Full plan or private Access - with special handling for addons
         plans_tooltip = (

@@ -18,7 +18,7 @@
 
 import unittest
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 import bpy
 
@@ -135,6 +135,50 @@ class TestMigrateRepository(unittest.TestCase):
         self.assertEqual(len(repos), 1)
         self.assertIs(repos[0], other)
         self.assertEqual(other.module, "blender_org")
+
+
+@unittest.skipUnless(
+    bpy.app.version >= (4, 2, 0), "override_extension_draw requires Blender 4.2+"
+)
+class TestExtensionDrawItemOverride(unittest.TestCase):
+    def test_forwards_new_keywords_to_original_draw_function(self):
+        repo = _FakeRepo(
+            "extensions.blender.org",
+            "blender_org",
+            "https://extensions.blender.org/api/v1/extensions/",
+        )
+        original_draw = Mock()
+        kwargs = {
+            "layout": object(),
+            "pkg_id": "example",
+            "item_local": None,
+            "item_remote": None,
+            "is_enabled": False,
+            "is_outdated": False,
+            "show": False,
+            "mark": None,
+            "repo_index": 0,
+            "repo_item": repo,
+            "operation_in_progress": False,
+            "extensions_warnings": {},
+            "show_developer_ui": False,
+            "show_type": "ADDON",
+        }
+
+        fake_bpy = SimpleNamespace(app=SimpleNamespace(version=(5, 3, 0)))
+        with (
+            patch.object(oed, "bpy", fake_bpy),
+            patch.object(
+                oed.exui, "extension_draw_item_original", original_draw, create=True
+            ),
+        ):
+            result = oed.extension_draw_item_override(**kwargs)
+
+        self.assertTrue(result)
+        original_draw.assert_called_once_with(
+            kwargs["layout"],
+            **{key: value for key, value in kwargs.items() if key != "layout"},
+        )
 
 
 if __name__ == "__main__":

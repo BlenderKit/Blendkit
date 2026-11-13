@@ -45,6 +45,48 @@ class _FakeWidget:
         self.update = Mock()
 
 
+class TestAssetBarValidationIcon(unittest.TestCase):
+    def test_draft_is_displayed_for_validators(self):
+        button = SimpleNamespace(validation_icon=Mock(visible=False))
+        with (
+            patch.object(asset_bar_op.utils, "profile_is_validator", return_value=True),
+            patch.dict(asset_bar_op.global_vars.RATINGS, {}, clear=True),
+        ):
+            asset_bar_op.BlenderKitAssetBarOperator.update_validation_icon(
+                SimpleNamespace(),
+                button,
+                {"id": "draft-asset", "verificationStatus": "draft"},
+            )
+
+        self.assertTrue(button.validation_icon.visible)
+        button.validation_icon.set_image.assert_called_once_with(
+            asset_bar_op.paths.get_addon_thumbnail_path("vs_draft.png")
+        )
+
+    def test_validated_assets_keep_rating_indicator_behavior(self):
+        for rating, visible in (
+            (None, True),
+            (SimpleNamespace(quality=None), True),
+            (SimpleNamespace(quality=5), False),
+        ):
+            with self.subTest(rating=rating):
+                button = SimpleNamespace(validation_icon=Mock(visible=True))
+                with (
+                    patch.object(
+                        asset_bar_op.utils, "profile_is_validator", return_value=True
+                    ),
+                    patch.dict(
+                        asset_bar_op.global_vars.RATINGS, {"asset": rating}, clear=True
+                    ),
+                ):
+                    asset_bar_op.BlenderKitAssetBarOperator.update_validation_icon(
+                        SimpleNamespace(),
+                        button,
+                        {"id": "asset", "verificationStatus": "validated"},
+                    )
+                self.assertEqual(button.validation_icon.visible, visible)
+
+
 class TestAssetBarVersionBadge(unittest.TestCase):
     def create_button(self):
         return SimpleNamespace(
@@ -356,15 +398,21 @@ class TestAssetBarPositioning(unittest.TestCase):
 
 
 class TestAssetBarInvoke(unittest.TestCase):
-    def test_initial_search_is_marked_before_layout_init(self):
-        history_step = {}
+    def setUp(self):
+        operator_patch = patch.object(asset_bar_op, "asset_bar_operator", None)
+        operator_patch.start()
+        self.addCleanup(operator_patch.stop)
+
+    def create_context(self):
         ui_props = SimpleNamespace(assetbar_on=False, turn_off=False)
-        context = SimpleNamespace(
+        return SimpleNamespace(
             area=SimpleNamespace(),
             window_manager=SimpleNamespace(blenderkitUI=ui_props),
             window=SimpleNamespace(),
         )
-        dummy = SimpleNamespace(
+
+    def create_operator(self):
+        return SimpleNamespace(
             instances=[],
             keep_running=True,
             bar_x=10,
@@ -379,6 +427,11 @@ class TestAssetBarInvoke(unittest.TestCase):
             scroll_update=Mock(),
             _save_and_hide_overlays=Mock(),
         )
+
+    def test_initial_search_is_marked_before_layout_init(self):
+        history_step = {}
+        context = self.create_context()
+        dummy = self.create_operator()
 
         with (
             patch.object(asset_bar_op.search, "get_search_results", return_value=None),
@@ -397,6 +450,41 @@ class TestAssetBarInvoke(unittest.TestCase):
         self.assertTrue(history_step["is_searching"])
         mocked_search.assert_called_once_with()
         dummy.on_init.assert_called_once_with(context)
+        self.assertIs(asset_bar_op.asset_bar_operator, dummy)
+        self.assertTrue(context.window_manager.blenderkitUI.assetbar_on)
+        self.assertEqual(dummy.instances, [dummy])
+
+    def test_failed_layout_does_not_publish_removed_operator(self):
+        for failing_step in ("setup_widgets", "scroll_update"):
+            with self.subTest(failing_step=failing_step):
+                context = self.create_context()
+                dummy = self.create_operator()
+                getattr(dummy, failing_step).side_effect = KeyError("draft")
+                with (
+                    patch.object(
+                        asset_bar_op.search, "get_search_results", return_value=[{}]
+                    ),
+                    self.assertRaisesRegex(KeyError, "draft"),
+                ):
+                    asset_bar_op.BlenderKitAssetBarOperator.on_invoke(
+                        dummy, context, object()
+                    )
+
+                self.assertIsNone(asset_bar_op.asset_bar_operator)
+                self.assertFalse(context.window_manager.blenderkitUI.assetbar_on)
+                self.assertEqual(dummy.instances, [])
+
+    def test_missing_window_or_area_cancels_before_initialization(self):
+        for missing_context in ("window", "area"):
+            with self.subTest(missing_context=missing_context):
+                context = self.create_context()
+                setattr(context, missing_context, None)
+                dummy = SimpleNamespace(on_invoke=Mock(return_value=True))
+
+                result = asset_bar_op.asset_bar_invoke(dummy, context, object())
+
+                self.assertEqual(result, {"CANCELLED"})
+                dummy.on_invoke.assert_not_called()
 
 
 class TestAssetBarResizeHelpers(unittest.TestCase):

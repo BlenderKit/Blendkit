@@ -499,13 +499,11 @@ def asset_bar_modal(self, context, event):
 
 
 def asset_bar_invoke(self, context, event):
+    if not context.window or not context.area:
+        return {"CANCELLED"}
     # sprinkling of black magic
     result = self.on_invoke(context, event)
     if not result:
-        return {"CANCELLED"}
-    if not context.window:
-        return {"CANCELLED"}
-    if not context.area:
         return {"CANCELLED"}
 
     args = (self, context)
@@ -3527,7 +3525,6 @@ class BlenderKitAssetBarOperator(BL_UI_OT_draw_operator):
             warning_dialog.show_ms_store_warning()
             return False
 
-        self.instances.append(self)
         if not context.area:
             return False
 
@@ -3553,10 +3550,6 @@ class BlenderKitAssetBarOperator(BL_UI_OT_draw_operator):
 
         # Clear stale shutdown flag from previous sessions (e.g. undo or addon reload)
         ui_props.turn_off = False
-        ui_props.assetbar_on = True
-        global asset_bar_operator
-
-        asset_bar_operator = self
 
         self.active_index = -1
 
@@ -3575,6 +3568,12 @@ class BlenderKitAssetBarOperator(BL_UI_OT_draw_operator):
         self.scene = bpy.context.scene
 
         self._save_and_hide_overlays(context)
+
+        # Publish only after initialization succeeds; Blender removes failed operators.
+        global asset_bar_operator
+        asset_bar_operator = self
+        ui_props.assetbar_on = True
+        self.instances.append(self)
 
         return True
 

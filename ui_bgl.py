@@ -91,6 +91,34 @@ def overlay_matrix_guard(region=None, *args, **kwargs):
                 bk_logger.exception("Failed to restore overlay matrix state")
 
 
+@contextmanager
+def overlay_depth_state_guard():
+    """Disable depth test and depth writes for 2D overlays, then restore them.
+
+    Draw handlers of other add-ons may leave depth testing enabled. 2D overlay
+    elements are all drawn at the same depth, so with e.g. ``LESS`` everything
+    drawn after the first element (thumbnails, labels) gets discarded.
+    Also usable as a decorator on draw callbacks.
+    """
+
+    previous_state = None
+    try:
+        previous_state = (gpu.state.depth_test_get(), gpu.state.depth_mask_get())
+        gpu.state.depth_test_set("NONE")
+        gpu.state.depth_mask_set(False)
+    except Exception:  # noqa: BLE001
+        bk_logger.exception("Failed to prepare overlay depth state")
+    try:
+        yield
+    finally:
+        if previous_state is not None:
+            try:
+                gpu.state.depth_test_set(previous_state[0])
+                gpu.state.depth_mask_set(previous_state[1])
+            except Exception:  # noqa: BLE001
+                bk_logger.exception("Failed to restore overlay depth state")
+
+
 def _ortho_projection_matrix(width: float, height: float, *, near=-100.0, far=100.0):
     """Return a pixel-aligned orthographic projection matrix."""
 
