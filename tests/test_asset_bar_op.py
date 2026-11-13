@@ -223,6 +223,23 @@ class TestTooltipPriceLayout(unittest.TestCase):
             asset_bar_op.ui_bgl.get_text_size(1, left + right, size)[0], 340
         )
 
+    def test_prices_preserve_text_with_rounded_font_metrics(self):
+        def measure(font, text, size):
+            return len(text) * ((size + 1) // 2 + 1), size
+
+        with patch.object(asset_bar_op.ui_bgl, "get_text_size", side_effect=measure):
+            for a, b, width in (
+                ("", "3 variants | Free available | From $5.94", 340),
+                (" $5 ", " $9 ", 75),
+            ):
+                with self.subTest(a=a, b=b, width=width):
+                    left, right, size = asset_bar_op.fit_tooltip_prices(a, b, width, 16)
+                    self.assertEqual((left, right), (a, b))
+                    used = measure(1, left, size)[0] + measure(1, right, size)[0]
+                    if left and right:
+                        used += 4
+                    self.assertLessEqual(used, width)
+
     def test_price_segments_fit_before_author_image(self):
         measure = lambda font, text, size: (len(text) * size, size)
         with patch.object(asset_bar_op.ui_bgl, "get_text_size", side_effect=measure):

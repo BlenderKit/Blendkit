@@ -742,7 +742,7 @@ def get_tooltip_data(asset_data):
 
 
 def fit_tooltip_prices(text_a, text_b, width, text_size):
-    """Fit both price segments into the space left of the author image."""
+    """Shrink prices to their measured width before ellipsizing at minimum size."""
     texts = [text_a or "", text_b or ""]
     widths = [
         ui_bgl.get_text_size(1, text, text_size)[0] if text else 0 for text in texts
@@ -752,9 +752,16 @@ def fit_tooltip_prices(text_a, text_b, width, text_size):
     total = sum(widths)
     if total <= available:
         return texts[0], texts[1], text_size
-    size = max(min(8, text_size), int(text_size * available / total))
-    widths = [ui_bgl.get_text_size(1, text, size)[0] if text else 0 for text in texts]
-    total = sum(widths)
+    min_size = min(8, text_size)
+    size = max(min_size, int(text_size * available / total))
+    while True:
+        widths = [
+            ui_bgl.get_text_size(1, text, size)[0] if text else 0 for text in texts
+        ]
+        total = sum(widths)
+        if total <= available or size <= min_size:
+            break
+        size -= 1
     if total > available:
         limits = [
             int(available * widths[0] / total) if total else 0,
