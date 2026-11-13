@@ -102,6 +102,7 @@ def is_draw_cb_available(self: bpy.types.Operator, context: bpy.types.Context) -
     return True
 
 
+@ui_bgl.overlay_depth_state_guard()
 def draw_callback_dragging(
     self: bpy.types.Operator, context: bpy.types.Context
 ) -> None:
@@ -489,6 +490,7 @@ def draw_bbox(
     ui_bgl.draw_bbox(location, rotation, bbox_min, bbox_max, progress, color)
 
 
+@ui_bgl.overlay_depth_state_guard()
 def draw_callback_2d_progress(
     self: bpy.types.Operator, context: bpy.types.Context
 ) -> None:
