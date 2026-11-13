@@ -3296,6 +3296,7 @@ class AssetPopupCard(bpy.types.Operator, ratings_utils.RatingProperties):
         if upload.can_edit_asset(asset_data=self.asset_data):
             icon = pcoll[self.asset_data["verificationStatus"]]
             verification_status_tooltips = {
+                "draft": "Your asset is a draft and has not been submitted for validation",
                 "uploading": "Your asset got stuck during upload. Probably, your file was too large "
                 "or your connection too slow or interrupting. If you have repeated issues, "
                 "please contact us and let us know, it might be a bug",
