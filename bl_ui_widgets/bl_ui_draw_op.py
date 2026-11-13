@@ -242,7 +242,7 @@ def draw_callback_px_separated(self, op, context):
             gt, gb, gl, gr = grid_clip
             cull_clip = (gt - bs, gb + bs, gl - bs, gr + bs)
 
-        with ui_bgl.overlay_matrix_guard(region):
+        with ui_bgl.overlay_matrix_guard(region), ui_bgl.overlay_depth_state_guard():
             scissor_active = False
             for widget in self.widgets:
                 is_grid = getattr(widget, "_is_grid_widget", False)
