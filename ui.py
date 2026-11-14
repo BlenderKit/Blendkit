@@ -40,6 +40,7 @@ eval_time = 0
 bk_logger = logging.getLogger(__name__)
 
 verification_icons = {
+    "draft": "vs_draft.png",
     "ready": "vs_ready.png",
     "deleted": "vs_deleted.png",
     "uploaded": "vs_uploaded.png",

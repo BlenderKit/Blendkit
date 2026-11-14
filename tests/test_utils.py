@@ -15,6 +15,79 @@ if __package__:
 from . import utils
 
 
+class GetOriginalFileSizeTestCase(unittest.TestCase):
+    def test_blend_size_is_not_the_sum_of_all_files(self):
+        asset_data = {
+            "assetType": "model",
+            "filesSize": 15189853,
+            "files": [
+                {"fileType": "thumbnail", "fileUploadSize": 3529181},
+                {"fileType": "resolution_1K", "fileUploadSize": 1580323},
+                {"fileType": "blend", "fileUploadSize": 6632084},
+                {"fileType": "prxc", "fileUploadSize": 76865},
+            ],
+        }
+        self.assertEqual(utils.get_original_file_size(asset_data), 6632084)
+
+    def test_addon_zip_file(self):
+        asset_data = {
+            "assetType": "addon",
+            "filesSize": 80185390,
+            "files": [{"fileType": "zip_file", "fileUploadSize": 38424199}],
+        }
+        self.assertEqual(utils.get_original_file_size(asset_data), 38424199)
+
+    def test_blend_preferred_over_zip_file(self):
+        asset_data = {
+            "files": [
+                {"fileType": "zip_file", "fileUploadSize": 10},
+                {"fileType": "blend", "fileUploadSize": 20},
+            ]
+        }
+        self.assertEqual(utils.get_original_file_size(asset_data), 20)
+
+    def test_missing_or_empty_files(self):
+        self.assertIsNone(utils.get_original_file_size({}))
+        self.assertIsNone(utils.get_original_file_size({"files": None}))
+        self.assertIsNone(utils.get_original_file_size({"files": []}))
+
+    def test_no_original_file_entry(self):
+        asset_data = {
+            "filesSize": 5000,
+            "files": [{"fileType": "thumbnail", "fileUploadSize": 5000}],
+        }
+        self.assertIsNone(utils.get_original_file_size(asset_data))
+
+    def test_missing_size_field(self):
+        asset_data = {"filesSize": 5000, "files": [{"fileType": "blend"}]}
+        self.assertIsNone(utils.get_original_file_size(asset_data))
+
+    def test_invalid_sizes(self):
+        for value in (None, "", "abc", "123", [], 0, -5, 1.5, True, float("nan")):
+            with self.subTest(value=value):
+                asset_data = {"files": [{"fileType": "blend", "fileUploadSize": value}]}
+                self.assertIsNone(utils.get_original_file_size(asset_data))
+
+    def test_malformed_file_entries_are_skipped(self):
+        asset_data = {
+            "files": [
+                None,
+                "blend",
+                {"fileUploadSize": 7},
+                {"fileType": "blend", "fileUploadSize": 42},
+            ]
+        }
+        self.assertEqual(utils.get_original_file_size(asset_data), 42)
+
+    def test_files_size_is_left_untouched(self):
+        asset_data = {
+            "filesSize": 99,
+            "files": [{"fileType": "blend", "fileUploadSize": 42}],
+        }
+        utils.get_original_file_size(asset_data)
+        self.assertEqual(asset_data["filesSize"], 99)
+
+
 class FileSizeToTextTestCase(unittest.TestCase):
     kib = 1024
     mib = kib * 1024

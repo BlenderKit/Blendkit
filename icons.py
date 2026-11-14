@@ -91,6 +91,7 @@ for w in possible_wh_values:
         icons_read[f"{w:04}.png"] = f"BK{w}"
 
 verification_icons = {
+    "vs_draft.png": "draft",
     "vs_ready.png": "ready",
     "vs_deleted.png": "deleted",
     "vs_uploaded.png": "uploaded",
