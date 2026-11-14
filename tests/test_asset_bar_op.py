@@ -315,6 +315,8 @@ class TestTooltipPriceLayout(unittest.TestCase):
             asset["tooltip_data"]["base_price_bg_color"],
             asset_bar_op.colors.GREEN_PRICE,
         )
+
+
 class TestAssetBarValidationIcon(unittest.TestCase):
     def test_draft_is_displayed_for_validators(self):
         button = SimpleNamespace(validation_icon=Mock(visible=False))
@@ -355,6 +357,7 @@ class TestAssetBarValidationIcon(unittest.TestCase):
                         {"id": "asset", "verificationStatus": "validated"},
                     )
                 self.assertEqual(button.validation_icon.visible, visible)
+
 
 class TestAssetBarVersionBadge(unittest.TestCase):
     def create_button(self):
