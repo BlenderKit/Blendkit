@@ -81,6 +81,37 @@ class TestThumbnailFilePicker(unittest.TestCase):
                 before[name] = filepath
                 self.assertEqual(vars(target), before)
 
+    def test_blender_relative_selection_is_resolved_before_validation(self):
+        with tempfile.TemporaryDirectory() as directory:
+            filepath = str(Path(directory) / "Volkswagen ID3 GTI 2027.PNG")
+            Path(filepath).touch()
+            relative = "//Volkswagen ID3 GTI 2027.PNG"
+            for use_relative in (False, True):
+                with self.subTest(use_relative=use_relative):
+                    target = SimpleNamespace(thumbnail="original.jpg")
+                    operator = self.make_operator(target)
+                    operator.filepath = relative
+                    operator.relative_path = use_relative
+                    with (
+                        patch.object(ui_panels, "bpy", wraps=bpy) as mocked_bpy,
+                        patch.object(
+                            bpy.path, "abspath", return_value=filepath
+                        ) as abspath,
+                        patch.object(bpy.path, "relpath", return_value=relative),
+                    ):
+                        mocked_bpy.data = SimpleNamespace(
+                            filepath=str(Path(directory) / "asset.blend")
+                        )
+                        result = ui_panels.BLENDERKIT_OT_select_thumbnail.execute(
+                            operator, None
+                        )
+                    self.assertEqual(result, {"FINISHED"})
+                    abspath.assert_called_once_with(relative)
+                    self.assertEqual(
+                        target.thumbnail, relative if use_relative else filepath
+                    )
+                    operator.report.assert_not_called()
+
     def test_relative_path_is_preserved_for_saved_blend(self):
         with tempfile.TemporaryDirectory() as directory:
             filepath = str(Path(directory) / "custom.png")
