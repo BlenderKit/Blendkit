@@ -325,15 +325,16 @@ class BLENDERKIT_OT_select_thumbnail(bpy.types.Operator):
         if self._target is None:
             self.report({"ERROR"}, "The thumbnail target is no longer available")
             return {"CANCELLED"}
-        extension = os.path.splitext(self.filepath)[1].lower()
-        if not os.path.isfile(self.filepath) or extension not in {
+        # The file browser can return a Blender-relative ("//") path.
+        filepath = bpy.path.abspath(self.filepath)
+        extension = os.path.splitext(filepath)[1].lower()
+        if not os.path.isfile(filepath) or extension not in {
             ".jpg",
             ".jpeg",
             ".png",
         }:
             self.report({"ERROR"}, "Select an existing JPG or PNG image")
             return {"CANCELLED"}
-        filepath = self.filepath
         if self.relative_path and bpy.data.filepath:
             try:
                 filepath = bpy.path.relpath(filepath)
