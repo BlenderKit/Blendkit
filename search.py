@@ -1740,10 +1740,6 @@ def filter_addon_search_results(
     filtered_results = []
 
     for asset in search_results:
-        if not filter_installed_only:
-            filtered_results.append(asset)
-            continue
-
         # Check installation and enablement status for addon
         try:
             status = download.get_addon_installation_status(asset)

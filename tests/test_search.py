@@ -65,6 +65,32 @@ def mocked_ui_props() -> Mock:
 # TODO: Add test for build_common_query()
 
 
+class TestAddonSearchFiltering(unittest.TestCase):
+    def test_status_is_stored_when_not_filtering_installed_only(self):
+        installed = {"id": "installed", "downloaded": 0}
+        not_installed = {"id": "not-installed", "downloaded": 0}
+
+        def installation_status(asset):
+            is_installed = asset["id"] == "installed"
+            return {"installed": is_installed, "enabled": is_installed}
+
+        with patch.object(
+            search.download,
+            "get_addon_installation_status",
+            side_effect=installation_status,
+        ) as get_status:
+            results = search.filter_addon_search_results(
+                [installed, not_installed], filter_installed_only=False
+            )
+
+        self.assertEqual(results, [installed, not_installed])
+        self.assertEqual(get_status.call_count, 2)
+        self.assertEqual(installed["downloaded"], 100)
+        self.assertTrue(installed["enabled"])
+        self.assertEqual(not_installed["downloaded"], 0)
+        self.assertFalse(not_installed["enabled"])
+
+
 class TestAddonVariantSearch(unittest.TestCase):
     def test_old_client_metadata_restored_without_replacing_asset(self):
         parent = {"id": "parent", "assetType": "addon", "canDownload": False}
