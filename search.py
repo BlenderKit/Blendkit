@@ -1123,6 +1123,7 @@ def load_preview(asset):
         try:
             img = bpy.data.images.load(tpath, check_existing=True)
             img.name = iname
+            utils.pack_ui_image(img)
             if len(img.pixels) > 0:
                 return True
         except Exception as e:
@@ -1133,9 +1134,9 @@ def load_preview(asset):
             # unload loaded previews from previous results
             bpy.data.images.remove(img)
             return False
-        # had to add this check for autopacking files...
-        if bpy.data.use_autopack and img.packed_file is not None:
-            img.unpack(method="USE_ORIGINAL")
+        # Drop packed UI data before reloading a different thumbnail from disk.
+        if img.packed_file is not None:
+            img.unpack(method="REMOVE")
         img.filepath = tpath
         try:
             img.reload()
@@ -1143,6 +1144,7 @@ def load_preview(asset):
             print(f"search.py: could not reload image {iname}: {e}")
             return False
 
+    utils.pack_ui_image(img)
     image_utils.set_colorspace(img)
     asset["thumb_small_loaded"] = True
     return True

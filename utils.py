@@ -1032,6 +1032,16 @@ def img_to_preview(img, copy_original=False):
             img.preview.image_pixels_float = img.pixels[:]
 
 
+def pack_ui_image(img: bpy.types.Image) -> None:
+    """Keep UI images self-contained before returning them to the UI.
+
+    Blender's bundle-copy check includes hidden images, so deferring packing
+    until periodic cleanup leaves a window where copying fails (#2364).
+    """
+    if img.packed_file is None:
+        img.pack()
+
+
 def get_hidden_image(
     tpath, bdata_name, force_reload: bool = False, colorspace: str = ""
 ) -> bpy.types.Image:
@@ -1063,7 +1073,7 @@ def get_hidden_image(
         else:
             if img.filepath != tpath:
                 if img.packed_file is not None:
-                    img.unpack(method="USE_ORIGINAL")
+                    img.unpack(method="REMOVE")
 
                 img.filepath = tpath
                 img.reload()
@@ -1072,11 +1082,12 @@ def get_hidden_image(
 
     elif force_reload:
         if img.packed_file is not None:
-            img.unpack(method="USE_ORIGINAL")
+            img.unpack(method="REMOVE")
         img.reload()
         img_to_preview(img)
         image_utils.set_colorspace(img, colorspace)
 
+    pack_ui_image(img)
     return img
 
 
@@ -1089,6 +1100,7 @@ def get_thumbnail(name):
         img = bpy.data.images.load(p, check_existing=True)
         image_utils.set_colorspace(img)
         img.name = name
+    pack_ui_image(img)
 
     return img
 

@@ -854,6 +854,12 @@ def _unpack_scratch_image(img) -> None:
         img.unpack(method="REMOVE")
 
 
+def _release_scratch_image(img) -> None:
+    """Detach the scratch image before Blender can check bundle dependencies."""
+    img.source = "GENERATED"
+    img.filepath_raw = ""
+
+
 def _get_scratch_image():
     """Return a single persistent bpy.types.Image reused for all thumbnail
     conversions, avoiding per-thumbnail image add/remove (which forces a
@@ -883,10 +889,11 @@ def _legacy_path_to_gpu_texture(path: str) -> Optional[gpu.types.GPUTexture]:
     """Original load+remove path, kept as a fallback if the scratch-image
     approach fails for some reason."""
     img = bpy.data.images.load(path, check_existing=False)
-    img.gl_load()
-    tex = gpu.texture.from_image(img)
-    bpy.data.images.remove(img)
-    return tex
+    try:
+        img.gl_load()
+        return gpu.texture.from_image(img)
+    finally:
+        bpy.data.images.remove(img)
 
 
 def _gl_texture_limit_px() -> Optional[int]:
@@ -945,6 +952,7 @@ def path_to_gpu_texture(path: str) -> Optional[gpu.types.GPUTexture]:
         # do not spam log with warnings, just return None
         return None
 
+    img = None
     try:
         img = _get_scratch_image()
         if img is None:
@@ -989,6 +997,9 @@ def path_to_gpu_texture(path: str) -> Optional[gpu.types.GPUTexture]:
             tex = _legacy_path_to_gpu_texture(path)
         except Exception:
             return None
+    finally:
+        if img is not None:
+            _release_scratch_image(img)
 
     cached_gpu_textures[path] = tex
     return tex
