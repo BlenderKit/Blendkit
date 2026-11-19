@@ -1,5 +1,7 @@
+import json
 import unittest
 from contextlib import ExitStack
+from types import SimpleNamespace
 from unittest import mock
 
 
@@ -7,6 +9,142 @@ if __package__:
     __package__ = __package__.rsplit(".tests", 1)[0]
 
 from . import client_tasks, download, global_vars
+
+
+class AddonVariantInstallTests(unittest.TestCase):
+    def test_registered_choice_enum_selects_variants(self):
+        parent = {
+            "variants": [
+                {"id": "free", "isFree": True},
+                {"id": "pro", "isForSale": True},
+            ]
+        }
+        selections = []
+
+        def execute(operator, context):
+            operator.asset_data = json.dumps(parent)
+            for variant_id in ("free", "pro"):
+                operator.confirm_incompatible = True
+                operator.replace_variant = True
+                operator.variant_id = variant_id
+                selections.append(operator.variant_id)
+                self.assertFalse(operator.confirm_incompatible)
+                self.assertFalse(operator.replace_variant)
+            return {"FINISHED"}
+
+        probe = type(
+            "VariantChoiceProbe",
+            (download.bpy.types.Operator,),
+            {
+                "bl_idname": "scene.blenderkit_variant_choice_probe",
+                "bl_label": "Variant Choice Probe",
+                "__annotations__": {
+                    "asset_data": download.bpy.props.StringProperty(),
+                    "confirm_incompatible": download.bpy.props.BoolProperty(),
+                    "replace_variant": download.bpy.props.BoolProperty(),
+                    "variant_id": download.bpy.props.EnumProperty(
+                        items=download.BlenderkitAddonChoiceOperator.variant_items,
+                        update=download.BlenderkitAddonChoiceOperator.update_variant,
+                    ),
+                },
+                "execute": execute,
+            },
+        )
+        download.bpy.utils.register_class(probe)
+        self.addCleanup(download.bpy.utils.unregister_class, probe)
+        result = download.bpy.ops.scene.blenderkit_variant_choice_probe()
+        self.assertEqual(result, {"FINISHED"})
+        self.assertEqual(selections, ["free", "pro"])
+
+    def test_choice_operator_registers_variant_properties(self):
+        cls = download.BlenderkitAddonChoiceOperator
+        if not cls.is_registered:
+            download.bpy.utils.register_class(cls)
+            self.addCleanup(download.bpy.utils.unregister_class, cls)
+        properties = (
+            download.bpy.ops.scene.blenderkit_addon_choice.get_rna_type().properties
+        )
+        self.assertIn("variant_id", properties)
+        self.assertIn("replace_variant", properties)
+        self.assertNotIn(
+            "variant_id", download.BlenderkitAddonManagerOperator.__annotations__
+        )
+
+    def test_choice_draw_uses_selected_variant(self):
+        parent = {
+            "structure": "variant_parent",
+            "assetBaseId": "parent",
+            "variants": [
+                {"id": "free", "assetBaseId": "free"},
+                {"id": "pro", "assetBaseId": "pro"},
+            ],
+        }
+        operator = SimpleNamespace(
+            asset_data=json.dumps(parent), variant_id="pro", layout=mock.Mock()
+        )
+        with (
+            mock.patch.object(
+                download,
+                "get_addon_installation_status",
+                return_value={"installed": False},
+            ) as status,
+            mock.patch.object(
+                download.utils,
+                "get_addon_blender_compatibility",
+                return_value=(True, None, None),
+            ),
+            mock.patch.object(
+                download.utils, "get_addon_os_compatibility", return_value=(True, [])
+            ),
+        ):
+            download.BlenderkitAddonChoiceOperator.draw(operator, mock.Mock())
+        self.assertEqual(status.call_args.args[0]["id"], "pro")
+        operator.layout.prop.assert_any_call(operator, "variant_id")
+
+    @unittest.skipIf(
+        download.bpy.app.version < (4, 2, 0),
+        "Add-on installation requires Blender 4.2 or newer",
+    )
+    def test_explicit_variant_replacement_overwrites_shared_package(self):
+        asset = {"name": "Pro", "replaceInstalledVariant": True}
+        with (
+            mock.patch.object(download.os.path, "exists", return_value=True),
+            mock.patch.object(
+                download,
+                "get_addon_installation_status",
+                return_value={"installed": True},
+            ),
+            mock.patch.object(
+                download,
+                "get_blenderkit_repository",
+                return_value=(mock.Mock(module="test_repo"), 0),
+            ),
+            mock.patch.object(download.bpy, "ops") as ops,
+            mock.patch.object(download.reports, "add_report"),
+        ):
+            ops.extensions.package_install_files.return_value = {"FINISHED"}
+            download.install_addon_from_local_file(asset, "pro.zip")
+        ops.extensions.package_install_files.assert_called_once_with(
+            repo="test_repo", filepath="pro.zip", enable_on_install=True, overwrite=True
+        )
+
+    @unittest.skipIf(
+        download.bpy.app.version < (4, 2, 0),
+        "Add-on installation requires Blender 4.2 or newer",
+    )
+    def test_installed_standalone_is_not_overwritten(self):
+        with (
+            mock.patch.object(download.os.path, "exists", return_value=True),
+            mock.patch.object(
+                download,
+                "get_addon_installation_status",
+                return_value={"installed": True},
+            ),
+            mock.patch.object(download.bpy, "ops") as ops,
+            mock.patch.object(download.reports, "add_report"),
+        ):
+            download.install_addon_from_local_file({"name": "Standalone"}, "addon.zip")
+        ops.extensions.package_install_files.assert_not_called()
 
 
 class DownloadFailureTests(unittest.TestCase):
