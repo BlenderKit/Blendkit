@@ -580,7 +580,7 @@ def check_timers_timer():
     return 5.0
 
 
-def on_startup_timer():
+def on_startup_timer() -> None:
     """Run once on the startup of add-on (Blender start with enabled add-on, add-on enabled)."""
     persistent_preferences.load_preferences_from_JSON()
     addon_updater_ops.check_for_update_background()
@@ -593,6 +593,7 @@ def on_startup_timer():
                 __package__
             ].preferences.global_dir
             utils._show_permission_popup(global_dir, message)
+    client_lib.check_clientdir_permissions()
 
     return None
 
