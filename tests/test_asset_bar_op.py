@@ -450,11 +450,6 @@ class TestAssetBarVersionBadge(unittest.TestCase):
             ),
             patch.object(
                 asset_bar_op.utils,
-                "is_addon_blender_compatible",
-                return_value=True,
-            ),
-            patch.object(
-                asset_bar_op.utils,
                 "asset_from_newer_blender_version",
                 side_effect=lambda data: version_check(data, (4, 1, 2)),
             ),
@@ -506,6 +501,32 @@ class TestAssetBarVersionBadge(unittest.TestCase):
         self.assertFalse(button.version_warning_icon.visible)
         self.update_button(operator, asset_data, thumb_loaded=True)
         self.assertTrue(button.version_warning_icon.visible)
+
+    def test_incompatible_addon_is_marked_and_clears_on_slot_reuse(self):
+        button = self.create_button()
+        operator = self.create_operator(button)
+        asset = {
+            "assetType": "addon",
+            "dictParameters": {"blenderVersionMin": "4.2", "blenderVersionMax": "5.3"},
+        }
+        with patch.object(
+            asset_bar_op.utils,
+            "bpy",
+            SimpleNamespace(app=SimpleNamespace(version=(5, 3, 0))),
+        ):
+            self.update_button(operator, asset)
+            self.assertTrue(button.red_alert.visible)
+            self.assertTrue(button.version_warning_icon.visible)
+            self.update_button(operator, asset, thumb_loaded=False)
+            self.assertFalse(button.red_alert.visible)
+            self.assertFalse(button.version_warning_icon.visible)
+            self.update_button(operator, asset)
+            self.assertTrue(button.red_alert.visible)
+            self.assertTrue(button.version_warning_icon.visible)
+            asset["dictParameters"]["blenderVersionMax"] = "5.4"
+            self.update_button(operator, asset)
+            self.assertFalse(button.red_alert.visible)
+            self.assertFalse(button.version_warning_icon.visible)
 
     def test_variant_count_excludes_private_and_clears_on_slot_reuse(self):
         button = self.create_button()

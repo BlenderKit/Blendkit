@@ -2221,7 +2221,8 @@ def get_addon_blender_compatibility(asset_data):
     """Return (is_compatible, min_str, max_str) for an addon asset.
 
     Reads dictParameters.blenderVersionMin / blenderVersionMax. Missing/None
-    bound means unlimited on that side. Non-addon assets are always compatible.
+    bound means unlimited on that side. The minimum is inclusive and the maximum
+    exclusive, matching Blender extension manifests. Non-addon assets are compatible.
     """
     if not isinstance(asset_data, dict) or asset_data.get("assetType") != "addon":
         return True, None, None
@@ -2231,7 +2232,7 @@ def get_addon_blender_compatibility(asset_data):
     cur = bpy.app.version
     mn = _parse_version_string(min_v)
     mx = _parse_version_string(max_v)
-    if (mn and cur < mn) or (mx and cur > mx):
+    if (mn and cur < mn) or (mx and cur >= mx):
         return False, min_v, max_v
     return True, min_v, max_v
 

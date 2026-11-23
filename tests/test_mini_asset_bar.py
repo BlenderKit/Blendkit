@@ -431,7 +431,10 @@ class TestMiniAssetBarEvents(unittest.TestCase):
             patch.object(
                 asset_bar_op.utils,
                 "get_addon_blender_compatibility",
-                return_value=(True, None, None),
+                return_value=(False, "4.2.0", "5.3.0"),
+            ),
+            patch.object(
+                asset_bar_op.utils, "get_blender_version", return_value="5.3.0"
             ),
             patch.object(
                 asset_bar_op.utils,
@@ -445,6 +448,10 @@ class TestMiniAssetBarEvents(unittest.TestCase):
             operator.tooltip_image, asset, thumb_type="thumbnail"
         )
         self.assertEqual(operator.asset_name.text, "Pro edition")
+        self.assertEqual(
+            operator.version_warning.text,
+            "Not available in Blender 5.3.0: requires Blender >= 4.2.0, < 5.3.0",
+        )
         self.assertEqual(operator.authors_name.text, "by Jane Doe")
         self.assertEqual(operator.quality_label.text, "8/10")
         self.assertEqual(operator.multi_price_label.text_b, " $10 ")

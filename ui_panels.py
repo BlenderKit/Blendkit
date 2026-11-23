@@ -3524,38 +3524,23 @@ class AssetPopupCard(bpy.types.Operator, ratings_utils.RatingProperties):
                         width=width,
                         max_lines=4,
                     )
-            min_version = dict_params.get("blenderVersionMin")
-            max_version = dict_params.get("blenderVersionMax")
-            min_version_tuple = None
-            max_version_tuple = None
-            if min_version:
-                min_version_tuple = tuple(map(int, min_version.split(".")))
-            if max_version:
-                max_version_tuple = tuple(map(int, max_version.split(".")))
+            is_compatible, min_version, max_version = (
+                utils.get_addon_blender_compatibility(self.asset_data)
+            )
 
             if min_version or max_version:
                 version_text = ""
                 if min_version and max_version:
-                    version_text = f"{min_version} - {max_version}"
+                    version_text = f">= {min_version}, < {max_version}"
                 elif min_version:
                     version_text = f"{min_version}+"
                 elif max_version:
-                    version_text = f"≤ {max_version}"
+                    version_text = f"< {max_version}"
 
                 # Check if current Blender version is compatible
                 current_version = (
                     f"{bpy.app.version[0]}.{bpy.app.version[1]}.{bpy.app.version[2]}"
                 )
-                is_compatible = True
-
-                if min_version:
-                    if bpy.app.version < min_version_tuple:
-                        is_compatible = False
-
-                if max_version and is_compatible:
-                    if bpy.app.version > max_version_tuple:
-                        is_compatible = False
-
                 # Display version requirement with appropriate warning
                 if not is_compatible:
                     box.alert = True
