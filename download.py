@@ -17,6 +17,7 @@
 # ##### END GPL LICENSE BLOCK #####
 
 import copy
+import inspect
 import json
 import logging
 import os
@@ -305,14 +306,17 @@ def install_addon_from_local_file(
         manifest = bl_extension_utils.pkg_manifest_dict_from_archive_or_error(file_path)
         if isinstance(manifest, str):
             raise Exception(f"Cannot install addon '{addon_name}': {manifest}")
-        compatibility_error = (
-            bl_extension_ops.pkg_manifest_params_compatible_or_error_for_this_system(
-                blender_version_min=manifest.get("blender_version_min") or "",
-                blender_version_max=manifest.get("blender_version_max") or "",
-                platforms=manifest.get("platforms") or [],
-                python_versions=[],
-            )
+        compatibility_check = (
+            bl_extension_ops.pkg_manifest_params_compatible_or_error_for_this_system
         )
+        compatibility_args = {
+            "blender_version_min": manifest.get("blender_version_min") or "",
+            "blender_version_max": manifest.get("blender_version_max") or "",
+            "platforms": manifest.get("platforms") or [],
+        }
+        if "python_versions" in inspect.signature(compatibility_check).parameters:
+            compatibility_args["python_versions"] = []
+        compatibility_error = compatibility_check(**compatibility_args)
         if compatibility_error:
             raise Exception(
                 f"Cannot install addon '{addon_name}': {compatibility_error}"

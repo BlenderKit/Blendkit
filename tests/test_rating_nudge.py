@@ -90,14 +90,14 @@ class RatingNudgeStoreTest(unittest.TestCase):
             mock.patch.object(rating_nudge, "bpy", fake_bpy),
             mock.patch.object(rating_nudge.utils, "user_logged_in", return_value=True),
         ):
-            with self.assertLogs(rating_nudge.bk_logger, level="WARNING"):
+            with self.assertLogs(rating_nudge.bk_logger, level="WARNING") as captured:
                 self.assertEqual(
                     rating_nudge.rating_nudge_timer(), rating_nudge.TIMER_INTERVAL
                 )
-            with self.assertNoLogs(rating_nudge.bk_logger, level="WARNING"):
                 self.assertEqual(
                     rating_nudge.rating_nudge_timer(), rating_nudge.TIMER_INTERVAL
                 )
+            self.assertEqual(len(captured.records), 1)
 
     def test_valid_store_is_preserved_without_rewriting(self):
         store = {"downloads": [{"id": "a1", "time": 123}], "last_nudge_time": 456}

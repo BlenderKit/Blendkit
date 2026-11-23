@@ -235,6 +235,45 @@ class AddonInstallationDiagnosticsTests(unittest.TestCase):
             repo="test_repo", filepath="test.zip", enable_on_install=False
         )
 
+    def test_blender_420_compatibility_signature(self):
+        def compatibility_check(*, blender_version_min, blender_version_max, platforms):
+            return None
+
+        with mock.patch.object(
+            download.bl_extension_ops,
+            "pkg_manifest_params_compatible_or_error_for_this_system",
+            autospec=compatibility_check,
+            return_value=None,
+        ) as check:
+            download.install_addon_from_local_file(self.asset, "test.zip")
+        check.assert_called_once_with(
+            blender_version_min="4.2.0",
+            blender_version_max=download.utils.get_blender_version(),
+            platforms=[],
+        )
+        self.ops.extensions.package_install_files.assert_called_once()
+
+    def test_newer_compatibility_signature(self):
+        def compatibility_check(
+            *, blender_version_min, blender_version_max, platforms, python_versions
+        ):
+            return None
+
+        with mock.patch.object(
+            download.bl_extension_ops,
+            "pkg_manifest_params_compatible_or_error_for_this_system",
+            autospec=compatibility_check,
+            return_value=None,
+        ) as check:
+            download.install_addon_from_local_file(self.asset, "test.zip")
+        check.assert_called_once_with(
+            blender_version_min="4.2.0",
+            blender_version_max=download.utils.get_blender_version(),
+            platforms=[],
+            python_versions=[],
+        )
+        self.ops.extensions.package_install_files.assert_called_once()
+
     def test_legacy_addon_keeps_installation_behavior(self):
         self.legacy.return_value = True
         download.install_addon_from_local_file(self.asset, "legacy.zip")
