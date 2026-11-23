@@ -4,6 +4,7 @@ import blf
 import bpy
 from gpu_extras.batch import batch_for_shader
 
+from .. import ui_bgl
 from .bl_ui_widget import BL_UI_Widget, region_redraw, set_font_size
 
 
@@ -134,6 +135,50 @@ class BL_UI_Label(BL_UI_Widget):
                 strike_y,
                 self._text_color,
             )
+
+
+class BL_UI_Tooltip(BL_UI_Label):
+    """Non-interactive, viewport-bounded hover text for a widget."""
+
+    def __init__(self):
+        super().__init__(0, 0, 1, 1)
+        self.active = False
+        self.visible = False
+        self.target = None
+        self.background = True
+        self.background_corner_radius = 6
+        self.background_padding = (6, 4)
+        self.bg_color = (0.03, 0.03, 0.03, 0.95)
+
+    def show_for(self, target, text, width, height, text_size):
+        pad_x, pad_y = self.background_padding
+        max_width = max(0, width - 2 * pad_x)
+        text = " ".join(text.split())
+        while text and ui_bgl.get_text_size(1, text, text_size)[0] > max_width:
+            if not text.endswith("..."):
+                text = text.rstrip() + "..."
+            text = text[:-4].rstrip() + "..." if len(text) > 3 else ""
+
+        self.target = target
+        self.text = text
+        self.text_size = text_size
+        self.width = ui_bgl.get_text_size(1, text, text_size)[0] if text else 0
+        self.height = text_size
+        x = max(pad_x, min(target.x_screen, width - self.width - pad_x))
+        y = target.y_screen + target.height + pad_y
+        if y + self.height + pad_y > height:
+            y = target.y_screen - self.height - pad_y
+        y = max(pad_y, min(y, height - self.height - pad_y))
+        self.set_location(x, y)
+        self.visible = bool(text)
+
+    def hide(self):
+        self.target = None
+        self.visible = False
+
+    def hide_for(self, target):
+        if self.target is target:
+            self.hide()
 
 
 class BL_UI_DuoLabel(BL_UI_Widget):
