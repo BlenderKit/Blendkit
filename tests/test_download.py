@@ -121,6 +121,14 @@ class AddonVariantInstallTests(unittest.TestCase):
             ),
             mock.patch.object(download.bpy, "ops") as ops,
             mock.patch.object(download.reports, "add_report"),
+            mock.patch.object(
+                download.bl_extension_utils, "pkg_is_legacy_addon", return_value=False
+            ),
+            mock.patch.object(
+                download.bl_extension_utils,
+                "pkg_manifest_dict_from_archive_or_error",
+                return_value={"id": "pro", "blender_version_min": "4.2.0"},
+            ),
         ):
             ops.extensions.package_install_files.return_value = {"FINISHED"}
             download.install_addon_from_local_file(asset, "pro.zip")
@@ -145,6 +153,132 @@ class AddonVariantInstallTests(unittest.TestCase):
         ):
             download.install_addon_from_local_file({"name": "Standalone"}, "addon.zip")
         ops.extensions.package_install_files.assert_not_called()
+
+
+@unittest.skipIf(
+    download.bpy.app.version < (4, 2, 0),
+    "Add-on installation requires Blender 4.2 or newer",
+)
+class AddonInstallationDiagnosticsTests(unittest.TestCase):
+    def setUp(self):
+        self.stack = ExitStack()
+        self.addCleanup(self.stack.close)
+        self.asset = {
+            "name": "Test Addon",
+            "assetType": "addon",
+            "dictParameters": {"extensionId": "test_addon"},
+        }
+        self.stack.enter_context(
+            mock.patch.object(download.os.path, "exists", return_value=True)
+        )
+        self.stack.enter_context(
+            mock.patch.object(
+                download,
+                "get_addon_installation_status",
+                side_effect=[{"installed": False}, {"installed": True}],
+            )
+        )
+        self.stack.enter_context(
+            mock.patch.object(
+                download,
+                "get_blenderkit_repository",
+                return_value=(SimpleNamespace(module="test_repo"), 0),
+            )
+        )
+        self.ops = self.stack.enter_context(mock.patch.object(download.bpy, "ops"))
+        self.ops.extensions.package_install_files.return_value = {"FINISHED"}
+        self.stack.enter_context(mock.patch.object(download.reports, "add_report"))
+        self.legacy = self.stack.enter_context(
+            mock.patch.object(
+                download.bl_extension_utils, "pkg_is_legacy_addon", return_value=False
+            )
+        )
+        self.manifest = self.stack.enter_context(
+            mock.patch.object(
+                download.bl_extension_utils,
+                "pkg_manifest_dict_from_archive_or_error",
+                return_value={
+                    "id": "test_addon",
+                    "blender_version_min": "4.2.0",
+                    "blender_version_max": download.utils.get_blender_version(),
+                },
+            )
+        )
+
+    def test_maximum_equal_to_current_version_reports_blender_reason(self):
+        with self.assertRaisesRegex(Exception, "must be less than the maximum version"):
+            download.install_addon_from_local_file(self.asset, "test.zip")
+        self.ops.extensions.package_install_files.assert_not_called()
+
+    def test_invalid_manifest_reports_validation_error(self):
+        self.manifest.return_value = "Missing required field: version"
+        with self.assertRaisesRegex(Exception, "Missing required field: version"):
+            download.install_addon_from_local_file(self.asset, "test.zip")
+        self.ops.extensions.package_install_files.assert_not_called()
+
+    def test_unsupported_platform_reports_blender_reason(self):
+        self.manifest.return_value["blender_version_max"] = ""
+        self.manifest.return_value["platforms"] = ["macos-arm64", "linux-x64"]
+        with mock.patch.object(
+            download.bl_extension_utils,
+            "platform_from_this_system",
+            return_value="windows-x64",
+        ):
+            with self.assertRaisesRegex(Exception, "platform"):
+                download.install_addon_from_local_file(self.asset, "test.zip")
+        self.ops.extensions.package_install_files.assert_not_called()
+
+    def test_compatible_manifest_keeps_installation_behavior(self):
+        self.manifest.return_value["blender_version_max"] = ""
+        download.install_addon_from_local_file(self.asset, "test.zip", False)
+        self.ops.extensions.package_install_files.assert_called_once_with(
+            repo="test_repo", filepath="test.zip", enable_on_install=False
+        )
+
+    def test_blender_420_compatibility_signature(self):
+        def compatibility_check(*, blender_version_min, blender_version_max, platforms):
+            return None
+
+        with mock.patch.object(
+            download.bl_extension_ops,
+            "pkg_manifest_params_compatible_or_error_for_this_system",
+            autospec=compatibility_check,
+            return_value=None,
+        ) as check:
+            download.install_addon_from_local_file(self.asset, "test.zip")
+        check.assert_called_once_with(
+            blender_version_min="4.2.0",
+            blender_version_max=download.utils.get_blender_version(),
+            platforms=[],
+        )
+        self.ops.extensions.package_install_files.assert_called_once()
+
+    def test_newer_compatibility_signature(self):
+        def compatibility_check(
+            *, blender_version_min, blender_version_max, platforms, python_versions
+        ):
+            return None
+
+        with mock.patch.object(
+            download.bl_extension_ops,
+            "pkg_manifest_params_compatible_or_error_for_this_system",
+            autospec=compatibility_check,
+            return_value=None,
+        ) as check:
+            download.install_addon_from_local_file(self.asset, "test.zip")
+        check.assert_called_once_with(
+            blender_version_min="4.2.0",
+            blender_version_max=download.utils.get_blender_version(),
+            platforms=[],
+            python_versions=[],
+        )
+        self.ops.extensions.package_install_files.assert_called_once()
+
+    def test_legacy_addon_keeps_installation_behavior(self):
+        self.legacy.return_value = True
+        download.install_addon_from_local_file(self.asset, "legacy.zip")
+        self.manifest.assert_not_called()
+        self.ops.extensions.package_install_files.assert_called_once()
 
 
 class DownloadFailureTests(unittest.TestCase):
@@ -299,6 +433,26 @@ class DownloadFailureTests(unittest.TestCase):
         self.assertIn("could not import", text)
         self.assertIn("Invalid blend file", text)
         self.assertEqual(download.download_tasks, {})
+
+    def test_addon_install_error_points_to_blender_not_client_log(self):
+        self.tracked["asset_data"]["assetType"] = "addon"
+        with (
+            mock.patch.object(
+                download,
+                "download_post",
+                side_effect=RuntimeError("Blender version must be less than 5.3.0"),
+            ),
+            self.assertLogs(download.bk_logger, level="ERROR"),
+        ):
+            download.handle_download_task(self.make_task(status="finished"))
+        text = " ".join(self.report_text().split())
+        self.assertIn("could not install the add-on", text)
+        self.assertIn("Blender version must be less than 5.3.0", text)
+        self.assertIn("download completed", text)
+        self.assertIn("Blender console", text)
+        self.assertNotIn("Client log", text)
+        self.assertNotIn("Retry the download", text)
+        self.assertNotIn("0%", text)
 
     def test_finished_download_keeps_existing_behavior(self):
         with mock.patch.object(download, "download_post") as post:

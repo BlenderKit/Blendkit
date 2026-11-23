@@ -17,6 +17,7 @@
 # ##### END GPL LICENSE BLOCK #####
 
 import copy
+import inspect
 import json
 import logging
 import os
@@ -46,6 +47,8 @@ from . import (
 
 
 if bpy.app.version >= (4, 2, 0):
+    from bl_pkg import bl_extension_ops, bl_extension_utils
+
     from . import override_extension_draw
 from bpy.app.handlers import persistent  # type: ignore
 from bpy.props import (  # type: ignore
@@ -299,6 +302,26 @@ def install_addon_from_local_file(
         reports.add_report(error_msg, type="ERROR")
         raise Exception(error_msg)
 
+    if not bl_extension_utils.pkg_is_legacy_addon(file_path):
+        manifest = bl_extension_utils.pkg_manifest_dict_from_archive_or_error(file_path)
+        if isinstance(manifest, str):
+            raise Exception(f"Cannot install addon '{addon_name}': {manifest}")
+        compatibility_check = (
+            bl_extension_ops.pkg_manifest_params_compatible_or_error_for_this_system
+        )
+        compatibility_args = {
+            "blender_version_min": manifest.get("blender_version_min") or "",
+            "blender_version_max": manifest.get("blender_version_max") or "",
+            "platforms": manifest.get("platforms") or [],
+        }
+        if "python_versions" in inspect.signature(compatibility_check).parameters:
+            compatibility_args["python_versions"] = []
+        compatibility_error = compatibility_check(**compatibility_args)
+        if compatibility_error:
+            raise Exception(
+                f"Cannot install addon '{addon_name}': {compatibility_error}"
+            )
+
     # Install from file to the Blendkit repository
     result = bpy.ops.extensions.package_install_files(
         repo=repo.module,
@@ -313,7 +336,9 @@ def install_addon_from_local_file(
     if not post_install_status["installed"]:
         raise Exception(
             f"Installation verification failed: '{addon_name}' was not installed. "
-            f"This may be due to version compatibility issues or other requirements not being met."
+            f"Expected package '{asset_data.get('dictParameters', {}).get('extensionId')}' "
+            f"in repository '{repo.module}'. "
+            "Check the Blender console for installation errors."
         )
 
     status_text = "enabled" if enable_on_install else "disabled"
@@ -1327,8 +1352,15 @@ def _report_download_error(task_id: str, reason: str, details: str = "") -> None
     reason = reason.strip() or "The Client did not provide an error reason."
     message = reports.humanize_server_message(reason)
     lower_message = message.lower()
+    installation_failed = asset.get(
+        "assetType"
+    ) == "addon" and lower_message.startswith(
+        "the file downloaded, but blender could not install the add-on:"
+    )
 
-    if "local blendkit client" in lower_message:
+    if installation_failed:
+        hint = "Check the add-on's requirements or send this error to its author."
+    elif "local blendkit client" in lower_message:
         hint = "Restart Blender to reconnect to the local Blendkit Client, then retry."
     elif any(
         text in lower_message
@@ -1372,10 +1404,19 @@ def _report_download_error(task_id: str, reason: str, details: str = "") -> None
     lines = [
         f'Could not load "{asset.get("name", "Asset")}".',
         shorten(message, width=352, placeholder="... (full error in Blender console)"),
-        f"Last status: {task.get('text') or 'Waiting for download status'} "
-        f"({task.get('progress', 0)}%).",
+        (
+            "The download completed; add-on installation failed."
+            if installation_failed
+            else f"Last status: {task.get('text') or 'Waiting for download status'} "
+            f"({task.get('progress', 0)}%)."
+        ),
         hint,
-        "Still failing? Preferences > Add-ons > Blendkit > Client log.",
+        (
+            "Installation details: Blender console "
+            "(Window > Toggle System Console on Windows)."
+            if installation_failed
+            else "Still failing? Preferences > Add-ons > Blendkit > Client log."
+        ),
         "Copy the log text into your bug report (no file attachment needed).",
     ]
     diagnostics = (
@@ -1415,7 +1456,12 @@ def handle_download_task(task: client_tasks.Task) -> None:
             return
         except Exception as e:
             bk_logger.exception("Asset appending/linking has failed: %s", e)
-            task.message = f"The file downloaded, but Blender could not import it: {e}"
+            action = (
+                "install the add-on"
+                if task.data.get("asset_data", {}).get("assetType") == "addon"
+                else "import it"
+            )
+            task.message = f"The file downloaded, but Blender could not {action}: {e}"
             task.status = "error"
 
     if task.status == "error":
@@ -2210,11 +2256,11 @@ class BlenderkitAddonChoiceOperator(bpy.types.Operator):
         if not is_compat:
             cur = utils.get_blender_version()
             if min_v and max_v:
-                rng = f"{min_v} \u2013 {max_v}"
+                rng = f">= {min_v}, < {max_v}"
             elif min_v:
                 rng = f"{min_v}+"
             else:
-                rng = f"\u2264 {max_v}"
+                rng = f"< {max_v}"
             warn = layout.box()
             warn.alert = True
             warn.label(

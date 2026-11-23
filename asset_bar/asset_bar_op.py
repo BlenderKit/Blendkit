@@ -4042,14 +4042,14 @@ class BlenderKitAssetBarOperator(BL_UI_OT_draw_operator):
                 os_ok, os_platforms = utils.get_addon_os_compatibility(asset_data)
                 if not compat_ok:
                     if min_v and max_v:
-                        rng = f"{min_v}\u2013{max_v}"
+                        rng = f">= {min_v}, < {max_v}"
                     elif min_v:
                         rng = f"{min_v}+"
                     else:
-                        rng = f"\u2264{max_v}"
+                        rng = f"< {max_v}"
                     cur = utils.get_blender_version()
                     self.version_warning.text = (
-                        f"Incompatible: addon requires Blender {rng} (you have {cur})"
+                        f"Not available in Blender {cur}: requires Blender {rng}"
                     )
                     self.version_warning.text_color = self.warning_color
                 elif not os_ok:
@@ -4960,10 +4960,13 @@ class BlenderKitAssetBarOperator(BL_UI_OT_draw_operator):
                     asset_button.image_padding = 0.0
 
                 self.update_validation_icon(asset_button, asset_data)
+                incompatible_addon = asset_data.get(
+                    "assetType"
+                ) == "addon" and not utils.is_addon_blender_compatible(asset_data)
                 has_version_warning, difference = (
                     utils.asset_from_newer_blender_version(asset_data)
                 )
-                asset_button.version_warning_icon.visible = (
+                asset_button.version_warning_icon.visible = incompatible_addon or (
                     has_version_warning and difference == "major_newer"
                 )
                 self.update_bookmark_icon(asset_button.bookmark_button)
@@ -4971,9 +4974,7 @@ class BlenderKitAssetBarOperator(BL_UI_OT_draw_operator):
 
                 # red_alert overlay is reused for two cases (incompatible
                 # addons take priority over the validator "old upload" alert):
-                if asset_data.get(
-                    "assetType"
-                ) == "addon" and not utils.is_addon_blender_compatible(asset_data):
+                if incompatible_addon:
                     asset_button.red_alert.bg_color = (0.6, 0.05, 0.05, 0.55)
                     asset_button.red_alert.visible = True
                 elif (

@@ -16,10 +16,13 @@
 #
 # ##### END GPL LICENSE BLOCK #####
 
+import json
 import os
 import tempfile
 import time
 import unittest
+from types import SimpleNamespace
+from unittest import mock
 
 import bpy
 
@@ -44,6 +47,78 @@ def _asset(asset_id="a1", quality_count=0, can_download=True, author_id=999):
         "author": {"id": author_id},
         "ratingsCount": {"quality": quality_count, "workingHours": quality_count},
     }
+
+
+class RatingNudgeStoreTest(unittest.TestCase):
+    def setUp(self):
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        self.path = os.path.join(directory.name, "rating_nudge.json")
+        for patch in (
+            mock.patch.object(rating_nudge, "_store_path", return_value=self.path),
+            mock.patch.object(rating_nudge.paths, "ensure_config_dir_exists"),
+        ):
+            patch.start()
+            self.addCleanup(patch.stop)
+
+    def test_corrupt_store_is_logged_and_persistently_reset(self):
+        for content in (b"", b"\x00\x00", b'{"downloads":', b"\xff", b"null", b"[]"):
+            with self.subTest(content=content):
+                with open(self.path, "wb") as stream:
+                    stream.write(content)
+                with self.assertLogs(rating_nudge.bk_logger, level="WARNING"):
+                    store = rating_nudge.load_store()
+                self.assertEqual(store, {"downloads": [], "last_nudge_time": 0})
+                with open(self.path, encoding="utf-8") as stream:
+                    self.assertEqual(json.load(stream), store)
+
+    def test_timer_does_not_repeat_corruption_warning(self):
+        with open(self.path, "w", encoding="utf-8") as stream:
+            stream.write("")
+        fake_bpy = SimpleNamespace(
+            context=SimpleNamespace(
+                preferences=SimpleNamespace(
+                    addons={
+                        rating_nudge.__package__: SimpleNamespace(
+                            preferences=SimpleNamespace(rating_nudge_enabled=True)
+                        )
+                    }
+                )
+            )
+        )
+        with (
+            mock.patch.object(rating_nudge, "bpy", fake_bpy),
+            mock.patch.object(rating_nudge.utils, "user_logged_in", return_value=True),
+        ):
+            with self.assertLogs(rating_nudge.bk_logger, level="WARNING") as captured:
+                self.assertEqual(
+                    rating_nudge.rating_nudge_timer(), rating_nudge.TIMER_INTERVAL
+                )
+                self.assertEqual(
+                    rating_nudge.rating_nudge_timer(), rating_nudge.TIMER_INTERVAL
+                )
+            self.assertEqual(len(captured.records), 1)
+
+    def test_valid_store_is_preserved_without_rewriting(self):
+        store = {"downloads": [{"id": "a1", "time": 123}], "last_nudge_time": 456}
+        with open(self.path, "w", encoding="utf-8") as stream:
+            json.dump(store, stream)
+        with mock.patch.object(rating_nudge, "save_store") as save:
+            self.assertEqual(rating_nudge.load_store(), store)
+        save.assert_not_called()
+
+    def test_read_io_error_is_logged_without_overwriting_store(self):
+        with open(self.path, "w", encoding="utf-8") as stream:
+            stream.write("{}")
+        with (
+            mock.patch("builtins.open", side_effect=PermissionError("denied")),
+            mock.patch.object(rating_nudge, "save_store") as save,
+            self.assertLogs(rating_nudge.bk_logger, level="WARNING"),
+        ):
+            self.assertEqual(
+                rating_nudge.load_store(), {"downloads": [], "last_nudge_time": 0}
+            )
+        save.assert_not_called()
 
 
 class RatingNudgeTest(unittest.TestCase):

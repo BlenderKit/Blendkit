@@ -15,6 +15,34 @@ if __package__:
 from . import utils
 
 
+class AddonBlenderCompatibilityTestCase(unittest.TestCase):
+    def test_minimum_is_inclusive_and_maximum_is_exclusive(self):
+        asset = {
+            "assetType": "addon",
+            "dictParameters": {
+                "blenderVersionMin": "4.2",
+                "blenderVersionMax": "5.3",
+            },
+        }
+        for version, expected in (
+            ((4, 1, 9), False),
+            ((4, 2, 0), True),
+            ((5, 2, 9), True),
+            ((5, 3, 0), False),
+            ((5, 3, 1), False),
+        ):
+            with self.subTest(version=version):
+                with mock.patch.object(
+                    utils,
+                    "bpy",
+                    types.SimpleNamespace(app=types.SimpleNamespace(version=version)),
+                ):
+                    self.assertEqual(
+                        utils.get_addon_blender_compatibility(asset),
+                        (expected, "4.2", "5.3"),
+                    )
+
+
 class GetOriginalFileSizeTestCase(unittest.TestCase):
     def test_blend_size_is_not_the_sum_of_all_files(self):
         asset_data = {

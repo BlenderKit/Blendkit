@@ -73,19 +73,33 @@ def _store_path() -> str:
 
 
 def load_store() -> dict:
-    """Load the local store. Returns a dict with 'downloads' and 'last_nudge_time'."""
+    """Load the local store, replacing corrupt JSON with an empty store."""
     path = _store_path()
+    empty_store = {"downloads": [], "last_nudge_time": 0}
     if not os.path.exists(path):
-        return {"downloads": [], "last_nudge_time": 0}
+        return empty_store
     try:
         with open(path, "r", encoding="utf-8") as f:
             data = json.load(f)
-    except Exception as e:
-        bk_logger.warning("Failed to read rating nudge store: %s", e)
-        return {"downloads": [], "last_nudge_time": 0}
-    data.setdefault("downloads", [])
-    data.setdefault("last_nudge_time", 0)
-    return data
+    except (json.JSONDecodeError, UnicodeDecodeError) as e:
+        bk_logger.warning(
+            "Invalid rating nudge store %s; resetting to defaults: %s", path, e
+        )
+    except OSError as e:
+        bk_logger.warning("Failed to read rating nudge store %s: %s", path, e)
+        return empty_store
+    else:
+        if isinstance(data, dict):
+            data.setdefault("downloads", [])
+            data.setdefault("last_nudge_time", 0)
+            return data
+        bk_logger.warning(
+            "Invalid rating nudge store %s; expected a JSON object, "
+            "resetting to defaults",
+            path,
+        )
+    save_store(empty_store)
+    return empty_store
 
 
 def save_store(data: dict):

@@ -1562,31 +1562,47 @@ class SingletonUpdater:
         return json_path
 
     def set_updater_json(self):
-        """Load or initialize JSON dictionary data for updater state"""
+        """Load updater state, resetting unreadable JSON to initial defaults."""
         if self._updater_path is None:
             raise ValueError("updater_path is not defined")
         elif not os.path.isdir(self._updater_path):
             os.makedirs(self._updater_path)
 
         jpath = self.get_json_path()
+        defaults = {
+            "last_check": "",
+            "backup_date": "",
+            "update_ready": False,
+            "ignore": False,
+            "just_restored": False,
+            "just_updated": False,
+            "version_text": dict(),
+        }
         if os.path.isfile(jpath):
-            with open(jpath) as data_file:
-                self._json = json.load(data_file)
-                self.print_verbose("Read in JSON settings from file")
-        else:
-            self._json = {
-                "last_check": "",
-                "backup_date": "",
-                "update_ready": False,
-                "ignore": False,
-                "just_restored": False,
-                "just_updated": False,
-                "version_text": dict(),
-            }
-            self.save_updater_json()
+            try:
+                with open(jpath) as data_file:
+                    saved_state = json.load(data_file)
+            except (json.JSONDecodeError, UnicodeDecodeError) as exc:
+                bk_logger.warning(
+                    "Invalid updater state in %s; resetting to defaults: %s",
+                    jpath,
+                    exc,
+                )
+            else:
+                if isinstance(saved_state, dict):
+                    self._json = {**defaults, **saved_state}
+                    self.print_verbose("Read in JSON settings from file")
+                    return
+                bk_logger.warning(
+                    "Invalid updater state in %s; expected a JSON object, "
+                    "resetting to defaults",
+                    jpath,
+                )
+        self._json = defaults
+        self.save_updater_json()
 
     def save_updater_json(self):
-        """Trigger save of current json structure into file within addon"""
+        """Save current state to the updater JSON file."""
         if self._update_ready:
             if isinstance(self._update_version, tuple):
                 self._json["update_ready"] = True
@@ -1602,18 +1618,17 @@ class SingletonUpdater:
         jpath = self.get_json_path()
         if not os.path.isdir(os.path.dirname(jpath)):
             bk_logger.error(
-                "State error: Directory does not exist, cannot save json: ",
-                os.path.basename(jpath),
+                "State error: Directory does not exist, cannot save json: %s",
+                jpath,
             )
             return
         try:
             with open(jpath, "w") as outf:
-                data_out = json.dumps(self._json, indent=4)
-                outf.write(data_out)
-            self.print_verbose(f"Wrote updater JSON settings to file: {jpath}")
-        except Exception:
-            self.print_verbose(f"Failed to open/save data to json: {jpath}")
-            self.print_trace()
+                json.dump(self._json, outf, indent=4)
+        except (OSError, TypeError, ValueError):
+            bk_logger.exception("Failed to save updater state to %s", jpath)
+            return
+        self.print_verbose(f"Wrote updater JSON settings to file: {jpath}")
         self.print_verbose("Wrote out updater JSON settings with content:")
         self.print_verbose(str(self._json))
 
