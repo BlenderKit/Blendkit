@@ -52,6 +52,7 @@ icons_read = {
     "logo_artstation.png": "logo_artstation",
     "logo_discord.png": "logo_discord",
     "logo_facebook.png": "logo_facebook",
+    "logo_github.png": "logo_github",
     "logo_instagram.png": "logo_instagram",
     "logo_tiktok.png": "logo_tiktok",
     "logo_vimeo.png": "logo_vimeo",
